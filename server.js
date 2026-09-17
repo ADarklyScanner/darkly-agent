@@ -13,6 +13,17 @@ import {
   updateLeadStatus,
   DAILY_LIMIT
 } from "./sheets.js";
+import {
+  getAccount,
+  getPositions,
+  getOrders,
+  placeOrder,
+  cancelOrder,
+  getMarketData,
+  getTradeLog,
+  isLiveEndpoint,
+  LIMITS as TRADING_LIMITS
+} from "./trading.js";
 
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(process.env.HOME || ".", "darkly-leads.json");
@@ -74,7 +85,20 @@ You have live tool access to the ReferralMarket master Google Sheet. Use those t
 
 Engine Config is the authoritative source for ReferralMarket operating policy. Before giving operational advice about lifecycle, saturation, switching, discovery eligibility, outreach, drafts, sending, policy gates, Gmail, maintenance, thresholds, or market rotation, read the relevant Engine Config values with get_engine_config. Do not invent thresholds or rules. Do not treat descriptive market notes or Saturation State as overriding the canonical Discovery Phase. Never recommend promotional sending when PROSPECT_EMAIL_MODE is DRAFT_ONLY or PROSPECT_AUTO_SEND is FALSE.
 
-Be direct, human, specific. No corporate padding.`;
+Be direct, human, specific. No corporate padding.
+
+--- TRADING MODULE ---
+
+You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_market_data, place_order, cancel_order, get_trade_log.
+
+Rules for trading:
+- Always read live state (get_account / get_positions) before advising or acting. Never reason from remembered numbers.
+- Before placing an order, state the reasoning: what the position is, why now, what the risk is. Pass that reasoning in the order's rationale field so it is recorded.
+- Guardrails (max trades per day, max position size, max daily loss, cooldown) are enforced in code. If an order is blocked, report exactly what blocked it and do not try to work around it by splitting the order, retrying, or restructuring it to slip under a limit.
+- Sizing: never propose a position that would exceed the configured max position size.
+- Describe outcomes in terms of probability and risk, never certainty. Do not promise, imply, or project guaranteed returns, profit, or "can't lose" setups. Past performance and backtests do not predict future results, and you say so when it matters.
+- You are not a licensed financial advisor. For anything touching taxes, retirement accounts, or large real-money decisions, say that plainly.
+- Know which mode you are in. PAPER is simulated money. LIVE is real. If the account reports LIVE, say so explicitly in any message where you propose or place an order.`;
 
 const CLAUDE_TOOLS = [
   {
@@ -120,6 +144,147 @@ const CLAUDE_TOOLS = [
           minimum: 1,
           maximum: 100,
           description: "Maximum rows to return. Default 25."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_account",
+    description: "Read the live Alpaca trading account: equity, cash, buying power, day P&L, and whether the account is in PAPER or LIVE mode. Call this before advising on or placing any trade.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_positions",
+    description: "Read all currently open positions in the Alpaca account, with entry price, current price, market value and unrealized P&L.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_orders",
+    description: "Read recent orders from the Alpaca account, including status and fill information.",
+    input_schema: {
+      type: "object",
+      properties: {
+        status: {
+          type: "string",
+          enum: ["open", "closed", "all"],
+          description: "Which orders to return. Default 'all'."
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Maximum orders to return. Default 25."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_market_data",
+    description: "Read current market data (price, previous close, day high/low, volume, market cap, sector) for tracked stocks from the AutoTradeFlux market database. Omit symbols to survey the whole tracked universe.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbols: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional ticker symbols, e.g. ['AAPL','NVDA']. Omit for the full tracked list."
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Maximum rows to return. Default 25."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "place_order",
+    description: "Submit an order to Alpaca. Guardrails (daily trade count, cooldown, max position size, daily loss ceiling) are enforced before submission; a blocked order returns the reasons and places nothing. Always supply a rationale.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: {
+          type: "string",
+          description: "Ticker symbol, e.g. 'AAPL'."
+        },
+        side: {
+          type: "string",
+          enum: ["buy", "sell"],
+          description: "Order side."
+        },
+        type: {
+          type: "string",
+          enum: ["market", "limit", "stop", "stop_limit"],
+          description: "Order type. Default 'market'."
+        },
+        qty: {
+          type: "number",
+          description: "Number of shares. Supply either qty or notional, not both."
+        },
+        notional: {
+          type: "number",
+          description: "Dollar amount to trade. Supply either qty or notional, not both."
+        },
+        limitPrice: {
+          type: "number",
+          description: "Required for limit and stop_limit orders."
+        },
+        stopPrice: {
+          type: "number",
+          description: "Required for stop and stop_limit orders."
+        },
+        timeInForce: {
+          type: "string",
+          enum: ["day", "gtc", "ioc", "fok"],
+          description: "Time in force. Default 'day'."
+        },
+        rationale: {
+          type: "string",
+          description: "Why this trade is being placed. Recorded with the order for later review."
+        }
+      },
+      required: ["symbol", "side"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "cancel_order",
+    description: "Cancel a still-open Alpaca order by its order ID.",
+    input_schema: {
+      type: "object",
+      properties: {
+        orderId: {
+          type: "string",
+          description: "The Alpaca order ID to cancel."
+        }
+      },
+      required: ["orderId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_trade_log",
+    description: "Read this agent's own record of orders it submitted or had blocked, including the rationale given at the time and any guardrail that stopped it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Maximum entries to return. Default 25."
         }
       },
       additionalProperties: false
@@ -175,6 +340,38 @@ async function executeClaudeTool(name, input = {}) {
     };
   }
 
+  if (name === "get_account") {
+    return await getAccount();
+  }
+
+  if (name === "get_positions") {
+    const positions = await getPositions();
+    return { count: positions.length, positions };
+  }
+
+  if (name === "get_orders") {
+    const orders = await getOrders(input);
+    return { count: orders.length, orders };
+  }
+
+  if (name === "get_market_data") {
+    return await getMarketData(input);
+  }
+
+  if (name === "place_order") {
+    return await placeOrder(input);
+  }
+
+  if (name === "cancel_order") {
+    return await cancelOrder(input);
+  }
+
+  if (name === "get_trade_log") {
+    const limit = Math.min(Math.max(Number(input.limit) || 25, 1), 100);
+    const entries = getTradeLog(limit);
+    return { count: entries.length, limits: TRADING_LIMITS, entries };
+  }
+
   throw new Error(`Unknown Claude tool: ${name}`);
 }
 
@@ -204,7 +401,12 @@ async function buildLiveRuntimeContext() {
 
   return {
     activeMarket: market,
-    engineConfig: config.byKey
+    engineConfig: config.byKey,
+    trading: {
+      mode: isLiveEndpoint() ? "LIVE" : "PAPER",
+      configured: Boolean(process.env.ALPACA_KEY_ID && process.env.ALPACA_SECRET_KEY),
+      guardrails: TRADING_LIMITS
+    }
   };
 }
 
@@ -1535,6 +1737,27 @@ const server = http.createServer(async (req, res) => {
   if (req.method==="GET" && req.url==="/leads") {
     if (!auth()) return send(401,{error:"Unauthorized"});
     return send(200, loadLeads());
+  }
+
+  if (req.method==="GET" && req.url==="/trading-data") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const [account, positions, orders] = await Promise.all([
+        getAccount(),
+        getPositions(),
+        getOrders({ limit: 25 })
+      ]);
+      return send(200, {
+        mode: isLiveEndpoint() ? "LIVE" : "PAPER",
+        guardrails: TRADING_LIMITS,
+        account,
+        positions,
+        orders,
+        tradeLog: getTradeLog(25)
+      });
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
   }
 
   if (req.method==="POST" && req.url==="/chat") {
