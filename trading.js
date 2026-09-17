@@ -13,6 +13,12 @@ const ALPACA_BASE =
 const ALPACA_KEY_ID = process.env.ALPACA_KEY_ID || "";
 const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY || "";
 
+// Alpaca's market data API. Free accounts get the IEX feed; "sip" needs a
+// paid subscription and will 403 without one.
+const ALPACA_DATA_BASE =
+  process.env.ALPACA_DATA_BASE_URL || "https://data.alpaca.markets/v2";
+const ALPACA_FEED = process.env.ALPACA_FEED || "iex";
+
 // AutoTradeFlux's still-live Supabase backend supplies market data / signals.
 const SUPABASE_URL =
   process.env.SUPABASE_URL || "https://klwesxkhsuqerpkavuuv.supabase.co";
@@ -108,6 +114,121 @@ async function alpacaRequest(method, endpoint, body) {
   }
 
   return parsed;
+}
+
+async function alpacaDataRequest(endpoint) {
+  if (!ALPACA_KEY_ID || !ALPACA_SECRET_KEY) {
+    throw new Error(
+      "Alpaca credentials are not configured (ALPACA_KEY_ID / ALPACA_SECRET_KEY)."
+    );
+  }
+
+  const res = await fetch(`${ALPACA_DATA_BASE}${endpoint}`, {
+    headers: {
+      "APCA-API-KEY-ID": ALPACA_KEY_ID,
+      "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
+    }
+  });
+
+  const text = await res.text();
+  let parsed;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch (e) {
+    parsed = { raw: text };
+  }
+
+  if (!res.ok) {
+    const detail =
+      (parsed && (parsed.message || parsed.raw)) || `HTTP ${res.status}`;
+    throw new Error(`Alpaca data ${endpoint} failed: ${detail}`);
+  }
+
+  return parsed;
+}
+
+/**
+ * Live quotes straight from the broker, for ANY symbol - not just the
+ * tracked universe. This is the authoritative price source; the Supabase
+ * market table is a historical snapshot and must not be used for pricing.
+ */
+export async function getQuote(input = {}) {
+  const symbols = (Array.isArray(input.symbols) ? input.symbols : [input.symbols])
+    .map((s) => String(s || "").trim().toUpperCase())
+    .filter(Boolean);
+
+  if (symbols.length === 0) throw new Error("At least one symbol is required.");
+
+  const data = await alpacaDataRequest(
+    `/stocks/snapshots?symbols=${encodeURIComponent(symbols.join(","))}&feed=${ALPACA_FEED}`
+  );
+
+  const snapshots = data.snapshots || data;
+  const quotes = [];
+  const missing = [];
+
+  for (const symbol of symbols) {
+    const s = snapshots[symbol];
+    if (!s) {
+      missing.push(symbol);
+      continue;
+    }
+
+    const last = s.latestTrade || {};
+    const day = s.dailyBar || {};
+    const prev = s.prevDailyBar || {};
+    const price = Number(last.p ?? day.c ?? 0) || null;
+    const prevClose = Number(prev.c ?? 0) || null;
+
+    quotes.push({
+      symbol,
+      price,
+      priceAsOf: last.t || day.t || null,
+      dayOpen: Number(day.o ?? 0) || null,
+      dayHigh: Number(day.h ?? 0) || null,
+      dayLow: Number(day.l ?? 0) || null,
+      dayVolume: Number(day.v ?? 0) || null,
+      prevClose,
+      change: price && prevClose ? Number((price - prevClose).toFixed(4)) : null,
+      changePercent:
+        price && prevClose
+          ? Number((((price - prevClose) / prevClose) * 100).toFixed(2))
+          : null
+    });
+  }
+
+  return { feed: ALPACA_FEED, count: quotes.length, quotes, missing };
+}
+
+/** Historical bars from Alpaca, oldest first, keyed by symbol. */
+export async function getBars(input = {}) {
+  const symbols = (Array.isArray(input.symbols) ? input.symbols : [input.symbols])
+    .map((s) => String(s || "").trim().toUpperCase())
+    .filter(Boolean);
+
+  if (symbols.length === 0) throw new Error("At least one symbol is required.");
+
+  const timeframe = input.timeframe || "1Day";
+  const limit = Math.min(Math.max(Number(input.limit) || 120, 30), 1000);
+
+  const data = await alpacaDataRequest(
+    `/stocks/bars?symbols=${encodeURIComponent(symbols.join(","))}` +
+      `&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}` +
+      `&feed=${ALPACA_FEED}&adjustment=split`
+  );
+
+  return data.bars || {};
+}
+
+/** Alpaca's market clock — the authority on whether trading is possible. */
+export async function getClock() {
+  const c = await alpacaRequest("GET", "/clock");
+  return {
+    timestamp: c.timestamp,
+    isOpen: Boolean(c.is_open),
+    nextOpen: c.next_open,
+    nextClose: c.next_close
+  };
 }
 
 export async function getAccount() {
@@ -243,8 +364,16 @@ async function checkGuardrails(order) {
   }
 
   // 4. Position size ceiling
+  //
+  // An order whose value cannot be determined is BLOCKED, not waved through:
+  // an unknown size is exactly the case the ceiling exists to catch.
   const estimatedUsd = await estimateOrderValue(order);
-  if (estimatedUsd !== null && estimatedUsd > LIMITS.maxPositionUsd) {
+
+  if (estimatedUsd === null) {
+    blocks.push(
+      `Could not determine the order's dollar value for ${order.symbol}, so the max position size check cannot be applied. Use a limit order or a notional amount.`
+    );
+  } else if (estimatedUsd > LIMITS.maxPositionUsd) {
     blocks.push(
       `Order value ~$${estimatedUsd.toFixed(2)} exceeds max position size $${
         LIMITS.maxPositionUsd
@@ -269,13 +398,14 @@ async function estimateOrderValue(order) {
 
   if (order.limit_price) return Number(order.qty) * Number(order.limit_price);
 
-  // Market order: price it off the latest quote we can reach.
+  // Market order: price it off Alpaca's live quote. The Supabase market
+  // table is a historical snapshot and must never be used to size an order.
   try {
-    const data = await getMarketData({ symbols: [order.symbol] });
-    const row = data.stocks && data.stocks[0];
-    if (row && row.price) return Number(order.qty) * Number(row.price);
+    const { quotes } = await getQuote({ symbols: [order.symbol] });
+    const q = quotes && quotes[0];
+    if (q && q.price) return Number(order.qty) * Number(q.price);
   } catch (e) {
-    /* fall through - unknown value is reported as null, not assumed safe */
+    /* fall through - the caller blocks on null rather than assuming safe */
   }
 
   return null;
@@ -393,20 +523,55 @@ export async function getMarketData(input = {}) {
   }
 
   const payload = await res.json();
-  let stocks = Array.isArray(payload.stocks) ? payload.stocks : [];
+  const all = Array.isArray(payload.stocks) ? payload.stocks : [];
 
+  let stocks = all;
   if (symbols.length > 0) {
-    stocks = stocks.filter((s) =>
+    stocks = all.filter((s) =>
       symbols.includes(String(s.symbol || "").toUpperCase())
     );
   }
 
-  const limit = Math.min(Math.max(Number(input.limit) || 25, 1), 100);
+  // No artificial cap: return everything unless the caller asks otherwise.
+  const limit = Number(input.limit) > 0 ? Number(input.limit) : stocks.length;
+  const returned = stocks.slice(0, limit);
+
+  const dataAsOf =
+    all[0]?.updated_at || all[0]?.last_updated || all[0]?.updatedAt || null;
+
+  const ageHours = dataAsOf
+    ? (Date.now() - new Date(dataAsOf).getTime()) / 3600000
+    : null;
+
+  const history = {};
+  if (payload.historyByStock && symbols.length > 0) {
+    for (const row of returned) {
+      const key = row.id ?? row.symbol;
+      if (payload.historyByStock[key]) history[row.symbol] = payload.historyByStock[key];
+    }
+  }
 
   return {
-    totalAvailable: Array.isArray(payload.stocks) ? payload.stocks.length : 0,
-    returned: Math.min(stocks.length, limit),
-    stocks: stocks.slice(0, limit),
-    dataAsOf: stocks[0]?.updated_at || stocks[0]?.last_updated || null
+    source: "AutoTradeFlux market table (historical snapshot, NOT a live feed)",
+    dataAsOf,
+    ageHours: ageHours === null ? null : Math.round(ageHours),
+    stale: ageHours !== null && ageHours > 24,
+    staleWarning:
+      ageHours !== null && ageHours > 24
+        ? `This snapshot is about ${Math.round(
+            ageHours / 24
+          )} day(s) old. Use get_quote for current prices; never price a trade from this data.`
+        : null,
+    universeSize: all.length,
+    matched: stocks.length,
+    returned: returned.length,
+    stocks: returned,
+    history: Object.keys(history).length > 0 ? history : undefined,
+    missing:
+      symbols.length > 0
+        ? symbols.filter(
+            (s) => !all.some((row) => String(row.symbol || "").toUpperCase() === s)
+          )
+        : []
   };
 }

@@ -20,10 +20,18 @@ import {
   placeOrder,
   cancelOrder,
   getMarketData,
+  getQuote,
   getTradeLog,
   isLiveEndpoint,
   LIMITS as TRADING_LIMITS
 } from "./trading.js";
+import {
+  runOnce as autoTradeRunOnce,
+  startScheduler as startAutoTrader,
+  getStatus as autoTraderStatus,
+  getRuns as autoTraderRuns,
+  setKillSwitch
+} from "./autotrader.js";
 
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(process.env.HOME || ".", "darkly-leads.json");
@@ -89,12 +97,24 @@ Be direct, human, specific. No corporate padding.
 
 --- TRADING MODULE ---
 
-You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_market_data, place_order, cancel_order, get_trade_log.
+You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_quote, get_market_data, place_order, cancel_order, get_trade_log.
+
+DESCRIBE ONLY WHAT EXISTS. When asked how you decide, what you check, or what you can do, describe exactly the tools and guardrails listed here — nothing more. Do not invent analysis you do not perform. Specifically, there is NO signal-quality engine, NO scoring model, NO volume/sector/liquidity analysis, NO halted-stock detection, and NO check that a symbol is in any universe. The rationale you pass with an order is free text that is stored for audit; nothing reads or scores it. If asked about a capability that does not exist, say plainly that it does not exist rather than describing how it would work.
+
+AUTOTRADER. There is a scheduled autotrader (autotrader.js). Read its real state with get_autotrader_status before describing it — never assume its mode. It has three modes: off, signal_only (analyses and records decisions but places NO orders — the default), and execute. Its decisions come from a small, explicit indicator model: moving-average structure, RSI, MACD and trend slope, combined differently depending on whether it classifies the market as trending or ranging, with a confidence floor below which it holds. It exits on stop-loss, take-profit, or a sell signal. There is a persistent kill switch.
+
+Be accurate about what that model is: conventional public-domain indicators applied to daily bars. It has no proven edge, no machine learning, no proprietary data, and no backtested track record. When asked how good it is, say that the honest answer is in get_autotrader_runs and the trade log, and that until there are enough closed trades to judge, the correct answer is "not yet known." Never present its scores as predictions.
+
+Price sources, and the difference matters:
+- get_quote is Alpaca's LIVE price feed and covers any symbol. It is authoritative.
+- get_market_data is a stored snapshot of the tracked universe and is currently weeks stale. Never price, size, or justify a trade from it. When you cite it, state its dataAsOf date.
+- get_account, get_positions and get_orders are live from the broker.
 
 Rules for trading:
 - Always read live state (get_account / get_positions) before advising or acting. Never reason from remembered numbers.
+- Get a live quote before proposing or sizing any trade.
 - Before placing an order, state the reasoning: what the position is, why now, what the risk is. Pass that reasoning in the order's rationale field so it is recorded.
-- Guardrails (max trades per day, max position size, max daily loss, cooldown) are enforced in code. If an order is blocked, report exactly what blocked it and do not try to work around it by splitting the order, retrying, or restructuring it to slip under a limit.
+- Exactly four guardrails are enforced in code, and no others: max trades per day, cooldown between trades, max daily loss, and max position size (an order whose dollar value cannot be determined is blocked). If an order is blocked, report exactly what blocked it and do not try to work around it by splitting the order, retrying, or restructuring it to slip under a limit.
 - Sizing: never propose a position that would exceed the configured max position size.
 - Describe outcomes in terms of probability and risk, never certainty. Do not promise, imply, or project guaranteed returns, profit, or "can't lose" setups. Past performance and backtests do not predict future results, and you say so when it matters.
 - You are not a licensed financial advisor. For anything touching taxes, retirement accounts, or large real-money decisions, say that plainly.
@@ -189,21 +209,36 @@ const CLAUDE_TOOLS = [
     }
   },
   {
-    name: "get_market_data",
-    description: "Read current market data (price, previous close, day high/low, volume, market cap, sector) for tracked stocks from the AutoTradeFlux market database. Omit symbols to survey the whole tracked universe.",
+    name: "get_quote",
+    description: "Get LIVE prices from Alpaca for any symbol, including symbols not in the AutoTradeFlux universe. Returns last trade price, day open/high/low/volume, previous close and change. This is the authoritative price source — use it for anything current, and always before sizing or proposing a trade.",
     input_schema: {
       type: "object",
       properties: {
         symbols: {
           type: "array",
           items: { type: "string" },
-          description: "Optional ticker symbols, e.g. ['AAPL','NVDA']. Omit for the full tracked list."
+          description: "Ticker symbols to quote, e.g. ['AAPL','NVDA']."
+        }
+      },
+      required: ["symbols"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_market_data",
+    description: "Read the AutoTradeFlux market table: a stored HISTORICAL SNAPSHOT of the tracked universe (price, prev close, day high/low, volume, market cap, sector), plus price history when symbols are given. Returns every row by default. This table is not a live feed and is currently stale — the response carries dataAsOf, ageHours and a stale flag. Use it for universe/sector/history questions; use get_quote for current prices.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbols: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional ticker symbols. Omit to return the entire tracked universe. Supplying symbols also returns their price history."
         },
         limit: {
           type: "integer",
           minimum: 1,
-          maximum: 100,
-          description: "Maximum rows to return. Default 25."
+          description: "Optional cap on rows returned. Omit to return everything."
         }
       },
       additionalProperties: false
@@ -271,6 +306,69 @@ const CLAUDE_TOOLS = [
         }
       },
       required: ["orderId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_autotrader_status",
+    description: "Read the autotrader's current configuration and state: mode (off / signal_only / execute), whether the scheduler is running, its interval, universe, sizing, stop-loss and take-profit settings, the kill switch, and when it last ran.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_autotrader_runs",
+    description: "Read the autotrader's run history: for each run, the signals it computed, the decisions it reached, its reasons, whether it executed or was in signal_only mode, and anything that blocked it. This is the record to judge the strategy by.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "How many recent runs to return. Default 5."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "run_autotrader_now",
+    description: "Run one autotrader cycle immediately instead of waiting for the schedule. Honours the configured mode, so in signal_only it analyses and records without placing orders. Use force to analyse while the market is closed (it still will not trade outside hours unless the mode is execute and the market is open).",
+    input_schema: {
+      type: "object",
+      properties: {
+        force: {
+          type: "boolean",
+          description: "Run even if the market is closed or the mode is off. Useful for inspecting what it would decide."
+        },
+        mode: {
+          type: "string",
+          enum: ["signal_only", "execute"],
+          description: "Override the configured mode for this single run. Omit to use the configured mode."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "set_autotrader_kill_switch",
+    description: "Engage or disengage the autotrader kill switch. While engaged, no scheduled or manual run will place any order. It persists across restarts.",
+    input_schema: {
+      type: "object",
+      properties: {
+        engaged: {
+          type: "boolean",
+          description: "true halts all autotrading; false resumes it."
+        },
+        reason: {
+          type: "string",
+          description: "Why it is being engaged, recorded with the switch."
+        }
+      },
+      required: ["engaged"],
       additionalProperties: false
     }
   },
@@ -358,12 +456,37 @@ async function executeClaudeTool(name, input = {}) {
     return await getMarketData(input);
   }
 
+  if (name === "get_quote") {
+    return await getQuote(input);
+  }
+
   if (name === "place_order") {
     return await placeOrder(input);
   }
 
   if (name === "cancel_order") {
     return await cancelOrder(input);
+  }
+
+  if (name === "get_autotrader_status") {
+    return autoTraderStatus();
+  }
+
+  if (name === "get_autotrader_runs") {
+    const limit = Math.min(Math.max(Number(input.limit) || 5, 1), 50);
+    const runs = autoTraderRuns(limit);
+    return { count: runs.length, runs };
+  }
+
+  if (name === "run_autotrader_now") {
+    return await autoTradeRunOnce({
+      force: Boolean(input.force),
+      mode: input.mode
+    });
+  }
+
+  if (name === "set_autotrader_kill_switch") {
+    return setKillSwitch(Boolean(input.engaged), input.reason || null);
   }
 
   if (name === "get_trade_log") {
@@ -677,6 +800,7 @@ body{
   background:#0d0d0f;
   color:#e8e8eb;
   height:100vh;
+  height:100dvh;
   overflow:hidden;
 }
 button,input,select,textarea{font:inherit}
@@ -708,23 +832,43 @@ button{cursor:pointer}
 
 #app{
   height:100vh;
+  height:100dvh;
   display:flex;
   flex-direction:column;
+  overflow:hidden;
 }
 
 #topbar{
-  min-height:56px;
+  flex:0 0 auto;
   display:flex;
-  align-items:center;
+  flex-direction:column;
   gap:8px;
   padding:8px 12px;
   border-bottom:1px solid #26262d;
   background:#141417;
 }
+#topbar-main{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+#nav{
+  display:flex;
+  gap:6px;
+}
+#nav .navbtn{
+  flex:1 1 0;
+  min-width:0;
+  text-align:center;
+}
 #title{
   font-weight:700;
   font-size:17px;
   white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  min-width:0;
 }
 .mode-badge{
   font-size:10px;
@@ -953,6 +1097,118 @@ tbody tr:hover{background:#17171c}
 .dk{color:#777;font-size:10px;text-transform:uppercase}
 .dv{font-size:12px;white-space:pre-wrap;word-break:break-word}
 
+#stocks-view{
+  flex:1;
+  overflow:hidden;
+  display:none;
+  flex-direction:column;
+}
+#stocks-bar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 10px;
+  border-bottom:1px solid #24242a;
+  background:#111114;
+  font-size:12px;
+  color:#999;
+}
+.mode-pill{
+  font-size:10px;
+  font-weight:700;
+  padding:4px 8px;
+  border-radius:999px;
+  background:#243d31;
+  color:#68e59c;
+  white-space:nowrap;
+}
+.mode-pill.live{background:#3d2424;color:#ff8c8c}
+#stocks-refresh{
+  border:0;border-radius:8px;
+  padding:7px 12px;
+  background:#243d31;color:#68e59c;
+}
+#stocks-summary{
+  display:flex;
+  gap:7px;
+  overflow-x:auto;
+  padding:8px 10px;
+  border-bottom:1px solid #232329;
+  scrollbar-width:none;
+}
+#stocks-body{
+  flex:1;
+  overflow-y:auto;
+  padding:10px;
+}
+.sblock{margin-bottom:18px}
+.sblock h3{
+  margin:0 0 8px;
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.5px;
+  color:#777;
+  font-weight:600;
+}
+.card{
+  background:#15151a;
+  border:1px solid #26262d;
+  border-radius:11px;
+  padding:10px 12px;
+  margin-bottom:7px;
+}
+.card-top{
+  display:flex;
+  align-items:baseline;
+  gap:8px;
+}
+.card-sym{font-weight:700;font-size:15px}
+.card-qty{color:#777;font-size:11px}
+.card-val{margin-left:auto;font-weight:600;font-size:14px;white-space:nowrap}
+.card-bot{
+  display:flex;
+  align-items:baseline;
+  gap:8px;
+  margin-top:5px;
+  font-size:11px;
+  color:#888;
+}
+.card-pnl{margin-left:auto;font-weight:600;font-size:12px;white-space:nowrap}
+.pill{
+  font-size:9px;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.4px;
+  padding:3px 7px;
+  border-radius:999px;
+  background:#22222a;
+  color:#999;
+}
+.pill.buy{background:#1d3328;color:#68e59c}
+.pill.sell{background:#33201f;color:#ff9a9a}
+.pos{color:#68e59c}
+.neg{color:#ff8c8c}
+.empty{color:#666;font-size:12px;padding:6px 0}
+#guardrails-wrap{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+  gap:7px;
+}
+.guard{
+  background:#17171b;
+  border:1px solid #292930;
+  border-radius:10px;
+  padding:8px 10px;
+}
+.guard .n{font-weight:700;font-size:15px}
+.guard .l{color:#777;font-size:9px;text-transform:uppercase;letter-spacing:.5px}
+
+@media(min-width:700px){
+  #topbar{flex-direction:row;align-items:center}
+  #topbar-main{flex:1}
+  #nav .navbtn{flex:0 0 auto}
+}
+
 @media(max-width:700px){
   #title{font-size:15px}
   .mode-badge{display:none}
@@ -980,12 +1236,17 @@ tbody tr:hover{background:#17171c}
 <div id="app">
 
   <div id="topbar">
-    <div id="title">Darkly Research</div>
-    <div class="mode-badge">PRE-LAUNCH CALIBRATION</div>
-    <div id="row-count">0 rows</div>
-    <div class="spacer"></div>
-    <button id="research-tab" class="navbtn active">Research</button>
-    <button id="chat-tab" class="navbtn">Chat</button>
+    <div id="topbar-main">
+      <div id="title">Darkly</div>
+      <div class="mode-badge">PRE-LAUNCH CALIBRATION</div>
+      <div id="row-count">0 rows</div>
+      <div class="spacer"></div>
+    </div>
+    <div id="nav">
+      <button id="research-tab" class="navbtn active">Research</button>
+      <button id="stocks-tab" class="navbtn">Stocks</button>
+      <button id="chat-tab" class="navbtn">Chat</button>
+    </div>
   </div>
 
   <section id="research-view">
@@ -1089,6 +1350,34 @@ tbody tr:hover{background:#17171c}
 
   </section>
 
+  <section id="stocks-view">
+
+    <div id="stocks-bar">
+      <span id="stocks-mode" class="mode-pill">—</span>
+      <span id="stocks-status">Not loaded</span>
+      <div class="spacer"></div>
+      <button id="stocks-refresh">Refresh</button>
+    </div>
+
+    <div id="stocks-summary"></div>
+
+    <div id="stocks-body">
+      <div class="sblock">
+        <h3>Open positions</h3>
+        <div id="positions-wrap" class="scroll-x"></div>
+      </div>
+      <div class="sblock">
+        <h3>Recent orders</h3>
+        <div id="orders-wrap" class="scroll-x"></div>
+      </div>
+      <div class="sblock">
+        <h3>Guardrails</h3>
+        <div id="guardrails-wrap"></div>
+      </div>
+    </div>
+
+  </section>
+
   <section id="chat-view">
     <div id="chat"></div>
     <div id="inputbar">
@@ -1138,18 +1427,137 @@ function unlock(){
 }
 
 byId("research-tab").onclick=()=>showView("research");
+byId("stocks-tab").onclick=()=>showView("stocks");
 byId("chat-tab").onclick=()=>showView("chat");
+byId("stocks-refresh").onclick=()=>loadStocks();
+
+let stocksLoaded=false;
 
 function showView(which){
-  const research=which==="research";
+  byId("research-view").style.display=which==="research"?"flex":"none";
+  byId("stocks-view").style.display=which==="stocks"?"flex":"none";
+  byId("chat-view").style.display=which==="chat"?"flex":"none";
 
-  byId("research-view").style.display=research?"flex":"none";
-  byId("chat-view").style.display=research?"none":"flex";
+  byId("research-tab").classList.toggle("active",which==="research");
+  byId("stocks-tab").classList.toggle("active",which==="stocks");
+  byId("chat-tab").classList.toggle("active",which==="chat");
 
-  byId("research-tab").classList.toggle("active",research);
-  byId("chat-tab").classList.toggle("active",!research);
+  if(which==="chat")byId("message").focus();
+  if(which==="stocks"&&!stocksLoaded)loadStocks();
+}
 
-  if(!research)byId("message").focus();
+function money(v){
+  const n=Number(v);
+  if(!Number.isFinite(n))return "—";
+  return (n<0?"-$":"$")+Math.abs(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+
+function signClass(v){
+  const n=Number(v);
+  if(!Number.isFinite(n)||n===0)return "";
+  return n>0?"pos":"neg";
+}
+
+async function loadStocks(){
+  byId("stocks-status").textContent="Loading Alpaca account...";
+
+  try{
+    const r=await fetch("/trading-data",{
+      headers:{"X-Agent-Passcode":passcode}
+    });
+
+    if(r.status===401){
+      byId("login-overlay").style.display="flex";
+      byId("stocks-status").textContent="Wrong passcode";
+      return;
+    }
+
+    const data=await r.json();
+
+    if(!r.ok){
+      byId("stocks-status").textContent=data.error||"Load failed";
+      return;
+    }
+
+    renderStocks(data);
+    stocksLoaded=true;
+    byId("stocks-status").textContent="Updated "+new Date().toLocaleTimeString();
+  }catch(e){
+    byId("stocks-status").textContent="Error: "+e.message;
+  }
+}
+
+function renderStocks(data){
+  const live=data.mode==="LIVE";
+  const pill=byId("stocks-mode");
+  pill.textContent=data.mode||"—";
+  pill.classList.toggle("live",live);
+
+  const a=data.account||{};
+
+  byId("stocks-summary").innerHTML=[
+    ["Equity",money(a.equity),""],
+    ["Cash",money(a.cash),""],
+    ["Buying power",money(a.buyingPower),""],
+    ["Day P&L",money(a.dayPnl)+" ("+(a.dayPnlPercent??0)+"%)",signClass(a.dayPnl)],
+    ["Positions",String((data.positions||[]).length),""],
+    ["Status",esc(a.status||"—"),""]
+  ].map(([label,value,cls])=>
+    '<div class="stat"><div class="n '+cls+'">'+value+'</div><div class="l">'+label+'</div></div>'
+  ).join("");
+
+  const positions=(data.positions||[])
+    .slice()
+    .sort((a,b)=>Number(a.unrealizedPl||0)-Number(b.unrealizedPl||0));
+
+  byId("positions-wrap").innerHTML=positions.length===0
+    ? '<div class="empty">No open positions.</div>'
+    : positions.map(p=>
+        '<div class="card">'
+        +'<div class="card-top">'
+        +'<span class="card-sym">'+esc(p.symbol)+'</span>'
+        +'<span class="card-qty">'+p.qty+' sh</span>'
+        +'<span class="card-val">'+money(p.marketValue)+'</span>'
+        +'</div>'
+        +'<div class="card-bot">'
+        +'<span>'+money(p.avgEntryPrice)+' &rarr; '+money(p.currentPrice)+'</span>'
+        +'<span class="card-pnl '+signClass(p.unrealizedPl)+'">'
+        +money(p.unrealizedPl)+' ('+p.unrealizedPlPercent+'%)'
+        +'</span>'
+        +'</div>'
+        +'</div>'
+      ).join("");
+
+  const orders=data.orders||[];
+  byId("orders-wrap").innerHTML=orders.length===0
+    ? '<div class="empty">No recent orders.</div>'
+    : orders.map(o=>
+        '<div class="card">'
+        +'<div class="card-top">'
+        +'<span class="card-sym">'+esc(o.symbol)+'</span>'
+        +'<span class="pill '+(o.side==="buy"?"buy":"sell")+'">'+esc(o.side)+'</span>'
+        +'<span class="card-qty">'+esc(o.type)+'</span>'
+        +'<span class="card-val">'+(o.qty??o.notional??"—")+'</span>'
+        +'</div>'
+        +'<div class="card-bot">'
+        +'<span>'+esc(o.status)
+        +(o.filledAvgPrice?' @ '+money(o.filledAvgPrice):"")+'</span>'
+        +'<span class="card-pnl" style="color:#777;font-weight:400">'
+        +(o.submittedAt?new Date(o.submittedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):"—")
+        +'</span>'
+        +'</div>'
+        +'</div>'
+      ).join("");
+
+  const g=data.guardrails||{};
+  byId("guardrails-wrap").innerHTML=[
+    ["Max trades/day",g.maxTradesPerDay],
+    ["Max position",money(g.maxPositionUsd)],
+    ["Max daily loss",money(g.maxDailyLossUsd)],
+    ["Cooldown",(g.cooldownMinutes??"—")+" min"]
+  ].map(([label,value])=>
+    '<div class="guard"><div class="n">'+value+'</div><div class="l">'+label+'</div></div>'
+  ).join("");
 }
 
 function esc(value){
@@ -1739,6 +2147,42 @@ const server = http.createServer(async (req, res) => {
     return send(200, loadLeads());
   }
 
+  if (req.method==="GET" && req.url==="/autotrader-data") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      return send(200, {
+        status: autoTraderStatus(),
+        runs: autoTraderRuns(10)
+      });
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
+  }
+
+  if (req.method==="POST" && req.url==="/autotrader-run") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const body = await readBody();
+      const run = await autoTradeRunOnce({
+        force: Boolean(body.force),
+        mode: body.mode
+      });
+      return send(200, run);
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
+  }
+
+  if (req.method==="POST" && req.url==="/autotrader-kill") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const body = await readBody();
+      return send(200, setKillSwitch(Boolean(body.engaged), body.reason || null));
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
+  }
+
   if (req.method==="GET" && req.url==="/trading-data") {
     if (!auth()) return send(401,{error:"Unauthorized"});
     try {
@@ -1943,4 +2387,13 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT,"0.0.0.0",()=>{
   console.log("Darkly Agent v2 running on port "+PORT);
+
+  const auto = startAutoTrader();
+  if (auto.started) {
+    console.log(
+      `[autotrader] active: every ${auto.intervalMinutes}m, mode=${auto.mode}`
+    );
+  } else {
+    console.log(`[autotrader] not scheduled: ${auto.reason}`);
+  }
 });
