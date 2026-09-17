@@ -1,5 +1,4 @@
-import fs from "node:fs";
-import path from "node:path";
+import { readState, writeState, stateInfo } from "./state.js";
 
 /* ------------------------------------------------------------------ *
  * Config
@@ -24,10 +23,7 @@ const SUPABASE_URL =
   process.env.SUPABASE_URL || "https://klwesxkhsuqerpkavuuv.supabase.co";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 
-const TRADE_LOG_FILE = path.join(
-  process.env.HOME || ".",
-  "darkly-trades.json"
-);
+const TRADE_LOG_FILE = "darkly-trades.json";
 
 export const LIMITS = {
   maxTradesPerDay: Number(process.env.MAX_TRADES_PER_DAY || 10),
@@ -45,18 +41,23 @@ export function isLiveEndpoint() {
  * ------------------------------------------------------------------ */
 
 function loadTrades() {
-  try {
-    if (fs.existsSync(TRADE_LOG_FILE)) {
-      return JSON.parse(fs.readFileSync(TRADE_LOG_FILE, "utf8"));
-    }
-  } catch (e) {
-    /* corrupt or unreadable log must never block trading decisions */
-  }
-  return [];
+  const trades = readState(TRADE_LOG_FILE, []);
+  return Array.isArray(trades) ? trades : [];
 }
 
 function saveTrades(trades) {
-  fs.writeFileSync(TRADE_LOG_FILE, JSON.stringify(trades, null, 2));
+  writeState(TRADE_LOG_FILE, trades);
+}
+
+/** Where the trade log lives and whether it survives a restart. */
+export function tradeLogInfo() {
+  const trades = loadTrades();
+  return {
+    ...stateInfo(),
+    file: TRADE_LOG_FILE,
+    entries: trades.length,
+    oldestEntry: trades.length ? trades[0].submittedAt || null : null
+  };
 }
 
 function logTrade(entry) {
@@ -69,6 +70,121 @@ function logTrade(entry) {
 export function getTradeLog(limit = 50) {
   const trades = loadTrades();
   return trades.slice(-limit).reverse();
+}
+
+/**
+ * Extract the actual execution from an Alpaca order object, or null if it
+ * has not filled. Submitting an order tells you what you asked for; only
+ * this tells you what you got, and the difference between them is
+ * slippage — the cost that quietly eats systematic strategies alive.
+ */
+function fillFrom(order) {
+  if (!order) return null;
+
+  const price =
+    order.filled_avg_price != null && order.filled_avg_price !== ""
+      ? Number(order.filled_avg_price)
+      : null;
+  const qty =
+    order.filled_qty != null && order.filled_qty !== ""
+      ? Number(order.filled_qty)
+      : null;
+
+  if (!Number.isFinite(price) || !Number.isFinite(qty) || price <= 0 || qty <= 0) {
+    return null;
+  }
+
+  return {
+    price,
+    qty,
+    value: Number((price * qty).toFixed(2)),
+    at: order.filled_at || order.updated_at || null,
+    status: order.status || null
+  };
+}
+
+const TERMINAL_UNFILLED = new Set([
+  "canceled",
+  "cancelled",
+  "expired",
+  "rejected",
+  "suspended",
+  "stopped"
+]);
+
+/**
+ * Ask the broker what actually happened to orders we have only recorded as
+ * submitted, and patch the log with real fills.
+ *
+ * This exists because the trade log was previously a record of intentions.
+ * Every entry said what was requested and nothing said what was obtained,
+ * which meant the history could not produce a single completed round-trip
+ * and the question "how has this actually done?" had no answer available
+ * even in principle. Run it before reading performance.
+ */
+export async function reconcileFills(options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit) || 60, 1), 200);
+  const maxAttempts = 5;
+
+  const trades = loadTrades();
+  const pending = [];
+
+  for (let i = trades.length - 1; i >= 0 && pending.length < limit; i--) {
+    const t = trades[i];
+    if (!t || !t.accepted || !t.orderId) continue;
+    if (t.fill && t.fill.price) continue;
+    if (t.unfilled) continue;
+    if ((t.fillAttempts || 0) >= maxAttempts) continue;
+    pending.push(i);
+  }
+
+  let filled = 0;
+  let stillOpen = 0;
+  let unfilled = 0;
+  const errors = [];
+
+  for (const i of pending) {
+    const trade = trades[i];
+    try {
+      const order = await alpacaRequest("GET", `/orders/${trade.orderId}`);
+      const fill = fillFrom(order);
+
+      trade.fillAttempts = (trade.fillAttempts || 0) + 1;
+      trade.fillCheckedAt = new Date().toISOString();
+      trade.orderStatus = order.status || null;
+
+      if (fill) {
+        trade.fill = fill;
+        filled++;
+      } else if (TERMINAL_UNFILLED.has(String(order.status || "").toLowerCase())) {
+        // It will never fill. Mark it so it stops being retried and so
+        // performance never counts an intention as a trade.
+        trade.unfilled = true;
+        trade.unfilledReason = order.status;
+        unfilled++;
+      } else {
+        stillOpen++;
+      }
+    } catch (e) {
+      trade.fillAttempts = (trade.fillAttempts || 0) + 1;
+      trade.fillLookupError = String(e.message || e);
+      errors.push(`${trade.orderId}: ${trade.fillLookupError}`);
+    }
+  }
+
+  if (pending.length) saveTrades(trades);
+
+  return {
+    checked: pending.length,
+    filled,
+    stillOpen,
+    unfilled,
+    errors,
+    note:
+      pending.length === 0
+        ? "Nothing to reconcile: every accepted order already has a recorded fill or a terminal status."
+        : `Patched ${filled} fill(s) into the trade log.`
+  };
 }
 
 function todaysTrades() {
@@ -200,6 +316,38 @@ export async function getQuote(input = {}) {
   return { feed: ALPACA_FEED, count: quotes.length, quotes, missing };
 }
 
+/**
+ * How far back to ask for, in calendar days, to stand a good chance of
+ * getting `limit` bars of `timeframe`.
+ *
+ * This exists because of a real bug: Alpaca treats `limit` as a CAP on the
+ * response, not as a lookback. With no `start`, the window defaults to the
+ * current day, so a 120-bar daily request returned exactly 1 bar per symbol
+ * and silently starved the strategy — which then reported a calm
+ * "insufficient history" for every symbol as though that were market
+ * reality. Always send an explicit start.
+ */
+export function barsLookbackDays(timeframe, limit) {
+  const tf = String(timeframe || "1Day").toLowerCase();
+  const m = tf.match(/^(\d+)\s*(min|hour|day|week|month)/);
+  const n = m ? Number(m[1]) : 1;
+  const unit = m ? m[2] : "day";
+
+  let barsPerTradingDay;
+  if (unit === "min") barsPerTradingDay = 390 / n;
+  else if (unit === "hour") barsPerTradingDay = 6.5 / n;
+  else if (unit === "day") barsPerTradingDay = 1 / n;
+  else if (unit === "week") barsPerTradingDay = 1 / (5 * n);
+  else barsPerTradingDay = 1 / (21 * n);
+
+  const tradingDays = limit / barsPerTradingDay;
+
+  // ~252 trading days per 365 calendar days, plus padding for holidays,
+  // long weekends and halts. Over-asking costs nothing; under-asking
+  // silently degrades every signal.
+  return Math.ceil(tradingDays * 1.5) + 10;
+}
+
 /** Historical bars from Alpaca, oldest first, keyed by symbol. */
 export async function getBars(input = {}) {
   const symbols = (Array.isArray(input.symbols) ? input.symbols : [input.symbols])
@@ -211,13 +359,42 @@ export async function getBars(input = {}) {
   const timeframe = input.timeframe || "1Day";
   const limit = Math.min(Math.max(Number(input.limit) || 120, 30), 1000);
 
-  const data = await alpacaDataRequest(
-    `/stocks/bars?symbols=${encodeURIComponent(symbols.join(","))}` +
-      `&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}` +
-      `&feed=${ALPACA_FEED}&adjustment=split`
-  );
+  const start = new Date(
+    Date.now() - barsLookbackDays(timeframe, limit) * 86400000
+  )
+    .toISOString()
+    .slice(0, 10);
 
-  return data.bars || {};
+  const bars = {};
+  let pageToken = null;
+  let pages = 0;
+
+  // Paginate rather than trust one response: a truncated page would look
+  // exactly like a short history, which is the failure we just fixed.
+  do {
+    const url =
+      `/stocks/bars?symbols=${encodeURIComponent(symbols.join(","))}` +
+      `&timeframe=${encodeURIComponent(timeframe)}` +
+      `&start=${start}&limit=10000&sort=asc` +
+      `&feed=${ALPACA_FEED}&adjustment=split` +
+      (pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : "");
+
+    const data = await alpacaDataRequest(url);
+
+    for (const [symbol, rows] of Object.entries(data.bars || {})) {
+      bars[symbol] = (bars[symbol] || []).concat(rows);
+    }
+
+    pageToken = data.next_page_token || null;
+    pages++;
+  } while (pageToken && pages < 20);
+
+  // Keep the most recent `limit` bars per symbol, still oldest-first.
+  for (const symbol of Object.keys(bars)) {
+    bars[symbol] = bars[symbol].slice(-limit);
+  }
+
+  return bars;
 }
 
 /** Alpaca's market clock — the authority on whether trading is possible. */
@@ -478,7 +655,27 @@ export async function placeOrder(input = {}) {
     rationale: input.rationale || null,
     guardrailContext: guard.context,
     submittedAt: new Date().toISOString(),
-    mode: isLiveEndpoint() ? "LIVE" : "PAPER"
+    mode: isLiveEndpoint() ? "LIVE" : "PAPER",
+
+    // The decision's own context, stored structurally rather than buried in
+    // a prose rationale. Without the stop price there is no way to express
+    // an outcome in R multiples later, and without the score there is no
+    // way to ask whether the model's confidence meant anything.
+    signal: input.signal
+      ? {
+          score: input.signal.score ?? null,
+          confidence: input.signal.confidence ?? null,
+          regime: input.signal.indicators?.marketRegime ?? null,
+          stopPrice: input.signal.stopPrice ?? null,
+          targetPrice: input.signal.targetPrice ?? null,
+          action: input.signal.action ?? null
+        }
+      : null,
+
+    // A submitted order is a request, not an outcome. Orders are rarely
+    // filled at submission time, so this starts empty and is patched by
+    // reconcileFills() once the broker reports what actually happened.
+    fill: fillFrom(result)
   });
 
   return {

@@ -22,6 +22,8 @@ import {
   getMarketData,
   getQuote,
   getTradeLog,
+  reconcileFills,
+  tradeLogInfo,
   isLiveEndpoint,
   LIMITS as TRADING_LIMITS
 } from "./trading.js";
@@ -30,8 +32,20 @@ import {
   startScheduler as startAutoTrader,
   getStatus as autoTraderStatus,
   getRuns as autoTraderRuns,
+  getStops as autoTraderStops,
   setKillSwitch
 } from "./autotrader.js";
+import {
+  pairTrades,
+  summarize,
+  equityCurve,
+  maxDrawdown,
+  breakdown,
+  confidenceCalibration,
+  keyBySymbol,
+  keyByRegime,
+  keyByConfidenceBucket
+} from "./performance.js";
 
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(process.env.HOME || ".", "darkly-leads.json");
@@ -97,13 +111,21 @@ Be direct, human, specific. No corporate padding.
 
 --- TRADING MODULE ---
 
-You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_quote, get_market_data, place_order, cancel_order, get_trade_log.
+You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_quote, get_market_data, place_order, cancel_order, get_trade_log, get_performance.
 
-DESCRIBE ONLY WHAT EXISTS. When asked how you decide, what you check, or what you can do, describe exactly the tools and guardrails listed here — nothing more. Do not invent analysis you do not perform. Specifically, there is NO signal-quality engine, NO scoring model, NO volume/sector/liquidity analysis, NO halted-stock detection, and NO check that a symbol is in any universe. The rationale you pass with an order is free text that is stored for audit; nothing reads or scores it. If asked about a capability that does not exist, say plainly that it does not exist rather than describing how it would work.
+DESCRIBE ONLY WHAT EXISTS. When asked how you decide, what you check, or what you can do, describe exactly the tools, filters and guardrails listed here — nothing more. Do not invent analysis that is not performed. There is still NO halted-stock detection, NO sector classification, NO earnings-calendar awareness, NO options or margin logic, NO short selling, and NO machine learning of any kind. The free-text rationale you pass with a manual order is stored for audit; nothing scores it. If asked about a capability that does not exist, say plainly that it does not exist rather than describing how it would work.
 
-AUTOTRADER. There is a scheduled autotrader (autotrader.js). Read its real state with get_autotrader_status before describing it — never assume its mode. It has three modes: off, signal_only (analyses and records decisions but places NO orders — the default), and execute. Its decisions come from a small, explicit indicator model: moving-average structure, RSI, MACD and trend slope, combined differently depending on whether it classifies the market as trending or ranging, with a confidence floor below which it holds. It exits on stop-loss, take-profit, or a sell signal. There is a persistent kill switch.
+AUTOTRADER. There is a scheduled autotrader (autotrader.js). Read its real state with get_autotrader_status before describing it — never assume its mode or its settings. Modes: off, signal_only (full analysis, decisions recorded, NO orders placed — the default), and execute. There is a persistent kill switch that survives restarts.
 
-Be accurate about what that model is: conventional public-domain indicators applied to daily bars. It has no proven edge, no machine learning, no proprietary data, and no backtested track record. When asked how good it is, say that the honest answer is in get_autotrader_runs and the trade log, and that until there are enough closed trades to judge, the correct answer is "not yet known." Never present its scores as predictions.
+What the autotrader actually does each run, in order: reconciles previous orders against the broker to learn what actually filled; verifies the market is open using the broker's clock; reads live account and position state; fetches daily bars for the watchlist, everything held, and the benchmark; scores each symbol; updates a trailing stop for every open position; decides exits; then decides entries.
+
+Signal model: moving-average structure, RSI, MACD, trend slope and volume confirmation, weighted differently depending on whether ADX classifies the market as trending or ranging, with a confidence floor below which it holds regardless of score. In a ranging market an oversold reading is NOT treated as a buy when the moving-average structure is already broken — that rule exists specifically so it does not buy falling knives.
+
+Risk controls, all enforced in code (risk.js): positions are sized so that being stopped out costs a fixed fraction of equity, which means position size follows from stop distance rather than being a fixed dollar amount; stops are set from ATR so they scale with each instrument's own volatility; stops trail upward with price and never loosen; total portfolio heat is capped, and positions with no known stop are counted at FULL value when measuring it; candidates too correlated with something already held are rejected as the same bet rather than diversification; illiquid and sub-minimum-price names are rejected on average dollar volume; and no new long is opened while the benchmark is below its long moving average, though exits always continue to run.
+
+Be accurate about what all this is. The risk controls are real and are the part most likely to matter. The signal model is conventional public-domain indicators on public data: no proven edge, no proprietary data, no backtest, no track record. Better risk management improves survival and consistency; it does not create predictive power, and you never imply it does.
+
+PERFORMANCE. Use get_performance for any question about how the trading is actually going. Never estimate from the trade log yourself. Every figure it returns carries a sample size and a reliability flag, and below 30 closed trades results are indistinguishable from luck — when you report a number from it, report that caveat in the same breath. If it returns zero closed trades, say exactly that: zero closed trades is not a zero result, it means nothing has completed a round-trip yet. Never annualize, extrapolate or project.
 
 Price sources, and the difference matters:
 - get_quote is Alpaca's LIVE price feed and covers any symbol. It is authoritative.
@@ -114,8 +136,9 @@ Rules for trading:
 - Always read live state (get_account / get_positions) before advising or acting. Never reason from remembered numbers.
 - Get a live quote before proposing or sizing any trade.
 - Before placing an order, state the reasoning: what the position is, why now, what the risk is. Pass that reasoning in the order's rationale field so it is recorded.
-- Exactly four guardrails are enforced in code, and no others: max trades per day, cooldown between trades, max daily loss, and max position size (an order whose dollar value cannot be determined is blocked). If an order is blocked, report exactly what blocked it and do not try to work around it by splitting the order, retrying, or restructuring it to slip under a limit.
-- Sizing: never propose a position that would exceed the configured max position size.
+- Four account-level guardrails are enforced in code on EVERY order, manual or automated: max trades per day, cooldown between trades, max daily loss, and max position size (an order whose dollar value cannot be determined is blocked outright rather than allowed through uncapped). Alpaca also independently blocks trading on a restricted account. If an order is blocked, report exactly what blocked it and do not work around it by splitting the order, retrying, or restructuring it to slip under a limit.
+- The risk filters in risk.js — sizing, heat, correlation, liquidity, market regime — apply to AUTOTRADER entries. They do not automatically gate an order you place by hand at the user's request. Say so if it matters to the answer; do not imply a manual order was vetted by checks that did not run on it.
+- Sizing: never propose a position that would exceed the configured max position size. If the user's per-position cap is small relative to their equity, that cap — not the risk model — is what determines size, and you say so plainly rather than describing sizing as risk-based when it is actually cap-bound.
 - Describe outcomes in terms of probability and risk, never certainty. Do not promise, imply, or project guaranteed returns, profit, or "can't lose" setups. Past performance and backtests do not predict future results, and you say so when it matters.
 - You are not a licensed financial advisor. For anything touching taxes, retirement accounts, or large real-money decisions, say that plainly.
 - Know which mode you are in. PAPER is simulated money. LIVE is real. If the account reports LIVE, say so explicitly in any message where you propose or place an order.`;
@@ -387,6 +410,27 @@ const CLAUDE_TOOLS = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: "get_performance",
+    description:
+      "Score the system's own closed trades: win rate, expectancy, profit factor, average R, max drawdown, and breakdowns by symbol, market regime and stated confidence. Every figure carries a sample size and a reliability flag — below 30 closed trades the results are noise and the tool says so. Use this for any question about how well the trading is going. Returns zero trades, honestly, when nothing has closed yet.",
+    input_schema: {
+      type: "object",
+      properties: {
+        reconcile: {
+          type: "boolean",
+          description:
+            "Ask the broker what submitted orders actually filled at before scoring. Default true. Without it, recent trades may be missing their fills and be excluded."
+        },
+        groupBy: {
+          type: "string",
+          enum: ["symbol", "regime", "confidence"],
+          description: "Optional breakdown dimension."
+        }
+      },
+      additionalProperties: false
+    }
   }
 ];
 
@@ -492,7 +536,63 @@ async function executeClaudeTool(name, input = {}) {
   if (name === "get_trade_log") {
     const limit = Math.min(Math.max(Number(input.limit) || 25, 1), 100);
     const entries = getTradeLog(limit);
-    return { count: entries.length, limits: TRADING_LIMITS, entries };
+    return {
+      count: entries.length,
+      limits: TRADING_LIMITS,
+      storage: tradeLogInfo(),
+      entries
+    };
+  }
+
+  if (name === "get_performance") {
+    let reconciled = null;
+    if (input.reconcile !== false) {
+      try {
+        reconciled = await reconcileFills({ limit: 60 });
+      } catch (e) {
+        reconciled = { error: String(e.message || e) };
+      }
+    }
+
+    // The whole log, oldest first — pairing needs the full history, not a
+    // recent window.
+    const log = getTradeLog(100000).slice().reverse();
+
+    // Stops live in the autotrader's own state, not in the trade log, so
+    // R multiples are only available where a stop was recorded with the
+    // decision. Anything else reports null rather than a guess.
+    const stops = autoTraderStops();
+    const stopPriceBySymbolAt = Object.fromEntries(
+      Object.entries(stops).map(([symbol, s]) => [symbol, s.stopPrice])
+    );
+
+    const paired = pairTrades(log);
+    const summary = summarize(paired.closed, { stopPriceBySymbolAt });
+    const curve = equityCurve(paired.closed, 0);
+
+    const groupers = {
+      symbol: keyBySymbol,
+      regime: keyByRegime,
+      confidence: keyByConfidenceBucket
+    };
+
+    return {
+      storage: tradeLogInfo(),
+      reconciled,
+      logEntries: log.length,
+      closedTrades: paired.closed.length,
+      openLots: paired.open.length,
+      unmatched: paired.unmatched,
+      unpriced: paired.unpriced,
+      summary,
+      drawdown: maxDrawdown(curve),
+      calibration: confidenceCalibration(paired.closed),
+      breakdown: input.groupBy
+        ? breakdown(paired.closed, groupers[input.groupBy], { stopPriceBySymbolAt })
+        : null,
+      honesty:
+        "Past results do not establish skill. Below 30 closed trades the dominant explanation for any figure here is luck, and the reliability flag says so explicitly. Report the caveat whenever you report the number."
+    };
   }
 
   throw new Error(`Unknown Claude tool: ${name}`);

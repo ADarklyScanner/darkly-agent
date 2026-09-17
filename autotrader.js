@@ -20,8 +20,14 @@
  * measured against the trade log, never as a prediction.
  */
 
-import fs from "node:fs";
-import path from "node:path";
+import {
+  readState,
+  writeState,
+  stateInfo,
+  appendLine,
+  tailLines,
+  archiveInfo
+} from "./state.js";
 
 import {
   getAccount,
@@ -29,17 +35,30 @@ import {
   getBars,
   getClock,
   placeOrder,
+  reconcileFills,
   LIMITS,
   isLiveEndpoint
 } from "./trading.js";
 
 import { scoreSymbol } from "./strategy.js";
 
+import {
+  positionSize,
+  atrStop,
+  chandelierStop,
+  portfolioHeat,
+  correlationCheck,
+  liquidityCheck,
+  marketFilter,
+  RISK_DEFAULTS
+} from "./risk.js";
+
 /* ------------------------------------------------------------------ *
  * Config
  * ------------------------------------------------------------------ */
 
-const STATE_FILE = path.join(process.env.HOME || ".", "darkly-autotrader.json");
+const STATE_FILE = "darkly-autotrader.json";
+const RUN_ARCHIVE = "darkly-runs.jsonl";
 
 export const CONFIG = {
   // off | signal_only | execute
@@ -61,23 +80,18 @@ export const CONFIG = {
  * ------------------------------------------------------------------ */
 
 function loadState() {
-  try {
-    if (fs.existsSync(STATE_FILE)) {
-      return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-    }
-  } catch (e) {
-    /* a corrupt state file must not be able to start trading */
+  const state = readState(STATE_FILE, null);
+  if (!state || typeof state !== "object") {
+    return { killSwitch: false, runs: [], lastRunAt: null };
   }
-  return { killSwitch: false, runs: [], lastRunAt: null };
+  return state;
 }
 
 function saveState(state) {
-  try {
-    const trimmed = { ...state, runs: (state.runs || []).slice(-100) };
-    fs.writeFileSync(STATE_FILE, JSON.stringify(trimmed, null, 2));
-  } catch (e) {
-    /* best effort; never let logging failure crash the loop */
-  }
+  // The hot state file holds only what a status check needs. Full run
+  // history goes to the append-only archive below, where it can grow
+  // indefinitely without this file ever getting slower to write.
+  writeState(STATE_FILE, { ...state, runs: (state.runs || []).slice(-40) });
 }
 
 export function getKillSwitch() {
@@ -94,11 +108,43 @@ export function setKillSwitch(on, reason = null) {
 }
 
 export function getRuns(limit = 20) {
+  // The archive is the complete record; the hot state is a fallback for
+  // the case where the archive has not been written yet.
+  const archived = tailLines(RUN_ARCHIVE, limit);
+  if (archived.length > 0) return archived.reverse();
+
   const runs = loadState().runs || [];
   return runs.slice(-limit).reverse();
 }
 
+/** How much history exists, and where. */
+export function getHistoryInfo() {
+  return {
+    ...stateInfo(),
+    archive: { file: RUN_ARCHIVE, ...archiveInfo(RUN_ARCHIVE) },
+    hotStateRuns: (loadState().runs || []).length,
+    note: "Run history is append-only and is never trimmed. Appending stays constant-time however large it grows, and reads seek from the end rather than loading the file."
+  };
+}
+
+/** Persist trailing stops without disturbing the run history. */
+function saveStops(stops) {
+  const state = loadState();
+  state.stops = stops;
+  saveState(state);
+}
+
+/** The trailing stop currently protecting each open position. */
+export function getStops() {
+  return loadState().stops || {};
+}
+
 function recordRun(run) {
+  // The archive is the permanent record and is written first: if the
+  // process dies between these two writes, the history survives and only
+  // the cached copy is stale.
+  appendLine(RUN_ARCHIVE, run);
+
   const state = loadState();
   state.runs = [...(state.runs || []), run];
   state.lastRunAt = run.startedAt;
@@ -183,6 +229,15 @@ export async function runOnce(options = {}) {
       return run;
     }
 
+    // Find out what previously submitted orders actually did. Until this
+    // runs, the trade log holds intentions only, and a log of intentions
+    // cannot be scored.
+    try {
+      run.reconciled = await reconcileFills({ limit: 60 });
+    } catch (e) {
+      run.errors.push(`Fill reconciliation failed: ${e.message}`);
+    }
+
     const held = new Map(positions.map((p) => [p.symbol, p]));
 
     // --- Universe: the watchlist plus anything currently held, because
@@ -190,14 +245,45 @@ export async function runOnce(options = {}) {
     const universe = Array.from(new Set([...CONFIG.universe, ...held.keys()]));
     run.universe = universe;
 
+    // The benchmark rides along in the same request: the market filter
+    // needs 200+ bars of it, and one extra symbol costs nothing.
+    const benchmarkSymbol = RISK_DEFAULTS.benchmarkSymbol;
+    const fetchList = Array.from(new Set([...universe, benchmarkSymbol]));
+
     let barsBySymbol = {};
     try {
-      barsBySymbol = await getBars({ symbols: universe, timeframe: "1Day", limit: 120 });
+      barsBySymbol = await getBars({
+        symbols: fetchList,
+        timeframe: "1Day",
+        limit: Math.max(250, RISK_DEFAULTS.benchmarkMaPeriod + 30)
+      });
     } catch (e) {
       run.skipped = `Could not fetch price history (${e.message}). Failing closed.`;
       run.errors.push(String(e.message || e));
       recordRun(run);
       return run;
+    }
+
+    // A feed that hands back a stub of history for everything is a fetch
+    // failure wearing the costume of a market condition. If nothing has
+    // enough history to analyse, no new position gets opened this run.
+    // Exits are unaffected: those are driven by live position P&L, not bars.
+    const MIN_BARS = 30;
+    const usable = universe.filter(
+      (s) => (barsBySymbol[s] || []).length >= MIN_BARS
+    );
+    const historyTrusted = usable.length > 0;
+
+    run.barCoverage = {
+      minBars: MIN_BARS,
+      usable: usable.length,
+      of: universe.length
+    };
+
+    if (!historyTrusted) {
+      run.errors.push(
+        `No symbol returned at least ${MIN_BARS} bars. Price history is being treated as unavailable, so no new positions will be opened. This is a data problem, not a market signal.`
+      );
     }
 
     // --- Score everything ---
@@ -212,6 +298,36 @@ export async function runOnce(options = {}) {
       );
     }
 
+    // --- Is the broad tape in an uptrend? ---
+    const market = marketFilter(barsBySymbol[benchmarkSymbol] || [], {});
+    run.market = { symbol: benchmarkSymbol, ...market };
+
+    // --- Trailing stops, carried across runs ---
+    //
+    // This is only possible now that state survives a restart. A trailing
+    // stop that resets every deploy is not a trailing stop, it is a
+    // decoration.
+    const stops = { ...(loadState().stops || {}) };
+
+    for (const position of positions) {
+      const bars = barsBySymbol[position.symbol];
+      if (!bars || bars.length < 20) continue;
+
+      const existing = stops[position.symbol]?.stopPrice ?? null;
+      const trail = chandelierStop(bars, { side: "buy", currentStop: existing });
+      if (!trail) continue;
+
+      if (trail.moved || existing === null) {
+        stops[position.symbol] = {
+          stopPrice: trail.effectiveStop,
+          updatedAt: new Date().toISOString(),
+          basis: trail.basis
+        };
+      }
+    }
+
+    run.stops = stops;
+
     // --- Decide ---
     const decisions = [];
 
@@ -220,10 +336,17 @@ export async function runOnce(options = {}) {
     for (const position of positions) {
       const signal = run.signals.find((s) => s.symbol === position.symbol);
       const pnlPercent = Number(position.unrealizedPlPercent);
+      const price = Number(position.currentPrice ?? position.current_price);
+      const trailing = stops[position.symbol]?.stopPrice ?? null;
 
       let exitReason = null;
 
-      if (pnlPercent <= -Math.abs(CONFIG.stopLossPercent)) {
+      // A breached trailing stop comes first: it is the exit that stops a
+      // winner round-tripping into a loser, which the percentage stop
+      // below cannot see because it only measures distance from entry.
+      if (trailing !== null && Number.isFinite(price) && price <= trailing) {
+        exitReason = `Trailing stop hit: ${price} at or below ${trailing} (${stops[position.symbol].basis}).`;
+      } else if (pnlPercent <= -Math.abs(CONFIG.stopLossPercent)) {
         exitReason = `Stop loss: position is ${pnlPercent}% against a -${CONFIG.stopLossPercent}% limit.`;
       } else if (pnlPercent >= Math.abs(CONFIG.takeProfitPercent)) {
         exitReason = `Take profit: position is +${pnlPercent}% against a +${CONFIG.takeProfitPercent}% target.`;
@@ -242,44 +365,144 @@ export async function runOnce(options = {}) {
       }
     }
 
-    // Entries, best score first, subject to how much room is left.
-    const openAfterExits =
-      positions.length - decisions.filter((d) => d.side === "sell").length;
+    // --- Entries ---
+    const exiting = new Set(
+      decisions.filter((d) => d.side === "sell").map((d) => d.symbol)
+    );
+
+    const openAfterExits = positions.length - exiting.size;
     let room = Math.max(0, CONFIG.maxPositions - openAfterExits);
 
-    const candidates = run.signals
-      .filter((s) => /buy/.test(s.action) && !held.has(s.symbol))
-      .sort((a, b) => b.score - a.score);
+    // Current portfolio heat, counting only what we will still hold.
+    const surviving = positions.filter((p) => !exiting.has(p.symbol));
+    const heat = portfolioHeat(
+      surviving,
+      account.equity,
+      Object.fromEntries(
+        Object.entries(stops).map(([k, v]) => [k, v.stopPrice])
+      )
+    );
+    run.heat = heat;
+
+    let projectedHeatPercent = heat.ok ? heat.heatPercent : null;
+
+    const rejected = [];
+    const candidates =
+      historyTrusted && market.ok
+        ? run.signals
+            .filter((s) => /buy/.test(s.action) && !held.has(s.symbol))
+            .sort((a, b) => b.score - a.score)
+        : [];
+
+    if (historyTrusted && !market.ok) {
+      run.note = market.reason;
+    }
+
+    // Bars of what we will still hold, for the correlation test.
+    const heldBars = {};
+    for (const p of surviving) {
+      if (barsBySymbol[p.symbol]) heldBars[p.symbol] = barsBySymbol[p.symbol];
+    }
 
     for (const signal of candidates) {
-      if (room <= 0) break;
-
-      // Size in dollars, never shares. A notional order has an exactly
-      // known value, so the position-size guardrail can evaluate it
-      // without depending on a quote lookup that might fail.
-      const notional = Math.min(
-        CONFIG.positionUsd,
-        LIMITS.maxPositionUsd,
-        Math.max(0, account.cash - 1)
-      );
-
-      if (notional < 1) {
-        run.errors.push(`Insufficient cash to open ${signal.symbol}.`);
+      if (room <= 0) {
+        rejected.push({ symbol: signal.symbol, reason: "No position slots left." });
         break;
+      }
+
+      const bars = barsBySymbol[signal.symbol];
+
+      // 1. Is it tradable at all?
+      const liquidity = liquidityCheck(bars, {});
+      if (!liquidity.ok) {
+        rejected.push({ symbol: signal.symbol, reason: liquidity.reason, stage: "liquidity" });
+        continue;
+      }
+
+      // 2. Is it actually a new bet?
+      const corr = correlationCheck(bars, heldBars, {});
+      if (!corr.ok) {
+        rejected.push({ symbol: signal.symbol, reason: corr.reason, stage: "correlation" });
+        continue;
+      }
+
+      // 3. Where does the exit go, and therefore how big can this be?
+      const stop = atrStop(bars, { side: "buy" });
+      if (!stop) {
+        rejected.push({ symbol: signal.symbol, reason: "No stop could be computed.", stage: "stop" });
+        continue;
+      }
+
+      const size = positionSize({
+        equity: account.equity,
+        price: Number(bars[bars.length - 1].c),
+        stopPrice: stop.stopPrice,
+        cash: account.cash,
+        maxPositionUsd: Math.min(CONFIG.positionUsd, LIMITS.maxPositionUsd)
+      });
+
+      if (!size.ok) {
+        rejected.push({ symbol: signal.symbol, reason: size.reason, stage: "sizing" });
+        continue;
+      }
+
+      // 4. Does the portfolio have room for this much risk?
+      const addedHeat = (size.actualRiskUsd / account.equity) * 100;
+      if (
+        projectedHeatPercent !== null &&
+        projectedHeatPercent + addedHeat > RISK_DEFAULTS.maxPortfolioHeatPercent
+      ) {
+        rejected.push({
+          symbol: signal.symbol,
+          stage: "heat",
+          reason: `Portfolio heat would reach ${(projectedHeatPercent + addedHeat).toFixed(2)}%, over the ${RISK_DEFAULTS.maxPortfolioHeatPercent}% ceiling.`
+        });
+        continue;
       }
 
       decisions.push({
         symbol: signal.symbol,
         side: "buy",
-        notional: Number(notional.toFixed(2)),
-        reason: signal.reason,
+        notional: size.notional,
+        shares: size.shares,
+        stopPrice: stop.stopPrice,
+        risk: {
+          riskUsd: size.actualRiskUsd,
+          riskPercentOfEquity: size.riskPercentOfEquity,
+          stopPercent: size.stopPercent,
+          boundBy: size.boundBy,
+          basis: stop.basis
+        },
+        correlation: { max: corr.maxCorrelation, against: corr.against },
+        liquidity: { avgDollarVolume: liquidity.avgDollarVolume },
+        reason: `${signal.reason} Sized to risk $${size.actualRiskUsd} (${size.riskPercentOfEquity}% of equity) with a stop at ${stop.stopPrice} (${stop.basis}).`,
         signal
       });
 
+      if (projectedHeatPercent !== null) projectedHeatPercent += addedHeat;
+      heldBars[signal.symbol] = bars;
       room--;
     }
 
+    run.rejected = rejected;
+    run.projectedHeatPercent =
+      projectedHeatPercent === null ? null : Number(projectedHeatPercent.toFixed(3));
     run.decisions = decisions;
+
+    // Remember the stops for the next run, and seed stops for anything
+    // being opened now so the first trailing update has a floor to ratchet
+    // from rather than inventing one.
+    for (const d of decisions) {
+      if (d.side === "buy" && d.stopPrice) {
+        stops[d.symbol] = {
+          stopPrice: d.stopPrice,
+          updatedAt: new Date().toISOString(),
+          basis: d.risk?.basis || "initial ATR stop"
+        };
+      }
+      if (d.side === "sell") delete stops[d.symbol];
+    }
+    saveStops(stops);
 
     // --- Act, or don't ---
     if (mode !== "execute") {
@@ -300,7 +523,14 @@ export async function runOnce(options = {}) {
           type: "market",
           qty: decision.side === "sell" ? decision.qty : undefined,
           notional: decision.side === "buy" ? decision.notional : undefined,
-          rationale: `[autotrader ${CONFIG.aggressiveness}] ${decision.reason}`
+          rationale: `[autotrader ${CONFIG.aggressiveness}] ${decision.reason}`,
+
+          // Carry the decision's context into the trade log so the trade
+          // can be scored later against what it was expected to do. A log
+          // without the stop price cannot express an outcome in R.
+          signal: decision.signal
+            ? { ...decision.signal, stopPrice: decision.stopPrice ?? decision.signal.stopPrice }
+            : null
         });
 
         decision.result = result;
@@ -379,6 +609,25 @@ export function getStatus() {
     killSwitchReason: state.killSwitchReason || null,
     lastRunAt: state.lastRunAt || null,
     tradingMode: isLiveEndpoint() ? "LIVE" : "PAPER",
-    guardrails: LIMITS
+    guardrails: LIMITS,
+
+    // Risk controls are part of the system's identity, not a footnote.
+    // Anything describing what this thing does should be able to see them.
+    risk: {
+      riskPerTradePercent: RISK_DEFAULTS.riskPerTradePercent,
+      maxPortfolioHeatPercent: RISK_DEFAULTS.maxPortfolioHeatPercent,
+      maxCorrelation: RISK_DEFAULTS.maxCorrelation,
+      minDollarVolume: RISK_DEFAULTS.minDollarVolume,
+      minPrice: RISK_DEFAULTS.minPrice,
+      atrStopMultiple: RISK_DEFAULTS.atrStopMultiple,
+      atrTrailMultiple: RISK_DEFAULTS.atrTrailMultiple,
+      benchmark: RISK_DEFAULTS.benchmarkSymbol,
+      benchmarkMaPeriod: RISK_DEFAULTS.benchmarkMaPeriod
+    },
+
+    trailingStops: state.stops || {},
+
+    // Whether any of this is actually being remembered.
+    storage: getHistoryInfo()
   };
 }

@@ -139,6 +139,91 @@ export function atr(bars, period = 14) {
   return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
 }
 
+/**
+ * Wilder's ADX with directional indicators.
+ *
+ * ADX measures how strongly a market is trending without saying which way,
+ * which is exactly what a regime classifier needs. It replaces the ad-hoc
+ * "moving-average spread plus slope" heuristic this file used before —
+ * that number worked, but it was invented here, which means its thresholds
+ * were tuned against synthetic test data and nothing else. ADX is the
+ * measure practitioners actually use, its conventional thresholds (below
+ * 20 rangebound, above 25 trending) come from decades of use rather than
+ * from my calibration loop, and it separates trend strength from trend
+ * direction instead of conflating them.
+ *
+ * Returns { adx, plusDI, minusDI } or null.
+ */
+export function adx(bars, period = 14) {
+  if (!Array.isArray(bars) || bars.length < period * 2 + 1) return null;
+
+  const plusDM = [];
+  const minusDM = [];
+  const trs = [];
+
+  for (let i = 1; i < bars.length; i++) {
+    const h = Number(bars[i].h);
+    const l = Number(bars[i].l);
+    const ph = Number(bars[i - 1].h);
+    const pl = Number(bars[i - 1].l);
+    const pc = Number(bars[i - 1].c);
+
+    if (![h, l, ph, pl, pc].every(Number.isFinite)) return null;
+
+    const up = h - ph;
+    const down = pl - l;
+
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+
+  if (trs.length < period * 2) return null;
+
+  // Wilder smoothing: seed with a sum, then decay.
+  const smooth = (arr) => {
+    const out = [];
+    let acc = arr.slice(0, period).reduce((a, b) => a + b, 0);
+    out.push(acc);
+    for (let i = period; i < arr.length; i++) {
+      acc = acc - acc / period + arr[i];
+      out.push(acc);
+    }
+    return out;
+  };
+
+  const sTR = smooth(trs);
+  const sPlus = smooth(plusDM);
+  const sMinus = smooth(minusDM);
+
+  const dxs = [];
+  for (let i = 0; i < sTR.length; i++) {
+    if (sTR[i] === 0) continue;
+    const pdi = (sPlus[i] / sTR[i]) * 100;
+    const mdi = (sMinus[i] / sTR[i]) * 100;
+    const sum = pdi + mdi;
+    if (sum === 0) continue;
+    dxs.push((Math.abs(pdi - mdi) / sum) * 100);
+  }
+
+  if (dxs.length < period) return null;
+
+  let adxValue = dxs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < dxs.length; i++) {
+    adxValue = (adxValue * (period - 1) + dxs[i]) / period;
+  }
+
+  const last = sTR.length - 1;
+  const plusDI = sTR[last] ? (sPlus[last] / sTR[last]) * 100 : null;
+  const minusDI = sTR[last] ? (sMinus[last] / sTR[last]) * 100 : null;
+
+  return {
+    adx: Number(adxValue.toFixed(2)),
+    plusDI: plusDI === null ? null : Number(plusDI.toFixed(2)),
+    minusDI: minusDI === null ? null : Number(minusDI.toFixed(2))
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * Scoring
  * ------------------------------------------------------------------ */
@@ -207,10 +292,27 @@ export function scoreSymbol(symbol, bars, options = {}) {
       ? ((ind.sma20 - ind.sma50) / ind.sma50) * 100
       : 0;
 
-  const trendStrength = Math.abs(maSpread) + Math.abs(ind.trendSlope ?? 0) * 2;
-  const regime = trendStrength >= 3.5 ? "trending" : "ranging";
+  const legacyStrength = Math.abs(maSpread) + Math.abs(ind.trendSlope ?? 0) * 2;
+  ind.adx = adx(bars, 14);
+  ind.trendStrength = Number(legacyStrength.toFixed(3));
+
+  // ADX decides when it is available, on its conventional thresholds.
+  // Between 20 and 25 the measure itself is saying "unclear", so the
+  // older heuristic breaks the tie rather than a coin flip.
+  let regime;
+  if (ind.adx && Number.isFinite(ind.adx.adx)) {
+    if (ind.adx.adx >= 25) regime = "trending";
+    else if (ind.adx.adx <= 20) regime = "ranging";
+    else regime = legacyStrength >= 3.5 ? "trending" : "ranging";
+    ind.regimeBasis = `ADX ${ind.adx.adx}`;
+  } else {
+    regime = legacyStrength >= 3.5 ? "trending" : "ranging";
+    ind.regimeBasis = "MA spread and slope (ADX unavailable)";
+  }
+
   ind.marketRegime = regime;
-  ind.trendStrength = Number(trendStrength.toFixed(3));
+  ind.atrPercent =
+    ind.atr14 && price ? Number(((ind.atr14 / price) * 100).toFixed(3)) : null;
 
   const votes = [];
   const trending = regime === "trending";
@@ -270,6 +372,20 @@ export function scoreSymbol(symbol, bars, options = {}) {
       name: "trend",
       weight: trending ? 0.25 : 0.15,
       value: clamp(50 + ind.trendSlope * 25, 0, 100)
+    });
+  }
+
+  // Volume confirmation. A move on heavy volume reflects more
+  // participation than the same move on thin volume. It only ever
+  // confirms an existing move — it never generates direction on its own,
+  // so a flat day votes neutral regardless of how heavy the tape was.
+  if (ind.volumeRatio !== null && ind.changePercent !== null) {
+    const conviction = clamp((ind.volumeRatio - 1) / 1.5, -0.5, 1);
+    const direction = Math.sign(ind.changePercent);
+    votes.push({
+      name: "volume_confirm",
+      weight: 0.1,
+      value: clamp(50 + direction * conviction * 30, 0, 100)
     });
   }
 
