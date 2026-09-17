@@ -36,6 +36,7 @@ import {
   getClock,
   placeOrder,
   reconcileFills,
+  getAssetInfo,
   LIMITS,
   isLiveEndpoint
 } from "./trading.js";
@@ -412,21 +413,44 @@ export async function runOnce(options = {}) {
 
       const bars = barsBySymbol[signal.symbol];
 
-      // 1. Is it tradable at all?
+      // 1. Will Alpaca even accept a buy in this name? This is structural
+      //    tradability (not delisted, not disabled) — it is NOT live halt
+      //    detection, which needs data this account tier does not have. A
+      //    lookup failure blocks rather than assumes the name is fine.
+      try {
+        const asset = await getAssetInfo(signal.symbol);
+        if (!asset.tradable || asset.status !== "active") {
+          rejected.push({
+            symbol: signal.symbol,
+            reason: `Not tradable on Alpaca (status: ${asset.status}, tradable: ${asset.tradable}).`,
+            stage: "tradability"
+          });
+          continue;
+        }
+      } catch (e) {
+        rejected.push({
+          symbol: signal.symbol,
+          reason: `Could not verify tradability: ${e.message}`,
+          stage: "tradability"
+        });
+        continue;
+      }
+
+      // 2. Is it liquid enough to trade without the spread eating the edge?
       const liquidity = liquidityCheck(bars, {});
       if (!liquidity.ok) {
         rejected.push({ symbol: signal.symbol, reason: liquidity.reason, stage: "liquidity" });
         continue;
       }
 
-      // 2. Is it actually a new bet?
+      // 3. Is it actually a new bet?
       const corr = correlationCheck(bars, heldBars, {});
       if (!corr.ok) {
         rejected.push({ symbol: signal.symbol, reason: corr.reason, stage: "correlation" });
         continue;
       }
 
-      // 3. Where does the exit go, and therefore how big can this be?
+      // 4. Where does the exit go, and therefore how big can this be?
       const stop = atrStop(bars, { side: "buy" });
       if (!stop) {
         rejected.push({ symbol: signal.symbol, reason: "No stop could be computed.", stage: "stop" });
@@ -446,7 +470,7 @@ export async function runOnce(options = {}) {
         continue;
       }
 
-      // 4. Does the portfolio have room for this much risk?
+      // 5. Does the portfolio have room for this much risk?
       const addedHeat = (size.actualRiskUsd / account.equity) * 100;
       if (
         projectedHeatPercent !== null &&

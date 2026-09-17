@@ -491,6 +491,42 @@ export async function cancelOrder(input = {}) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Asset tradability
+ *
+ * NAMING NOTE, kept deliberately literal: this is NOT live halt
+ * detection. Alpaca's /assets endpoint reports whether a symbol is
+ * structurally tradable on Alpaca at all (exists, is active, is not
+ * delisted or otherwise disabled) — it does not report an in-progress
+ * intraday trading halt, which needs the real-time trade/quote feed to
+ * see and which this account tier does not have. Calling this "halt
+ * detection" would be exactly the kind of overstated capability this
+ * codebase exists to avoid. What it DOES catch, which is real and worth
+ * catching: a delisted symbol, a typo'd or unsupported ticker, or a
+ * name Alpaca has otherwise disabled for trading — all of which
+ * previously would have been discovered only by the order failing (or
+ * worse, appearing to succeed against a name that silently doesn't
+ * behave the way the caller expects).
+ * ------------------------------------------------------------------ */
+
+export async function getAssetInfo(symbol) {
+  const sym = String(symbol || "").trim().toUpperCase();
+  if (!sym) throw new Error("symbol is required.");
+
+  const a = await alpacaRequest("GET", `/assets/${encodeURIComponent(sym)}`);
+
+  return {
+    symbol: a.symbol,
+    tradable: Boolean(a.tradable),
+    status: a.status, // "active" | "inactive"
+    exchange: a.exchange || null,
+    shortable: Boolean(a.shortable),
+    easyToBorrow: Boolean(a.easy_to_borrow),
+    fractionable: Boolean(a.fractionable),
+    marginable: Boolean(a.marginable)
+  };
+}
+
+/* ------------------------------------------------------------------ *
  * Guardrails
  *
  * Enforced in code before anything reaches Alpaca. These exist so an
@@ -558,13 +594,34 @@ async function checkGuardrails(order) {
     );
   }
 
+  // 5. Asset tradability. A sell that reduces or closes an existing
+  // position is let through even if the asset now reports untradable —
+  // otherwise a symbol Alpaca disables mid-position would trap the
+  // account in it with no way to exit through this code path. A buy
+  // gets no such exception: opening a new position in a name Alpaca
+  // will not stand behind is exactly what this exists to stop.
+  let assetInfo = null;
+  if (order.side === "buy") {
+    try {
+      assetInfo = await getAssetInfo(order.symbol);
+      if (!assetInfo.tradable || assetInfo.status !== "active") {
+        blocks.push(
+          `${order.symbol} is not tradable on Alpaca right now (status: ${assetInfo.status}, tradable: ${assetInfo.tradable}). This checks structural tradability, not an intraday halt — an actively halted-but-otherwise-listed name would not be caught here.`
+        );
+      }
+    } catch (e) {
+      blocks.push(`Could not verify ${order.symbol}'s tradability with Alpaca: ${e.message}`);
+    }
+  }
+
   return {
     ok: blocks.length === 0,
     blocks,
     context: {
       tradesToday: today.length,
       estimatedUsd,
-      dayPnl: account ? account.dayPnl : null
+      dayPnl: account ? account.dayPnl : null,
+      assetInfo
     }
   };
 }

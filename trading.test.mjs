@@ -16,7 +16,22 @@
 process.env.ALPACA_KEY_ID = "TEST_KEY";
 process.env.ALPACA_SECRET_KEY = "TEST_SECRET";
 
-const { barsLookbackDays, getBars } = await import("./trading.js");
+// state.js resolves and MEMOIZES its directory on first use — set this
+// before anything in this file can trigger a trade-log write, so tests
+// never touch a real trade log on whatever machine runs them.
+import os from "node:os";
+import path from "node:path";
+process.env.DARKLY_STATE_DIR = path.join(os.tmpdir(), `darkly-trading-test-${process.pid}`);
+
+// The guardrail tests below place several orders in the same run to
+// exercise the tradability guardrail in isolation. The cooldown and
+// daily-trade-count guardrails are real and tested through their own
+// path elsewhere in this codebase's design (checkGuardrails) — pinning
+// them off here keeps this file's asserts about tradability, not timing.
+process.env.TRADE_COOLDOWN_MINUTES = "0";
+process.env.MAX_TRADES_PER_DAY = "1000";
+
+const { barsLookbackDays, getBars, getAssetInfo, placeOrder } = await import("./trading.js");
 
 let pass = 0;
 let fail = 0;
@@ -135,6 +150,148 @@ try {
 check("empty symbol list throws rather than querying", threw);
 
 globalThis.fetch = realFetch;
+
+/* ------------------------------------------------------------------ *
+ * Asset tradability
+ *
+ * Naming discipline matters here specifically: this is a check of
+ * structural tradability (delisted / inactive / unsupported), not live
+ * halt detection, and the tests below exist partly to pin that the
+ * function never claims more than it verifies.
+ * ------------------------------------------------------------------ */
+
+console.log("\ngetAssetInfo");
+
+function stubByUrl(routes) {
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    for (const [pattern, respond] of routes) {
+      if (pattern.test(u)) {
+        const r = respond(u, opts);
+        return { ok: r.status === undefined || (r.status >= 200 && r.status < 300), status: r.status ?? 200, text: async () => JSON.stringify(r.body ?? r) };
+      }
+    }
+    throw new Error(`Unhandled stubbed URL in test: ${u}`);
+  };
+}
+
+{
+  const seenUrls = [];
+  globalThis.fetch = async (url) => {
+    seenUrls.push(String(url));
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        symbol: "AAPL",
+        tradable: true,
+        status: "active",
+        exchange: "NASDAQ",
+        shortable: true,
+        easy_to_borrow: true,
+        fractionable: true,
+        marginable: true
+      })
+    };
+  };
+
+  const info = await getAssetInfo("aapl");
+  check("the request URL uses the UPPERCASED symbol", /\/assets\/AAPL$/.test(seenUrls[0]), seenUrls[0]);
+  check("tradable is read as a real boolean", info.tradable === true);
+  check("status passes through", info.status === "active");
+  check("snake_case fields are translated to camelCase", info.easyToBorrow === true && info.fractionable === true);
+}
+
+{
+  let threw = null;
+  try { await getAssetInfo(""); } catch (e) { threw = e; }
+  check("an empty symbol throws rather than requesting '/assets/'", threw !== null);
+}
+
+globalThis.fetch = realFetch;
+
+/* ------------------------------------------------------------------ *
+ * The tradability guardrail, exercised through placeOrder() — this is
+ * the actual code path that protects both manual and autotrader orders.
+ * ------------------------------------------------------------------ */
+
+console.log("\nplaceOrder() tradability guardrail");
+
+const ACCOUNT_OK = {
+  account_number: "TEST",
+  status: "ACTIVE",
+  currency: "USD",
+  equity: "100000",
+  last_equity: "100000",
+  cash: "50000",
+  buying_power: "100000",
+  pattern_day_trader: false,
+  trading_blocked: false
+};
+
+{
+  stubByUrl([
+    [/\/account$/, () => ({ body: ACCOUNT_OK })],
+    [/\/assets\/UNTRADABLE$/, () => ({ body: { symbol: "UNTRADABLE", tradable: false, status: "inactive" } })]
+  ]);
+
+  const result = await placeOrder({ symbol: "UNTRADABLE", side: "buy", notional: 100, rationale: "test" });
+
+  check("a buy in an inactive/untradable symbol is blocked, not silently placed", result.placed === false);
+  check("the block names the actual reason", result.blockedBy.some((b) => /not tradable/i.test(b)), result.blockedBy);
+  check("the guardrail context records what was found", result.guardrailContext.assetInfo.status === "inactive");
+
+  globalThis.fetch = realFetch;
+}
+
+{
+  stubByUrl([
+    [/\/account$/, () => ({ body: ACCOUNT_OK })],
+    [/\/assets\/GOOD$/, () => ({ body: { symbol: "GOOD", tradable: true, status: "active" } })],
+    [/\/orders$/, () => ({ body: { id: "order_1", symbol: "GOOD", side: "buy", type: "market", status: "accepted", submitted_at: new Date().toISOString(), qty: null, notional: "100" } })]
+  ]);
+
+  const result = await placeOrder({ symbol: "GOOD", side: "buy", notional: 100, rationale: "test" });
+  check("a buy in a tradable, active symbol is allowed through this guardrail", result.placed === true, JSON.stringify(result));
+
+  globalThis.fetch = realFetch;
+}
+
+{
+  // Fail closed: if Alpaca can't be asked, the order does not go through
+  // on the assumption that silence means "fine".
+  stubByUrl([
+    [/\/account$/, () => ({ body: ACCOUNT_OK })],
+    [/\/assets\/UNKNOWN$/, () => ({ status: 404, body: { message: "asset not found" } })]
+  ]);
+
+  const result = await placeOrder({ symbol: "UNKNOWN", side: "buy", notional: 100, rationale: "test" });
+  check("an asset lookup failure blocks the buy rather than assuming it's fine", result.placed === false);
+  check("the block explains it as an inability to verify, not a false claim of untradability",
+    result.blockedBy.some((b) => /could not verify/i.test(b)), result.blockedBy);
+
+  globalThis.fetch = realFetch;
+}
+
+{
+  // The one deliberate exception: a SELL that reduces/closes a position
+  // must not be trapped by a symbol Alpaca has since disabled — otherwise
+  // this guardrail would make an existing position impossible to exit.
+  stubByUrl([
+    [/\/account$/, () => ({ body: ACCOUNT_OK })],
+    [/\/orders$/, () => ({ body: { id: "order_2", symbol: "DELISTED", side: "sell", type: "market", status: "accepted", submitted_at: new Date().toISOString(), qty: "10", notional: null } })]
+  ]);
+
+  const result = await placeOrder({ symbol: "DELISTED", side: "sell", notional: 100, rationale: "exiting" });
+  // No /assets/ route was registered above, so if the guardrail incorrectly
+  // called getAssetInfo for a sell, that call would throw ("unhandled
+  // stubbed URL"), get caught, and turn into a block — placed would be
+  // false. Its being true here is itself proof the assets endpoint was
+  // never called for this sell.
+  check("a sell is never blocked by the tradability check, so an exit is always possible", result.placed === true, JSON.stringify(result));
+
+  globalThis.fetch = realFetch;
+}
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);

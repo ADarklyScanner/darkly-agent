@@ -100,7 +100,8 @@ const world = {
   positions: [],
   equity: 100_000,
   cash: 100_000,
-  orders: []
+  orders: [],
+  untradableSymbols: []
 };
 
 const placed = [];
@@ -134,6 +135,21 @@ function stubMarket() {
 
     if (u.includes("/positions")) {
       return json(world.positions);
+    }
+
+    if (u.includes("/assets/")) {
+      const symbol = decodeURIComponent(u.split("/assets/")[1] || "");
+      const untradable = world.untradableSymbols.includes(symbol);
+      return json({
+        symbol,
+        tradable: !untradable,
+        status: untradable ? "inactive" : "active",
+        exchange: "TEST",
+        shortable: true,
+        easy_to_borrow: true,
+        fractionable: true,
+        marginable: true
+      });
     }
 
     if (u.includes("/stocks/bars")) {
@@ -178,6 +194,7 @@ function reset(overrides = {}) {
   world.positions = [];
   world.equity = 100_000;
   world.cash = 100_000;
+  world.untradableSymbols = [];
   Object.assign(world, overrides);
   stubMarket();
 }
@@ -238,6 +255,22 @@ check("a sub-$5 name is rejected", rejectedSymbols.DDD?.stage === "liquidity",
 check("rejections explain themselves",
   (live.rejected || []).every((r) => typeof r.reason === "string" && r.reason.length > 10));
 check("nothing illiquid was bought", !placed.some((p) => p.symbol === "CCC" || p.symbol === "DDD"));
+
+/* ------------------------------------------------------------------ */
+
+console.log("\nA structurally untradable name is rejected before liquidity is even checked");
+
+reset({ untradableSymbols: ["AAA"] });
+const untradableRun = await runOnce({ mode: "execute", force: true });
+const aaaRejection = (untradableRun.rejected || []).find((r) => r.symbol === "AAA");
+
+check("AAA (otherwise the strongest signal) is rejected for tradability, not scored past it",
+  aaaRejection && aaaRejection.stage === "tradability", JSON.stringify(aaaRejection));
+check("the rejection names what was found", /not tradable/i.test(aaaRejection?.reason || ""), aaaRejection?.reason);
+check("AAA was never bought", !placed.some((p) => p.symbol === "AAA"));
+check("a healthy, unrelated symbol is unaffected by another symbol's tradability rejection",
+  untradableRun.decisions.some((d) => d.side === "buy" && d.symbol === "BBB"),
+  JSON.stringify(untradableRun.decisions));
 
 /* ------------------------------------------------------------------ */
 

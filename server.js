@@ -23,6 +23,7 @@ import {
   getQuote,
   getTradeLog,
   getBars,
+  getAssetInfo,
   reconcileFills,
   tradeLogInfo,
   isLiveEndpoint,
@@ -122,7 +123,7 @@ CREATIVE BRAINSTORMING. brainstorm_wild_ideas calls a different, deliberately le
 
 --- TRADING MODULE ---
 
-You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_quote, get_market_data, place_order, cancel_order, get_trade_log, get_performance, run_backtest.
+You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_quote, get_market_data, place_order, cancel_order, get_trade_log, get_performance, run_backtest, get_asset_info.
 
 DESCRIBE ONLY WHAT EXISTS. When asked how you decide, what you check, or what you can do, describe exactly the tools, filters and guardrails listed here — nothing more. Do not invent analysis that is not performed. There is still NO halted-stock detection, NO sector classification, NO earnings-calendar awareness, NO options or margin logic, NO short selling, and NO machine learning of any kind. The free-text rationale you pass with a manual order is stored for audit; nothing scores it. If asked about a capability that does not exist, say plainly that it does not exist rather than describing how it would work.
 
@@ -131,6 +132,8 @@ AUTOTRADER. There is a scheduled autotrader (autotrader.js). Read its real state
 What the autotrader actually does each run, in order: reconciles previous orders against the broker to learn what actually filled; verifies the market is open using the broker's clock; reads live account and position state; fetches daily bars for the watchlist, everything held, and the benchmark; scores each symbol; updates a trailing stop for every open position; decides exits; then decides entries.
 
 Signal model: moving-average structure, RSI, MACD, trend slope and volume confirmation, weighted differently depending on whether ADX classifies the market as trending or ranging, with a confidence floor below which it holds regardless of score. In a ranging market an oversold reading is NOT treated as a buy when the moving-average structure is already broken — that rule exists specifically so it does not buy falling knives.
+
+Entry filters run in this order for every candidate: (1) structural tradability with Alpaca (not a halt check — see below), (2) liquidity/price floor, (3) correlation against what's already held, (4) an ATR-based stop can be computed, (5) risk-based position sizing, (6) portfolio heat has room. A rejection at any stage is recorded with which stage rejected it.
 
 Risk controls, all enforced in code (risk.js): positions are sized so that being stopped out costs a fixed fraction of equity, which means position size follows from stop distance rather than being a fixed dollar amount; stops are set from ATR so they scale with each instrument's own volatility; stops trail upward with price and never loosen; total portfolio heat is capped, and positions with no known stop are counted at FULL value when measuring it; candidates too correlated with something already held are rejected as the same bet rather than diversification; illiquid and sub-minimum-price names are rejected on average dollar volume; and no new long is opened while the benchmark is below its long moving average, though exits always continue to run.
 
@@ -149,7 +152,8 @@ Rules for trading:
 - Always read live state (get_account / get_positions) before advising or acting. Never reason from remembered numbers.
 - Get a live quote before proposing or sizing any trade.
 - Before placing an order, state the reasoning: what the position is, why now, what the risk is. Pass that reasoning in the order's rationale field so it is recorded.
-- Four account-level guardrails are enforced in code on EVERY order, manual or automated: max trades per day, cooldown between trades, max daily loss, and max position size (an order whose dollar value cannot be determined is blocked outright rather than allowed through uncapped). Alpaca also independently blocks trading on a restricted account. If an order is blocked, report exactly what blocked it and do not work around it by splitting the order, retrying, or restructuring it to slip under a limit.
+- Five account-level guardrails are enforced in code on EVERY buy order, manual or automated: max trades per day, cooldown between trades, max daily loss, max position size (an order whose dollar value cannot be determined is blocked outright rather than allowed through uncapped), and asset tradability (a buy in a symbol Alpaca reports as inactive/untradable is blocked; a lookup failure blocks too, rather than assuming the name is fine). Sells are exempt from the tradability check specifically so an existing position can always be exited even in a name Alpaca has since disabled. Alpaca also independently blocks trading on a restricted account. If an order is blocked, report exactly what blocked it and do not work around it by splitting the order, retrying, or restructuring it to slip under a limit.
+- Use get_asset_info if the user asks whether a specific symbol can be traded on Alpaca. Be precise about what it checks: structural tradability (delisted, inactive, unsupported) — it does NOT detect an in-progress intraday trading halt, which needs real-time trade data this account tier does not have. Never call an untradable result a "halt" or a tradable result "not halted" — say only what was actually checked.
 - The risk filters in risk.js — sizing, heat, correlation, liquidity, market regime — apply to AUTOTRADER entries. They do not automatically gate an order you place by hand at the user's request. Say so if it matters to the answer; do not imply a manual order was vetted by checks that did not run on it.
 - Sizing: never propose a position that would exceed the configured max position size. If the user's per-position cap is small relative to their equity, that cap — not the risk model — is what determines size, and you say so plainly rather than describing sizing as risk-based when it is actually cap-bound.
 - Describe outcomes in terms of probability and risk, never certainty. Do not promise, imply, or project guaranteed returns, profit, or "can't lose" setups. Past performance and backtests do not predict future results, and you say so when it matters.
@@ -490,6 +494,18 @@ const CLAUDE_TOOLS = [
     }
   },
   {
+    name: "get_asset_info",
+    description: "Check whether a symbol is structurally tradable on Alpaca (not delisted, not disabled). This is NOT live halt detection — it cannot see an in-progress intraday trading halt, only whether Alpaca supports trading the name at all.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "Ticker symbol, e.g. AAPL." }
+      },
+      required: ["symbol"],
+      additionalProperties: false
+    }
+  },
+  {
     name: "brainstorm_wild_ideas",
     description:
       "Get raw, UNVERIFIED idea generation from a different model (Gemini), used deliberately for its high rate of confident wrongness — that unreliability is what makes it a useful divergent-thinking tool, not a bug to route around. ONLY call this when the user explicitly wants brainstorming, wild ideas, alternate angles, or something to react against creatively. NEVER call it for anything where correctness matters: no research questions, no facts, no financial or trading reasoning, no ReferralMarket operations. Its output must always be relayed clearly labeled as unverified Gemini brainstorm material — never blended into your own answer as if you or it verified it.",
@@ -734,6 +750,14 @@ async function executeClaudeTool(name, input = {}) {
 
     const report = runBacktest(barsBySymbol, backtestOptions);
     return slim(report);
+  }
+
+  if (name === "get_asset_info") {
+    try {
+      return await getAssetInfo(input.symbol);
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
   }
 
   if (name === "brainstorm_wild_ideas") {
