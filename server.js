@@ -20,23 +20,106 @@ import {
   placeOrder,
   cancelOrder,
   getMarketData,
+  getQuote,
   getTradeLog,
+  getBars,
+  getAssetInfo,
+  reconcileFills,
+  tradeLogInfo,
   isLiveEndpoint,
   LIMITS as TRADING_LIMITS
 } from "./trading.js";
+import {
+  runOnce as autoTradeRunOnce,
+  startScheduler as startAutoTrader,
+  getStatus as autoTraderStatus,
+  getRuns as autoTraderRuns,
+  getStops as autoTraderStops,
+  getHistoryInfo as autoTraderHistoryInfo,
+  getHeartbeat as autoTraderHeartbeat,
+  getAlertStatus as autoTraderAlertStatus,
+  getCurrentConfigDetails as autoTraderConfigDetails,
+  setKillSwitch,
+  CONFIG as AUTOTRADER_CONFIG
+} from "./autotrader.js";
+import { stateInfo } from "./state.js";
+import { resolveExport } from "./history-export.js";
+import {
+  pairTrades,
+  summarize,
+  equityCurve,
+  maxDrawdown,
+  breakdown,
+  confidenceCalibration,
+  keyBySymbol,
+  keyByRegime,
+  keyByConfidenceBucket
+} from "./performance.js";
+import { backtest as runBacktest, runWindows as runBacktestWindows, BACKTEST_DEFAULTS } from "./backtest.js";
+import { RISK_DEFAULTS } from "./risk.js";
+import { isQuotaOrRateLimitError, fallbackConfigured, callFallbackModel } from "./llm-provider.js";
+import { geminiConfigured, callGemini } from "./gemini.js";
+import { getHistory as getPersistentHistory, saveHistory as savePersistentHistory, resetHistory as resetPersistentHistory } from "./chat-store.js";
+import { loadLeads, saveLeads, migrateLegacyLeadsIfNeeded } from "./leads-store.js";
 
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(process.env.HOME || ".", "darkly-leads.json");
 
-function loadLeads() {
-  try {
-    if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch(e) {}
-  return [];
+/* ------------------------------------------------------------------ *
+ * Chat slots: one persistent main thread, four disposable side ones.
+ *
+ * "chat" is the single durable conversation (chat-store.js — survives a
+ * restart/redeploy). "2" through "5" are deliberately NOT persisted: a
+ * plain in-memory Map, gone the moment the process restarts. That's the
+ * point — they're for quick brainstorming/theory-crafting that doesn't
+ * deserve, or want, the weight of being remembered forever. Any session
+ * id outside this fixed set of five falls back to "chat" rather than
+ * silently creating an unbounded set of new sessions.
+ * ------------------------------------------------------------------ */
+
+const CHAT_SLOTS = ["chat", "2", "3", "4", "5"];
+const EPHEMERAL_SLOTS = new Set(["2", "3", "4", "5"]);
+const EPHEMERAL_MAX_MESSAGES = 40; // matches chat-store.js's cap on the persistent slot
+
+const ephemeralSessions = new Map();
+
+function resolveSlot(raw) {
+  return CHAT_SLOTS.includes(raw) ? raw : "chat";
 }
 
-function saveLeads(leads) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(leads, null, 2));
+function historyForSlot(slot) {
+  if (EPHEMERAL_SLOTS.has(slot)) {
+    if (!ephemeralSessions.has(slot)) ephemeralSessions.set(slot, []);
+    return ephemeralSessions.get(slot);
+  }
+  return getPersistentHistory("chat");
+}
+
+function saveHistoryForSlot(slot) {
+  if (EPHEMERAL_SLOTS.has(slot)) {
+    const h = ephemeralSessions.get(slot) || [];
+    if (h.length > EPHEMERAL_MAX_MESSAGES) h.splice(0, h.length - EPHEMERAL_MAX_MESSAGES);
+    return;
+  }
+  savePersistentHistory("chat");
+}
+
+function resetHistoryForSlot(slot) {
+  if (EPHEMERAL_SLOTS.has(slot)) {
+    ephemeralSessions.set(slot, []);
+    return;
+  }
+  resetPersistentHistory("chat");
+}
+
+// One-time, one-way move off the old $HOME/darkly-leads.json path (wiped
+// on every Railway restart/redeploy) onto the same durable /data-backed
+// store everything else in this codebase already uses. A no-op on every
+// run after the first real one — see leads-store.js.
+{
+  const migration = migrateLegacyLeadsIfNeeded();
+  if (migration.migrated) {
+    console.log(`[leads] migrated ${migration.count} lead(s) from ${migration.from} to the durable store (${migration.to}).`);
+  }
 }
 
 function upsertLead(lead) {
@@ -48,12 +131,6 @@ function upsertLead(lead) {
 
 function getLeadById(id) {
   return loadLeads().find(l => l.id === id);
-}
-
-const sessions = new Map();
-function getHistory(sid) {
-  if (!sessions.has(sid)) sessions.set(sid, []);
-  return sessions.get(sid);
 }
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -87,15 +164,43 @@ Engine Config is the authoritative source for ReferralMarket operating policy. B
 
 Be direct, human, specific. No corporate padding.
 
+CREATIVE BRAINSTORMING. brainstorm_wild_ideas calls a different, deliberately less reliable model, chosen specifically for divergent, sometimes-wrong output — that is the point of the tool, not a defect. Only reach for it when the user explicitly wants brainstorming, wild ideas, or something to react against, never for anything factual. When you relay its output, keep it visibly labeled as unverified brainstorm material from a different model — never edit it into your own voice as though you vouched for it, and never let anything it says migrate into a factual claim, a lead recommendation, or a trading decision elsewhere in the conversation.
+
 --- TRADING MODULE ---
 
-You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_market_data, place_order, cancel_order, get_trade_log.
+You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_quote, get_market_data, place_order, cancel_order, get_trade_log, get_performance, run_backtest, get_asset_info.
+
+DESCRIBE ONLY WHAT EXISTS. When asked how you decide, what you check, or what you can do, describe exactly the tools, filters and guardrails listed here — nothing more. Do not invent analysis that is not performed. There is still NO halted-stock detection, NO sector classification, NO earnings-calendar awareness, NO options or margin logic, NO short selling, and NO machine learning of any kind. The free-text rationale you pass with a manual order is stored for audit; nothing scores it. If asked about a capability that does not exist, say plainly that it does not exist rather than describing how it would work.
+
+AUTOTRADER. There is a scheduled autotrader (autotrader.js). Read its real state with get_autotrader_status before describing it — never assume its mode or its settings. Modes: off, signal_only (full analysis, decisions recorded, NO orders placed — the default), and execute. There is a persistent kill switch that survives restarts.
+
+What the autotrader actually does each run, in order: reconciles previous orders against the broker to learn what actually filled; verifies the market is open using the broker's clock; reads live account and position state; fetches daily bars for the watchlist, everything held, and the benchmark; scores each symbol; updates a trailing stop for every open position; decides exits; then decides entries.
+
+Signal model: moving-average structure, RSI, MACD, trend slope and volume confirmation, weighted differently depending on whether ADX classifies the market as trending or ranging, with a confidence floor below which it holds regardless of score. In a ranging market an oversold reading is NOT treated as a buy when the moving-average structure is already broken — that rule exists specifically so it does not buy falling knives.
+
+Entry filters run in this order for every candidate: (1) structural tradability with Alpaca (not a halt check — see below), (2) liquidity/price floor, (3) correlation against what's already held, (4) an ATR-based stop can be computed, (5) risk-based position sizing, (6) portfolio heat has room. A rejection at any stage is recorded with which stage rejected it.
+
+Risk controls, all enforced in code (risk.js): positions are sized so that being stopped out costs a fixed fraction of equity, which means position size follows from stop distance rather than being a fixed dollar amount; stops are set from ATR so they scale with each instrument's own volatility; stops trail upward with price and never loosen; total portfolio heat is capped, and positions with no known stop are counted at FULL value when measuring it; candidates too correlated with something already held are rejected as the same bet rather than diversification; illiquid and sub-minimum-price names are rejected on average dollar volume; and no new long is opened while the benchmark is below its long moving average, though exits always continue to run.
+
+Be accurate about what all this is. The risk controls are real and are the part most likely to matter. The signal model is conventional public-domain indicators on public data: no proven edge, no proprietary data, no live track record. Better risk management improves survival and consistency; it does not create predictive power, and you never imply it does.
+
+PERFORMANCE. Use get_performance for any question about how the LIVE trading is actually going. Never estimate from the trade log yourself. Every figure it returns carries a sample size and a reliability flag, and below 30 closed trades results are indistinguishable from luck — when you report a number from it, report that caveat in the same breath. If it returns zero closed trades, say exactly that: zero closed trades is not a zero result, it means nothing has completed a round-trip yet. Never annualize, extrapolate or project.
+
+BACKTESTING. Use run_backtest for any question about how the strategy WOULD HAVE done historically, or before recommending any change to the strategy or its parameters. It replays the exact same code (strategy.js + risk.js) against historical daily bars, filling decisions only at the next bar's open (no lookahead), and returns a scored report plus an 'honesty' field you must read and weigh in with — a backtest is a description of one historical sample, not a predictor, and a strategy that never beat simple buy-and-hold on its own benchmark is not a strategy worth trading. Always report the benchmark comparison ('beatBuyAndHold') alongside any return number — a strategy that made money but underperformed just holding the index has not demonstrated anything the market didn't hand out for free. Below the reliability floor, say so, same as get_performance. The report's 'sharpe' field is a risk-adjusted return computed ONLY from this backtest's own day-by-day equity — this is the one place annualizing is honest, because a backtest has an actual, complete daily calendar behind it, unlike the live trade log's sparse, irregular fills; still report it as a property of this one historical replay, never as a forecast, and lean on its own 'reliable'/'caveat' fields exactly as you would performance's. Use the 'windows' option when someone wants to know if a result holds up outside one period, and report a mixed or negative result exactly as plainly as a positive one — this tool exists to find out whether the strategy is worth running, not to justify running it.
+
+Price sources, and the difference matters:
+- get_quote is Alpaca's LIVE price feed and covers any symbol. It is authoritative.
+- get_market_data is a stored snapshot of the tracked universe and is currently weeks stale. Never price, size, or justify a trade from it. When you cite it, state its dataAsOf date.
+- get_account, get_positions and get_orders are live from the broker.
 
 Rules for trading:
 - Always read live state (get_account / get_positions) before advising or acting. Never reason from remembered numbers.
+- Get a live quote before proposing or sizing any trade.
 - Before placing an order, state the reasoning: what the position is, why now, what the risk is. Pass that reasoning in the order's rationale field so it is recorded.
-- Guardrails (max trades per day, max position size, max daily loss, cooldown) are enforced in code. If an order is blocked, report exactly what blocked it and do not try to work around it by splitting the order, retrying, or restructuring it to slip under a limit.
-- Sizing: never propose a position that would exceed the configured max position size.
+- Five account-level guardrails are enforced in code on EVERY buy order, manual or automated: max trades per day, cooldown between trades, max daily loss, max position size (an order whose dollar value cannot be determined is blocked outright rather than allowed through uncapped), and asset tradability (a buy in a symbol Alpaca reports as inactive/untradable is blocked; a lookup failure blocks too, rather than assuming the name is fine). Sells are exempt from the tradability check specifically so an existing position can always be exited even in a name Alpaca has since disabled. Alpaca also independently blocks trading on a restricted account. If an order is blocked, report exactly what blocked it and do not work around it by splitting the order, retrying, or restructuring it to slip under a limit.
+- Use get_asset_info if the user asks whether a specific symbol can be traded on Alpaca. Be precise about what it checks: structural tradability (delisted, inactive, unsupported) — it does NOT detect an in-progress intraday trading halt, which needs real-time trade data this account tier does not have. Never call an untradable result a "halt" or a tradable result "not halted" — say only what was actually checked.
+- The risk filters in risk.js — sizing, heat, correlation, liquidity, market regime — apply to AUTOTRADER entries. They do not automatically gate an order you place by hand at the user's request. Say so if it matters to the answer; do not imply a manual order was vetted by checks that did not run on it.
+- Sizing: never propose a position that would exceed the configured max position size. If the user's per-position cap is small relative to their equity, that cap — not the risk model — is what determines size, and you say so plainly rather than describing sizing as risk-based when it is actually cap-bound.
 - Describe outcomes in terms of probability and risk, never certainty. Do not promise, imply, or project guaranteed returns, profit, or "can't lose" setups. Past performance and backtests do not predict future results, and you say so when it matters.
 - You are not a licensed financial advisor. For anything touching taxes, retirement accounts, or large real-money decisions, say that plainly.
 - Know which mode you are in. PAPER is simulated money. LIVE is real. If the account reports LIVE, say so explicitly in any message where you propose or place an order.`;
@@ -189,21 +294,36 @@ const CLAUDE_TOOLS = [
     }
   },
   {
-    name: "get_market_data",
-    description: "Read current market data (price, previous close, day high/low, volume, market cap, sector) for tracked stocks from the AutoTradeFlux market database. Omit symbols to survey the whole tracked universe.",
+    name: "get_quote",
+    description: "Get LIVE prices from Alpaca for any symbol, including symbols not in the AutoTradeFlux universe. Returns last trade price, day open/high/low/volume, previous close and change. This is the authoritative price source — use it for anything current, and always before sizing or proposing a trade.",
     input_schema: {
       type: "object",
       properties: {
         symbols: {
           type: "array",
           items: { type: "string" },
-          description: "Optional ticker symbols, e.g. ['AAPL','NVDA']. Omit for the full tracked list."
+          description: "Ticker symbols to quote, e.g. ['AAPL','NVDA']."
+        }
+      },
+      required: ["symbols"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_market_data",
+    description: "Read the AutoTradeFlux market table: a stored HISTORICAL SNAPSHOT of the tracked universe (price, prev close, day high/low, volume, market cap, sector), plus price history when symbols are given. Returns every row by default. This table is not a live feed and is currently stale — the response carries dataAsOf, ageHours and a stale flag. Use it for universe/sector/history questions; use get_quote for current prices.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbols: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional ticker symbols. Omit to return the entire tracked universe. Supplying symbols also returns their price history."
         },
         limit: {
           type: "integer",
           minimum: 1,
-          maximum: 100,
-          description: "Maximum rows to return. Default 25."
+          description: "Optional cap on rows returned. Omit to return everything."
         }
       },
       additionalProperties: false
@@ -275,6 +395,69 @@ const CLAUDE_TOOLS = [
     }
   },
   {
+    name: "get_autotrader_status",
+    description: "Read the autotrader's current configuration and state: mode (off / signal_only / execute), whether the scheduler is running, its interval, universe, sizing, stop-loss and take-profit settings, the kill switch, and when it last ran.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_autotrader_runs",
+    description: "Read the autotrader's run history: for each run, the signals it computed, the decisions it reached, its reasons, whether it executed or was in signal_only mode, and anything that blocked it. This is the record to judge the strategy by.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "How many recent runs to return. Default 5."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "run_autotrader_now",
+    description: "Run one autotrader cycle immediately instead of waiting for the schedule. Honours the configured mode, so in signal_only it analyses and records without placing orders. Use force to analyse while the market is closed (it still will not trade outside hours unless the mode is execute and the market is open).",
+    input_schema: {
+      type: "object",
+      properties: {
+        force: {
+          type: "boolean",
+          description: "Run even if the market is closed or the mode is off. Useful for inspecting what it would decide."
+        },
+        mode: {
+          type: "string",
+          enum: ["signal_only", "execute"],
+          description: "Override the configured mode for this single run. Omit to use the configured mode."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "set_autotrader_kill_switch",
+    description: "Engage or disengage the autotrader kill switch. While engaged, no scheduled or manual run will place any order. It persists across restarts.",
+    input_schema: {
+      type: "object",
+      properties: {
+        engaged: {
+          type: "boolean",
+          description: "true halts all autotrading; false resumes it."
+        },
+        reason: {
+          type: "string",
+          description: "Why it is being engaged, recorded with the switch."
+        }
+      },
+      required: ["engaged"],
+      additionalProperties: false
+    }
+  },
+  {
     name: "get_trade_log",
     description: "Read this agent's own record of orders it submitted or had blocked, including the rationale given at the time and any guardrail that stopped it.",
     input_schema: {
@@ -287,6 +470,99 @@ const CLAUDE_TOOLS = [
           description: "Maximum entries to return. Default 25."
         }
       },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_performance",
+    description:
+      "Score the system's own closed trades: win rate, expectancy, profit factor, average R, max drawdown, and breakdowns by symbol, market regime and stated confidence. Every figure carries a sample size and a reliability flag — below 30 closed trades the results are noise and the tool says so. Use this for any question about how well the trading is going. Returns zero trades, honestly, when nothing has closed yet.",
+    input_schema: {
+      type: "object",
+      properties: {
+        reconcile: {
+          type: "boolean",
+          description:
+            "Ask the broker what submitted orders actually filled at before scoring. Default true. Without it, recent trades may be missing their fills and be excluded."
+        },
+        groupBy: {
+          type: "string",
+          enum: ["symbol", "regime", "confidence"],
+          description: "Optional breakdown dimension."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "run_backtest",
+    description:
+      "Replay the exact strategy and risk rules (strategy.js + risk.js, the same code the live autotrader runs) against historical daily bars. This is a simulation, not a prediction — read the returned 'honesty' field before saying anything about the result. No lookahead: decisions made from a day's close are only ever filled at the next day's open. Fetches its own historical bars; costs one or more real market-data calls, so don't call this on every message, only when the user is actually asking about backtested or historical strategy performance. Pass `windows` to run the identical unmodified rules across several independent date ranges instead of one (closer to genuine out-of-sample checking than a single period).",
+    input_schema: {
+      type: "object",
+      properties: {
+        universe: {
+          type: "array",
+          items: { type: "string" },
+          description: "Symbols to trade in the simulation. Defaults to the autotrader's configured watchlist."
+        },
+        lookbackTradingDays: {
+          type: "integer",
+          minimum: 260,
+          maximum: 1500,
+          description: "How many trading days of history to fetch before slicing into the warmup + test period. Default 500 (~2 years). More costs more data calls and a longer warmup eats into the usable test period."
+        },
+        aggressiveness: {
+          type: "string",
+          enum: ["conservative", "moderate", "aggressive"],
+          description: "Defaults to the autotrader's currently configured aggressiveness."
+        },
+        startingEquity: {
+          type: "number",
+          description: "Simulated starting cash. Default 100000. Purely a scaling factor for dollar figures — percentages are unaffected."
+        },
+        windows: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              start: { type: "string", description: "YYYY-MM-DD" },
+              end: { type: "string", description: "YYYY-MM-DD" }
+            },
+            required: ["label", "start", "end"]
+          },
+          description: "Optional: run the same rules across several disjoint date ranges (e.g. different years) instead of one continuous backtest, and compare them."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_asset_info",
+    description: "Check whether a symbol is structurally tradable on Alpaca (not delisted, not disabled). This is NOT live halt detection — it cannot see an in-progress intraday trading halt, only whether Alpaca supports trading the name at all.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "Ticker symbol, e.g. AAPL." }
+      },
+      required: ["symbol"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "brainstorm_wild_ideas",
+    description:
+      "Get raw, UNVERIFIED idea generation from a different model (Gemini), used deliberately for its high rate of confident wrongness — that unreliability is what makes it a useful divergent-thinking tool, not a bug to route around. ONLY call this when the user explicitly wants brainstorming, wild ideas, alternate angles, or something to react against creatively. NEVER call it for anything where correctness matters: no research questions, no facts, no financial or trading reasoning, no ReferralMarket operations. Its output must always be relayed clearly labeled as unverified Gemini brainstorm material — never blended into your own answer as if you or it verified it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "What to brainstorm about. Be specific about the kind of ideas wanted (e.g. 'wild, unconventional' vs 'practical but unusual')."
+        }
+      },
+      required: ["prompt"],
       additionalProperties: false
     }
   }
@@ -358,6 +634,10 @@ async function executeClaudeTool(name, input = {}) {
     return await getMarketData(input);
   }
 
+  if (name === "get_quote") {
+    return await getQuote(input);
+  }
+
   if (name === "place_order") {
     return await placeOrder(input);
   }
@@ -366,10 +646,184 @@ async function executeClaudeTool(name, input = {}) {
     return await cancelOrder(input);
   }
 
+  if (name === "get_autotrader_status") {
+    return autoTraderStatus();
+  }
+
+  if (name === "get_autotrader_runs") {
+    const limit = Math.min(Math.max(Number(input.limit) || 5, 1), 50);
+    const runs = autoTraderRuns(limit);
+    return { count: runs.length, runs };
+  }
+
+  if (name === "run_autotrader_now") {
+    return await autoTradeRunOnce({
+      force: Boolean(input.force),
+      mode: input.mode
+    });
+  }
+
+  if (name === "set_autotrader_kill_switch") {
+    return setKillSwitch(Boolean(input.engaged), input.reason || null);
+  }
+
   if (name === "get_trade_log") {
     const limit = Math.min(Math.max(Number(input.limit) || 25, 1), 100);
     const entries = getTradeLog(limit);
-    return { count: entries.length, limits: TRADING_LIMITS, entries };
+    return {
+      count: entries.length,
+      limits: TRADING_LIMITS,
+      storage: tradeLogInfo(),
+      entries
+    };
+  }
+
+  if (name === "get_performance") {
+    let reconciled = null;
+    if (input.reconcile !== false) {
+      try {
+        reconciled = await reconcileFills({ limit: 60 });
+      } catch (e) {
+        reconciled = { error: String(e.message || e) };
+      }
+    }
+
+    // The whole log, oldest first — pairing needs the full history, not a
+    // recent window.
+    const log = getTradeLog(100000).slice().reverse();
+
+    // Stops live in the autotrader's own state, not in the trade log, so
+    // R multiples are only available where a stop was recorded with the
+    // decision. Anything else reports null rather than a guess.
+    const stops = autoTraderStops();
+    const stopPriceBySymbolAt = Object.fromEntries(
+      Object.entries(stops).map(([symbol, s]) => [symbol, s.stopPrice])
+    );
+
+    const paired = pairTrades(log);
+    const summary = summarize(paired.closed, { stopPriceBySymbolAt });
+    const curve = equityCurve(paired.closed, 0);
+
+    const groupers = {
+      symbol: keyBySymbol,
+      regime: keyByRegime,
+      confidence: keyByConfidenceBucket
+    };
+
+    return {
+      storage: tradeLogInfo(),
+      reconciled,
+      logEntries: log.length,
+      closedTrades: paired.closed.length,
+      openLots: paired.open.length,
+      unmatched: paired.unmatched,
+      unpriced: paired.unpriced,
+      summary,
+      drawdown: maxDrawdown(curve),
+      calibration: confidenceCalibration(paired.closed),
+      breakdown: input.groupBy
+        ? breakdown(paired.closed, groupers[input.groupBy], { stopPriceBySymbolAt })
+        : null,
+      honesty:
+        "Past results do not establish skill. Below 30 closed trades the dominant explanation for any figure here is luck, and the reliability flag says so explicitly. Report the caveat whenever you report the number."
+    };
+  }
+
+  if (name === "run_backtest") {
+    const universe = Array.isArray(input.universe) && input.universe.length
+      ? input.universe.map((s) => String(s).toUpperCase())
+      : AUTOTRADER_CONFIG.universe;
+    const benchmarkSymbol = RISK_DEFAULTS.benchmarkSymbol;
+    const aggressiveness = input.aggressiveness || AUTOTRADER_CONFIG.aggressiveness;
+    const startingEquity = Number.isFinite(Number(input.startingEquity)) ? Number(input.startingEquity) : 100000;
+    const limit = Math.min(Math.max(Number(input.lookbackTradingDays) || 500, 260), 1500);
+
+    let barsBySymbol;
+    try {
+      barsBySymbol = await getBars({
+        symbols: Array.from(new Set([...universe, benchmarkSymbol])),
+        timeframe: "1Day",
+        limit
+      });
+    } catch (e) {
+      return { ok: false, error: `Could not fetch historical bars: ${e.message}` };
+    }
+
+    const backtestOptions = { universe, benchmarkSymbol, aggressiveness, startingEquity };
+
+    // Trim what goes back to the model: a full equity curve and every
+    // closed trade would burn the context window on every call. The
+    // summary statistics carry the substance; a small sample of trades
+    // is enough to ground a specific question about one of them.
+    const slim = (report) => {
+      if (!report.ok) return report;
+      const trades = report.closedTrades;
+      return {
+        ok: true,
+        period: report.period,
+        universe: report.universe,
+        benchmarkSymbol: report.benchmarkSymbol,
+        params: report.params,
+        startingEquity: report.startingEquity,
+        finalEquity: report.finalEquity,
+        strategyReturnPercent: report.strategyReturnPercent,
+        benchmark: report.benchmark,
+        beatBuyAndHold: report.beatBuyAndHold,
+        performance: report.performance,
+        drawdown: report.drawdown,
+        sharpe: report.sharpe,
+        tradeCounts: report.tradeCounts,
+        openAtEnd: report.openAtEnd,
+        sampleClosedTrades: {
+          note: `Showing up to 10 of ${trades.length} closed trades (first 5, last 5). Use the 'performance' summary above for aggregate figures.`,
+          trades: trades.length <= 10 ? trades : [...trades.slice(0, 5), ...trades.slice(-5)]
+        },
+        warnings: report.warnings,
+        honesty: report.honesty
+      };
+    };
+
+    if (Array.isArray(input.windows) && input.windows.length > 0) {
+      const result = runBacktestWindows(barsBySymbol, input.windows, backtestOptions);
+      return {
+        windowCount: result.windowCount,
+        usableCount: result.usableCount,
+        consistency: result.consistency,
+        honesty: result.honesty,
+        windows: result.windows.map((w) => ({ label: w.label, start: w.start, end: w.end, report: slim(w.report) }))
+      };
+    }
+
+    const report = runBacktest(barsBySymbol, backtestOptions);
+    return slim(report);
+  }
+
+  if (name === "get_asset_info") {
+    try {
+      return await getAssetInfo(input.symbol);
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "brainstorm_wild_ideas") {
+    if (!geminiConfigured()) {
+      return {
+        ok: false,
+        error: "GEMINI_API_KEY is not set on this deployment, so wild-idea brainstorming isn't available right now."
+      };
+    }
+    try {
+      const result = await callGemini(input.prompt);
+      return {
+        ok: true,
+        source: "gemini (deliberately unverified — treat as raw brainstorm material, not fact or advice)",
+        model: result.model,
+        ideas: result.text
+      };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
   }
 
   throw new Error(`Unknown Claude tool: ${name}`);
@@ -420,34 +874,81 @@ async function askClaude(history, userMessage) {
     "\n\nRules for this runtime context: Engine Config overrides inference and descriptive notes. A missing active market means NO_MARKET_LOCK and must never block ordinary chat, database research, or cross-market analysis. Discovery Phase is only relevant when discussing or executing a market-specific production run. Never invent fixed thresholds. Never recommend promotional sending when PROSPECT_EMAIL_MODE=DRAFT_ONLY or PROSPECT_AUTO_SEND=FALSE.";
 
   const messages = [...history, { role: "user", content: userMessage }];
+  let providerUsed = "anthropic";
+
+  // One call, either provider, always the SAME system prompt and SAME
+  // tool list either way. This is the one place a fallback model differs
+  // from Claude at all: which wire format its response arrives in. See
+  // llm-provider.js for why that boundary is drawn exactly here.
+  async function callModelRound() {
+    try {
+      const response = await anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 4096,
+        system: runtimeSystem,
+        tools: CLAUDE_TOOLS,
+        messages
+      });
+      return { content: response.content };
+    } catch (error) {
+      if (!isQuotaOrRateLimitError(error) || !fallbackConfigured()) throw error;
+
+      console.error(
+        `[llm-fallback] Anthropic call failed (${error.message || error}); retrying via ${process.env.LITELLM_MODEL}.`
+      );
+      providerUsed = `fallback:${process.env.LITELLM_MODEL}`;
+
+      try {
+        const fb = await callFallbackModel({ system: runtimeSystem, tools: CLAUDE_TOOLS, messages });
+        return { content: fb.content };
+      } catch (fallbackError) {
+        // Both providers failed. Surface the ORIGINAL Anthropic error as
+        // the primary cause — that is almost always the more diagnosable
+        // one (a fallback misconfiguration is a distraction from "why did
+        // the primary provider fail" the first time this happens) — with
+        // the fallback failure appended rather than swallowed.
+        throw new Error(
+          `Anthropic failed (${error.message || error}) and the fallback also failed (${fallbackError.message || fallbackError}).`
+        );
+      }
+    }
+  }
 
   for (let round = 0; round < 8; round++) {
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system: runtimeSystem,
-      tools: CLAUDE_TOOLS,
-      messages
-    });
+    const { content } = await callModelRound();
 
-    const toolUses = response.content.filter(block => block.type === "tool_use");
+    const toolUses = content.filter((block) => block.type === "tool_use");
 
     if (toolUses.length === 0) {
-      return response.content
-        .filter(block => block.type === "text")
-        .map(block => block.text)
+      const text = content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
         .join("\n")
         .trim();
+      return { text, provider: providerUsed };
     }
 
     messages.push({
       role: "assistant",
-      content: response.content
+      content
     });
 
     const toolResults = [];
 
     for (const toolUse of toolUses) {
+      // A tool call whose arguments a fallback model produced as invalid
+      // JSON is reported back as a tool error, exactly like a live
+      // failure of that tool — never silently dropped, never guessed at.
+      if (toolUse._argumentParseError) {
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          is_error: true,
+          content: `Arguments for ${toolUse.name} were not valid JSON: ${toolUse._argumentParseError}`
+        });
+        continue;
+      }
+
       try {
         const result = await executeClaudeTool(
           toolUse.name,
@@ -677,6 +1178,7 @@ body{
   background:#0d0d0f;
   color:#e8e8eb;
   height:100vh;
+  height:100dvh;
   overflow:hidden;
 }
 button,input,select,textarea{font:inherit}
@@ -708,23 +1210,43 @@ button{cursor:pointer}
 
 #app{
   height:100vh;
+  height:100dvh;
   display:flex;
   flex-direction:column;
+  overflow:hidden;
 }
 
 #topbar{
-  min-height:56px;
+  flex:0 0 auto;
   display:flex;
-  align-items:center;
+  flex-direction:column;
   gap:8px;
   padding:8px 12px;
   border-bottom:1px solid #26262d;
   background:#141417;
 }
+#topbar-main{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+#nav{
+  display:flex;
+  gap:6px;
+}
+#nav .navbtn{
+  flex:1 1 0;
+  min-width:0;
+  text-align:center;
+}
 #title{
   font-weight:700;
   font-size:17px;
   white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  min-width:0;
 }
 .mode-badge{
   font-size:10px;
@@ -881,6 +1403,25 @@ tbody tr:hover{background:#17171c}
   overflow:hidden;
   flex-direction:column;
 }
+#chat-header{
+  display:flex;justify-content:space-between;align-items:center;gap:8px;
+  padding:8px 10px 0;
+}
+#chat-slot-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.slot-tab{
+  border:1px solid #33333b;border-radius:9px;
+  background:#18181c;color:#888;padding:6px 12px;
+  font-size:12px;
+}
+.slot-tab.active{
+  background:#203126;color:#68e59c;border-color:#2c4a3a;
+}
+#new-chat-btn{
+  border:1px solid #33333b;border-radius:9px;
+  background:#18181c;color:#999;padding:6px 12px;
+  font-size:12px;
+  flex-shrink:0;
+}
 #chat{
   flex:1;
   overflow-y:auto;
@@ -953,6 +1494,118 @@ tbody tr:hover{background:#17171c}
 .dk{color:#777;font-size:10px;text-transform:uppercase}
 .dv{font-size:12px;white-space:pre-wrap;word-break:break-word}
 
+#stocks-view{
+  flex:1;
+  overflow:hidden;
+  display:none;
+  flex-direction:column;
+}
+#stocks-bar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 10px;
+  border-bottom:1px solid #24242a;
+  background:#111114;
+  font-size:12px;
+  color:#999;
+}
+.mode-pill{
+  font-size:10px;
+  font-weight:700;
+  padding:4px 8px;
+  border-radius:999px;
+  background:#243d31;
+  color:#68e59c;
+  white-space:nowrap;
+}
+.mode-pill.live{background:#3d2424;color:#ff8c8c}
+#stocks-refresh{
+  border:0;border-radius:8px;
+  padding:7px 12px;
+  background:#243d31;color:#68e59c;
+}
+#stocks-summary{
+  display:flex;
+  gap:7px;
+  overflow-x:auto;
+  padding:8px 10px;
+  border-bottom:1px solid #232329;
+  scrollbar-width:none;
+}
+#stocks-body{
+  flex:1;
+  overflow-y:auto;
+  padding:10px;
+}
+.sblock{margin-bottom:18px}
+.sblock h3{
+  margin:0 0 8px;
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.5px;
+  color:#777;
+  font-weight:600;
+}
+.card{
+  background:#15151a;
+  border:1px solid #26262d;
+  border-radius:11px;
+  padding:10px 12px;
+  margin-bottom:7px;
+}
+.card-top{
+  display:flex;
+  align-items:baseline;
+  gap:8px;
+}
+.card-sym{font-weight:700;font-size:15px}
+.card-qty{color:#777;font-size:11px}
+.card-val{margin-left:auto;font-weight:600;font-size:14px;white-space:nowrap}
+.card-bot{
+  display:flex;
+  align-items:baseline;
+  gap:8px;
+  margin-top:5px;
+  font-size:11px;
+  color:#888;
+}
+.card-pnl{margin-left:auto;font-weight:600;font-size:12px;white-space:nowrap}
+.pill{
+  font-size:9px;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.4px;
+  padding:3px 7px;
+  border-radius:999px;
+  background:#22222a;
+  color:#999;
+}
+.pill.buy{background:#1d3328;color:#68e59c}
+.pill.sell{background:#33201f;color:#ff9a9a}
+.pos{color:#68e59c}
+.neg{color:#ff8c8c}
+.empty{color:#666;font-size:12px;padding:6px 0}
+#guardrails-wrap{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+  gap:7px;
+}
+.guard{
+  background:#17171b;
+  border:1px solid #292930;
+  border-radius:10px;
+  padding:8px 10px;
+}
+.guard .n{font-weight:700;font-size:15px}
+.guard .l{color:#777;font-size:9px;text-transform:uppercase;letter-spacing:.5px}
+
+@media(min-width:700px){
+  #topbar{flex-direction:row;align-items:center}
+  #topbar-main{flex:1}
+  #nav .navbtn{flex:0 0 auto}
+}
+
 @media(max-width:700px){
   #title{font-size:15px}
   .mode-badge{display:none}
@@ -980,12 +1633,17 @@ tbody tr:hover{background:#17171c}
 <div id="app">
 
   <div id="topbar">
-    <div id="title">Darkly Research</div>
-    <div class="mode-badge">PRE-LAUNCH CALIBRATION</div>
-    <div id="row-count">0 rows</div>
-    <div class="spacer"></div>
-    <button id="research-tab" class="navbtn active">Research</button>
-    <button id="chat-tab" class="navbtn">Chat</button>
+    <div id="topbar-main">
+      <div id="title">Darkly</div>
+      <div class="mode-badge">PRE-LAUNCH CALIBRATION</div>
+      <div id="row-count">0 rows</div>
+      <div class="spacer"></div>
+    </div>
+    <div id="nav">
+      <button id="research-tab" class="navbtn active">Research</button>
+      <button id="stocks-tab" class="navbtn">Stocks</button>
+      <button id="chat-tab" class="navbtn">Chat</button>
+    </div>
   </div>
 
   <section id="research-view">
@@ -1089,7 +1747,39 @@ tbody tr:hover{background:#17171c}
 
   </section>
 
+  <section id="stocks-view">
+
+    <div id="stocks-bar">
+      <span id="stocks-mode" class="mode-pill">—</span>
+      <span id="stocks-status">Not loaded</span>
+      <div class="spacer"></div>
+      <button id="stocks-refresh">Refresh</button>
+    </div>
+
+    <div id="stocks-summary"></div>
+
+    <div id="stocks-body">
+      <div class="sblock">
+        <h3>Open positions</h3>
+        <div id="positions-wrap" class="scroll-x"></div>
+      </div>
+      <div class="sblock">
+        <h3>Recent orders</h3>
+        <div id="orders-wrap" class="scroll-x"></div>
+      </div>
+      <div class="sblock">
+        <h3>Guardrails</h3>
+        <div id="guardrails-wrap"></div>
+      </div>
+    </div>
+
+  </section>
+
   <section id="chat-view">
+    <div id="chat-header">
+      <div id="chat-slot-tabs"></div>
+      <button id="new-chat-btn" title="Clear this chat's history">New chat</button>
+    </div>
     <div id="chat"></div>
     <div id="inputbar">
       <textarea id="message" placeholder="Ask Darkly about the live ReferralMarket data..."></textarea>
@@ -1111,7 +1801,17 @@ tbody tr:hover{background:#17171c}
 
 <script>
 let passcode="";
-const sid=Math.random().toString(36).slice(2);
+
+// A fixed set of named chat slots rather than one-session-per-browser:
+// "chat" is the single persistent main thread (durable — see
+// chat-store.js), and "2"-"5" are disposable side threads for
+// brainstorming/theory-crafting that deliberately do NOT survive a
+// restart (see server.js's EPHEMERAL_SLOTS). All five are shared across
+// whatever device is talking to this console — there's no per-browser id
+// to keep in localStorage at all anymore, which is simpler and matches
+// what was actually wanted: one real "Chat", plus a few scratch ones.
+const CHAT_SLOTS=["chat","2","3","4","5"];
+let activeSlot="chat";
 
 let researchRows=[];
 let activeMarket=null;
@@ -1122,7 +1822,7 @@ const byId=id=>document.getElementById(id);
 byId("unlock-btn").onclick=unlock;
 byId("pass").onkeydown=e=>{if(e.key==="Enter")unlock()};
 
-function unlock(){
+async function unlock(){
   const p=byId("pass").value.trim();
   if(!p)return;
 
@@ -1130,26 +1830,216 @@ function unlock(){
   byId("login-overlay").style.display="none";
 
   loadResearch();
+  await switchSlot("chat");
+}
 
-  addMsg(
-    "Darkly Agent ready. Live market data is available in the Research view.",
-    "bot"
-  );
+function renderSlotTabs(){
+  const wrap=byId("chat-slot-tabs");
+  wrap.innerHTML="";
+  for (const slot of CHAT_SLOTS){
+    const b=document.createElement("button");
+    b.className="slot-tab"+(slot===activeSlot?" active":"");
+    b.textContent=slot==="chat"?"Chat":slot;
+    b.onclick=()=>switchSlot(slot);
+    wrap.appendChild(b);
+  }
+}
+
+// Switch which slot is showing and replay whatever it already holds.
+// "chat" is durable (chat-store.js, survives a restart); "2"-"5" are
+// ephemeral (in-memory only on the server, gone on the next restart) —
+// see EPHEMERAL_SLOTS below. Either way the fetch/render logic is the
+// same from the browser's side.
+async function switchSlot(slot){
+  activeSlot=slot;
+  renderSlotTabs();
+  byId("chat").innerHTML="";
+
+  try {
+    const r = await fetch("/chat-history", {
+      headers: { "X-Agent-Passcode": passcode, "X-Session-Id": activeSlot }
+    });
+
+    if (r.status===401) {
+      addMsg("Wrong passcode.","bot");
+      byId("login-overlay").style.display="flex";
+      return;
+    }
+
+    const data = await r.json();
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+
+    if (messages.length===0) {
+      addMsg(
+        slot==="chat"
+          ? "Darkly Agent ready. Live market data is available in the Research view."
+          : "Side chat "+slot+" — not saved, cleared on restart. Good for throwing around ideas.",
+        "bot"
+      );
+      return;
+    }
+
+    for (const m of messages) {
+      addMsg(m.content, m.role==="user" ? "me" : "bot");
+    }
+  } catch (e) {
+    // A failed restore should not block using the console — fall back
+    // to a plain notice and let the next real message try again.
+    addMsg(
+      "Darkly Agent ready. (Could not load prior chat history: "+e.message+")",
+      "bot"
+    );
+  }
+}
+
+async function newChat(){
+  try {
+    await fetch("/chat-reset", {
+      method: "POST",
+      headers: { "X-Agent-Passcode": passcode, "X-Session-Id": activeSlot }
+    });
+  } catch (e) {
+    // Even if the server-side clear fails, still give a visibly fresh
+    // pane locally — the next message will just carry stale context
+    // from the server's side rather than losing the UI action entirely.
+  }
+  byId("chat").innerHTML="";
+  addMsg("New conversation started.","bot");
 }
 
 byId("research-tab").onclick=()=>showView("research");
+byId("stocks-tab").onclick=()=>showView("stocks");
 byId("chat-tab").onclick=()=>showView("chat");
+byId("stocks-refresh").onclick=()=>loadStocks();
+byId("new-chat-btn").onclick=newChat;
+
+let stocksLoaded=false;
 
 function showView(which){
-  const research=which==="research";
+  byId("research-view").style.display=which==="research"?"flex":"none";
+  byId("stocks-view").style.display=which==="stocks"?"flex":"none";
+  byId("chat-view").style.display=which==="chat"?"flex":"none";
 
-  byId("research-view").style.display=research?"flex":"none";
-  byId("chat-view").style.display=research?"none":"flex";
+  byId("research-tab").classList.toggle("active",which==="research");
+  byId("stocks-tab").classList.toggle("active",which==="stocks");
+  byId("chat-tab").classList.toggle("active",which==="chat");
 
-  byId("research-tab").classList.toggle("active",research);
-  byId("chat-tab").classList.toggle("active",!research);
+  if(which==="chat")byId("message").focus();
+  if(which==="stocks"&&!stocksLoaded)loadStocks();
+}
 
-  if(!research)byId("message").focus();
+function money(v){
+  const n=Number(v);
+  if(!Number.isFinite(n))return "—";
+  return (n<0?"-$":"$")+Math.abs(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+
+function signClass(v){
+  const n=Number(v);
+  if(!Number.isFinite(n)||n===0)return "";
+  return n>0?"pos":"neg";
+}
+
+async function loadStocks(){
+  byId("stocks-status").textContent="Loading Alpaca account...";
+
+  try{
+    const r=await fetch("/trading-data",{
+      headers:{"X-Agent-Passcode":passcode}
+    });
+
+    if(r.status===401){
+      byId("login-overlay").style.display="flex";
+      byId("stocks-status").textContent="Wrong passcode";
+      return;
+    }
+
+    const data=await r.json();
+
+    if(!r.ok){
+      byId("stocks-status").textContent=data.error||"Load failed";
+      return;
+    }
+
+    renderStocks(data);
+    stocksLoaded=true;
+    byId("stocks-status").textContent="Updated "+new Date().toLocaleTimeString();
+  }catch(e){
+    byId("stocks-status").textContent="Error: "+e.message;
+  }
+}
+
+function renderStocks(data){
+  const live=data.mode==="LIVE";
+  const pill=byId("stocks-mode");
+  pill.textContent=data.mode||"—";
+  pill.classList.toggle("live",live);
+
+  const a=data.account||{};
+
+  byId("stocks-summary").innerHTML=[
+    ["Equity",money(a.equity),""],
+    ["Cash",money(a.cash),""],
+    ["Buying power",money(a.buyingPower),""],
+    ["Day P&L",money(a.dayPnl)+" ("+(a.dayPnlPercent??0)+"%)",signClass(a.dayPnl)],
+    ["Positions",String((data.positions||[]).length),""],
+    ["Status",esc(a.status||"—"),""]
+  ].map(([label,value,cls])=>
+    '<div class="stat"><div class="n '+cls+'">'+value+'</div><div class="l">'+label+'</div></div>'
+  ).join("");
+
+  const positions=(data.positions||[])
+    .slice()
+    .sort((a,b)=>Number(a.unrealizedPl||0)-Number(b.unrealizedPl||0));
+
+  byId("positions-wrap").innerHTML=positions.length===0
+    ? '<div class="empty">No open positions.</div>'
+    : positions.map(p=>
+        '<div class="card">'
+        +'<div class="card-top">'
+        +'<span class="card-sym">'+esc(p.symbol)+'</span>'
+        +'<span class="card-qty">'+p.qty+' sh</span>'
+        +'<span class="card-val">'+money(p.marketValue)+'</span>'
+        +'</div>'
+        +'<div class="card-bot">'
+        +'<span>'+money(p.avgEntryPrice)+' &rarr; '+money(p.currentPrice)+'</span>'
+        +'<span class="card-pnl '+signClass(p.unrealizedPl)+'">'
+        +money(p.unrealizedPl)+' ('+p.unrealizedPlPercent+'%)'
+        +'</span>'
+        +'</div>'
+        +'</div>'
+      ).join("");
+
+  const orders=data.orders||[];
+  byId("orders-wrap").innerHTML=orders.length===0
+    ? '<div class="empty">No recent orders.</div>'
+    : orders.map(o=>
+        '<div class="card">'
+        +'<div class="card-top">'
+        +'<span class="card-sym">'+esc(o.symbol)+'</span>'
+        +'<span class="pill '+(o.side==="buy"?"buy":"sell")+'">'+esc(o.side)+'</span>'
+        +'<span class="card-qty">'+esc(o.type)+'</span>'
+        +'<span class="card-val">'+(o.qty??o.notional??"—")+'</span>'
+        +'</div>'
+        +'<div class="card-bot">'
+        +'<span>'+esc(o.status)
+        +(o.filledAvgPrice?' @ '+money(o.filledAvgPrice):"")+'</span>'
+        +'<span class="card-pnl" style="color:#777;font-weight:400">'
+        +(o.submittedAt?new Date(o.submittedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):"—")
+        +'</span>'
+        +'</div>'
+        +'</div>'
+      ).join("");
+
+  const g=data.guardrails||{};
+  byId("guardrails-wrap").innerHTML=[
+    ["Max trades/day",g.maxTradesPerDay],
+    ["Max position",money(g.maxPositionUsd)],
+    ["Max daily loss",money(g.maxDailyLossUsd)],
+    ["Cooldown",(g.cooldownMinutes??"—")+" min"]
+  ].map(([label,value])=>
+    '<div class="guard"><div class="n">'+value+'</div><div class="l">'+label+'</div></div>'
+  ).join("");
 }
 
 function esc(value){
@@ -1685,7 +2575,7 @@ async function sendMsg(){
       headers:{
         "Content-Type":"application/json",
         "X-Agent-Passcode":passcode,
-        "X-Session-Id":sid
+        "X-Session-Id":activeSlot
       },
       body:JSON.stringify({message:text})
     });
@@ -1698,6 +2588,9 @@ async function sendMsg(){
       return;
     }
 
+    if(data.provider && data.provider.startsWith("fallback:")){
+      addMsg("⚠ Anthropic unavailable — answered by fallback model ("+data.provider.slice(9)+"). Same rules, weaker model; verify anything important.","bot");
+    }
     addMsg(data.reply||data.error||"No response","bot");
 
     if(data.leadSaved)
@@ -1734,9 +2627,126 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method==="GET" && req.url==="/") return send(200, htmlPage(), "text/html");
 
+  // GET /health — deliberately unauthenticated: a monitor pinging this
+  // has to work even when it doesn't carry AGENT_PASSCODE. Kept to the
+  // scheduler heartbeat only (schedulerHeartbeat — no run in far longer
+  // than the configured interval means the process itself may have
+  // stopped, not just declined to trade), so an external uptime check can
+  // catch the case a run-triggered email never could: the scheduler going
+  // silent entirely. This deliberately does NOT include getAlertStatus()'s
+  // lastAlert — its reason text can embed account P&L (see the daily-loss
+  // case in alerts.js), which has no business being readable without
+  // AGENT_PASSCODE. That fuller picture is in GET /autotrader-data instead.
+  if (req.method==="GET" && req.url==="/health") {
+    try {
+      const heartbeat = autoTraderHeartbeat();
+      return send(heartbeat.alive === false ? 503 : 200, {
+        ok: heartbeat.alive !== false,
+        heartbeat,
+        alertingConfigured: autoTraderAlertStatus().configured
+      });
+    } catch (e) {
+      return send(500, { ok: false, error: String(e.message || e) });
+    }
+  }
+
   if (req.method==="GET" && req.url==="/leads") {
     if (!auth()) return send(401,{error:"Unauthorized"});
     return send(200, loadLeads());
+  }
+
+  // --- History export ---------------------------------------------
+  //
+  // The run archive lives on a Railway volume, which is reachable from
+  // nowhere except this process. This streams it out so a copy can be
+  // kept on hardware you own.
+  //
+  // It supports a byte offset so repeated backups send only what is new:
+  // ask for the size, then request from where you left off. Over mobile
+  // data that is the difference between re-downloading the whole history
+  // every time and downloading the day's handful of KB.
+  if (req.method==="GET" && req.url.startsWith("/export-history")) {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+
+    try {
+      const url = new URL(req.url, "http://localhost");
+      const plan = resolveExport({
+        file: url.searchParams.get("file"),
+        offset: url.searchParams.get("offset")
+      });
+
+      if (!plan.ok) return send(plan.status, { error: plan.error });
+
+      // meta=1 answers "how much is there?" without transferring it, so a
+      // backup script can decide whether there is anything worth fetching.
+      if (url.searchParams.get("meta") === "1") {
+        return send(200, {
+          file: plan.name,
+          exists: plan.exists,
+          bytes: plan.size,
+          appendOnly: plan.appendOnly,
+          storage: autoTraderHistoryInfo(),
+          hint: "Request the same file with ?offset=<bytes you already have> to fetch only what is new."
+        });
+      }
+
+      const headers = {
+        "content-type": "text/plain",
+        "x-total-bytes": String(plan.size),
+        "x-offset": String(plan.start),
+        "x-new-bytes": String(plan.newBytes),
+        "x-restarted": plan.restarted ? "1" : "0"
+      };
+
+      if (!plan.exists || plan.newBytes === 0) {
+        res.writeHead(200, headers);
+        return res.end("");
+      }
+
+      res.writeHead(200, headers);
+      return fs.createReadStream(plan.path, { start: plan.start }).pipe(res);
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
+  }
+
+  if (req.method==="GET" && req.url==="/autotrader-data") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      return send(200, {
+        status: autoTraderStatus(),
+        runs: autoTraderRuns(10),
+        heartbeat: autoTraderHeartbeat(),
+        alerting: autoTraderAlertStatus(),
+        configDetails: autoTraderConfigDetails()
+      });
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
+  }
+
+  if (req.method==="POST" && req.url==="/autotrader-run") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const body = await readBody();
+      const run = await autoTradeRunOnce({
+        force: Boolean(body.force),
+        mode: body.mode
+      });
+      return send(200, run);
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
+  }
+
+  if (req.method==="POST" && req.url==="/autotrader-kill") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const body = await readBody();
+      return send(200, setKillSwitch(Boolean(body.engaged), body.reason || null));
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
   }
 
   if (req.method==="GET" && req.url==="/trading-data") {
@@ -1765,8 +2775,8 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody();
     const message = String(body.message||"").trim();
     if (!message) return send(400,{error:"Message required"});
-    const sid = req.headers["x-session-id"]||"default";
-    const history = getHistory(sid);
+    const slot = resolveSlot(req.headers["x-session-id"]);
+    const history = historyForSlot(slot);
 
     if (message.toUpperCase()==="LIST LEADS") {
       const leads = loadLeads();
@@ -1777,20 +2787,43 @@ const server = http.createServer(async (req, res) => {
           ).join("\n");
       history.push({role:"user",content:message});
       history.push({role:"assistant",content:reply});
+      saveHistoryForSlot(slot);
       return send(200,{reply});
     }
 
     try {
-      const reply = await askClaude(history, message);
+      const { text: reply, provider } = await askClaude(history, message);
       history.push({role:"user",content:message});
       history.push({role:"assistant",content:reply});
-      if (history.length>40) history.splice(0,2);
+      saveHistoryForSlot(slot);
       const lead = await extractAndSaveLead(reply);
-      return send(200,{reply:cleanReply(reply), leadSaved:!!lead});
+      return send(200,{reply:cleanReply(reply), leadSaved:!!lead, provider});
     } catch(e) {
       console.error("Claude error",e.message);
       return send(502,{error:"Model error: "+e.message});
     }
+  }
+
+  // GET /chat-history — replay a slot's conversation so switching to it
+  // (or reopening the console, on a new page load, a different device,
+  // or after a Railway restart) restores what was actually said instead
+  // of starting from an empty pane pretending nothing was ever said.
+  // For the "chat" slot this is real persisted history; for a "2"-"5"
+  // side slot it's just whatever survived in this process's memory.
+  if (req.method==="GET" && req.url==="/chat-history") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    const slot = resolveSlot(req.headers["x-session-id"]);
+    return send(200, { messages: historyForSlot(slot) });
+  }
+
+  // POST /chat-reset — an explicit "start a new conversation" action.
+  // Only clears the one slot named by X-Session-Id; every other slot
+  // (the main "chat", or another side slot) is untouched.
+  if (req.method==="POST" && req.url==="/chat-reset") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    const slot = resolveSlot(req.headers["x-session-id"]);
+    resetHistoryForSlot(slot);
+    return send(200, { ok: true });
   }
 
   if (req.method==="POST" && req.url==="/send-email") {
@@ -1943,4 +2976,22 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT,"0.0.0.0",()=>{
   console.log("Darkly Agent v2 running on port "+PORT);
+
+  // Say where state is going and whether it survives a restart. Without
+  // this line, a volume that silently failed to mount looks identical in
+  // the logs to one that worked, right up until a deploy erases the
+  // history and nothing says why.
+  const storage = stateInfo();
+  console.log(
+    `[state] ${storage.directory} — ${storage.durable ? "DURABLE (survives deploys)" : "EPHEMERAL (history will be lost on the next deploy)"}`
+  );
+
+  const auto = startAutoTrader();
+  if (auto.started) {
+    console.log(
+      `[autotrader] active: every ${auto.intervalMinutes}m, mode=${auto.mode}`
+    );
+  } else {
+    console.log(`[autotrader] not scheduled: ${auto.reason}`);
+  }
 });

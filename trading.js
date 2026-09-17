@@ -1,5 +1,4 @@
-import fs from "node:fs";
-import path from "node:path";
+import { readState, writeState, stateInfo } from "./state.js";
 
 /* ------------------------------------------------------------------ *
  * Config
@@ -13,15 +12,18 @@ const ALPACA_BASE =
 const ALPACA_KEY_ID = process.env.ALPACA_KEY_ID || "";
 const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY || "";
 
+// Alpaca's market data API. Free accounts get the IEX feed; "sip" needs a
+// paid subscription and will 403 without one.
+const ALPACA_DATA_BASE =
+  process.env.ALPACA_DATA_BASE_URL || "https://data.alpaca.markets/v2";
+const ALPACA_FEED = process.env.ALPACA_FEED || "iex";
+
 // AutoTradeFlux's still-live Supabase backend supplies market data / signals.
 const SUPABASE_URL =
   process.env.SUPABASE_URL || "https://klwesxkhsuqerpkavuuv.supabase.co";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 
-const TRADE_LOG_FILE = path.join(
-  process.env.HOME || ".",
-  "darkly-trades.json"
-);
+const TRADE_LOG_FILE = "darkly-trades.json";
 
 export const LIMITS = {
   maxTradesPerDay: Number(process.env.MAX_TRADES_PER_DAY || 10),
@@ -39,18 +41,23 @@ export function isLiveEndpoint() {
  * ------------------------------------------------------------------ */
 
 function loadTrades() {
-  try {
-    if (fs.existsSync(TRADE_LOG_FILE)) {
-      return JSON.parse(fs.readFileSync(TRADE_LOG_FILE, "utf8"));
-    }
-  } catch (e) {
-    /* corrupt or unreadable log must never block trading decisions */
-  }
-  return [];
+  const trades = readState(TRADE_LOG_FILE, []);
+  return Array.isArray(trades) ? trades : [];
 }
 
 function saveTrades(trades) {
-  fs.writeFileSync(TRADE_LOG_FILE, JSON.stringify(trades, null, 2));
+  writeState(TRADE_LOG_FILE, trades);
+}
+
+/** Where the trade log lives and whether it survives a restart. */
+export function tradeLogInfo() {
+  const trades = loadTrades();
+  return {
+    ...stateInfo(),
+    file: TRADE_LOG_FILE,
+    entries: trades.length,
+    oldestEntry: trades.length ? trades[0].submittedAt || null : null
+  };
 }
 
 function logTrade(entry) {
@@ -63,6 +70,121 @@ function logTrade(entry) {
 export function getTradeLog(limit = 50) {
   const trades = loadTrades();
   return trades.slice(-limit).reverse();
+}
+
+/**
+ * Extract the actual execution from an Alpaca order object, or null if it
+ * has not filled. Submitting an order tells you what you asked for; only
+ * this tells you what you got, and the difference between them is
+ * slippage — the cost that quietly eats systematic strategies alive.
+ */
+function fillFrom(order) {
+  if (!order) return null;
+
+  const price =
+    order.filled_avg_price != null && order.filled_avg_price !== ""
+      ? Number(order.filled_avg_price)
+      : null;
+  const qty =
+    order.filled_qty != null && order.filled_qty !== ""
+      ? Number(order.filled_qty)
+      : null;
+
+  if (!Number.isFinite(price) || !Number.isFinite(qty) || price <= 0 || qty <= 0) {
+    return null;
+  }
+
+  return {
+    price,
+    qty,
+    value: Number((price * qty).toFixed(2)),
+    at: order.filled_at || order.updated_at || null,
+    status: order.status || null
+  };
+}
+
+const TERMINAL_UNFILLED = new Set([
+  "canceled",
+  "cancelled",
+  "expired",
+  "rejected",
+  "suspended",
+  "stopped"
+]);
+
+/**
+ * Ask the broker what actually happened to orders we have only recorded as
+ * submitted, and patch the log with real fills.
+ *
+ * This exists because the trade log was previously a record of intentions.
+ * Every entry said what was requested and nothing said what was obtained,
+ * which meant the history could not produce a single completed round-trip
+ * and the question "how has this actually done?" had no answer available
+ * even in principle. Run it before reading performance.
+ */
+export async function reconcileFills(options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit) || 60, 1), 200);
+  const maxAttempts = 5;
+
+  const trades = loadTrades();
+  const pending = [];
+
+  for (let i = trades.length - 1; i >= 0 && pending.length < limit; i--) {
+    const t = trades[i];
+    if (!t || !t.accepted || !t.orderId) continue;
+    if (t.fill && t.fill.price) continue;
+    if (t.unfilled) continue;
+    if ((t.fillAttempts || 0) >= maxAttempts) continue;
+    pending.push(i);
+  }
+
+  let filled = 0;
+  let stillOpen = 0;
+  let unfilled = 0;
+  const errors = [];
+
+  for (const i of pending) {
+    const trade = trades[i];
+    try {
+      const order = await alpacaRequest("GET", `/orders/${trade.orderId}`);
+      const fill = fillFrom(order);
+
+      trade.fillAttempts = (trade.fillAttempts || 0) + 1;
+      trade.fillCheckedAt = new Date().toISOString();
+      trade.orderStatus = order.status || null;
+
+      if (fill) {
+        trade.fill = fill;
+        filled++;
+      } else if (TERMINAL_UNFILLED.has(String(order.status || "").toLowerCase())) {
+        // It will never fill. Mark it so it stops being retried and so
+        // performance never counts an intention as a trade.
+        trade.unfilled = true;
+        trade.unfilledReason = order.status;
+        unfilled++;
+      } else {
+        stillOpen++;
+      }
+    } catch (e) {
+      trade.fillAttempts = (trade.fillAttempts || 0) + 1;
+      trade.fillLookupError = String(e.message || e);
+      errors.push(`${trade.orderId}: ${trade.fillLookupError}`);
+    }
+  }
+
+  if (pending.length) saveTrades(trades);
+
+  return {
+    checked: pending.length,
+    filled,
+    stillOpen,
+    unfilled,
+    errors,
+    note:
+      pending.length === 0
+        ? "Nothing to reconcile: every accepted order already has a recorded fill or a terminal status."
+        : `Patched ${filled} fill(s) into the trade log.`
+  };
 }
 
 function todaysTrades() {
@@ -108,6 +230,182 @@ async function alpacaRequest(method, endpoint, body) {
   }
 
   return parsed;
+}
+
+async function alpacaDataRequest(endpoint) {
+  if (!ALPACA_KEY_ID || !ALPACA_SECRET_KEY) {
+    throw new Error(
+      "Alpaca credentials are not configured (ALPACA_KEY_ID / ALPACA_SECRET_KEY)."
+    );
+  }
+
+  const res = await fetch(`${ALPACA_DATA_BASE}${endpoint}`, {
+    headers: {
+      "APCA-API-KEY-ID": ALPACA_KEY_ID,
+      "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
+    }
+  });
+
+  const text = await res.text();
+  let parsed;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch (e) {
+    parsed = { raw: text };
+  }
+
+  if (!res.ok) {
+    const detail =
+      (parsed && (parsed.message || parsed.raw)) || `HTTP ${res.status}`;
+    throw new Error(`Alpaca data ${endpoint} failed: ${detail}`);
+  }
+
+  return parsed;
+}
+
+/**
+ * Live quotes straight from the broker, for ANY symbol - not just the
+ * tracked universe. This is the authoritative price source; the Supabase
+ * market table is a historical snapshot and must not be used for pricing.
+ */
+export async function getQuote(input = {}) {
+  const symbols = (Array.isArray(input.symbols) ? input.symbols : [input.symbols])
+    .map((s) => String(s || "").trim().toUpperCase())
+    .filter(Boolean);
+
+  if (symbols.length === 0) throw new Error("At least one symbol is required.");
+
+  const data = await alpacaDataRequest(
+    `/stocks/snapshots?symbols=${encodeURIComponent(symbols.join(","))}&feed=${ALPACA_FEED}`
+  );
+
+  const snapshots = data.snapshots || data;
+  const quotes = [];
+  const missing = [];
+
+  for (const symbol of symbols) {
+    const s = snapshots[symbol];
+    if (!s) {
+      missing.push(symbol);
+      continue;
+    }
+
+    const last = s.latestTrade || {};
+    const day = s.dailyBar || {};
+    const prev = s.prevDailyBar || {};
+    const price = Number(last.p ?? day.c ?? 0) || null;
+    const prevClose = Number(prev.c ?? 0) || null;
+
+    quotes.push({
+      symbol,
+      price,
+      priceAsOf: last.t || day.t || null,
+      dayOpen: Number(day.o ?? 0) || null,
+      dayHigh: Number(day.h ?? 0) || null,
+      dayLow: Number(day.l ?? 0) || null,
+      dayVolume: Number(day.v ?? 0) || null,
+      prevClose,
+      change: price && prevClose ? Number((price - prevClose).toFixed(4)) : null,
+      changePercent:
+        price && prevClose
+          ? Number((((price - prevClose) / prevClose) * 100).toFixed(2))
+          : null
+    });
+  }
+
+  return { feed: ALPACA_FEED, count: quotes.length, quotes, missing };
+}
+
+/**
+ * How far back to ask for, in calendar days, to stand a good chance of
+ * getting `limit` bars of `timeframe`.
+ *
+ * This exists because of a real bug: Alpaca treats `limit` as a CAP on the
+ * response, not as a lookback. With no `start`, the window defaults to the
+ * current day, so a 120-bar daily request returned exactly 1 bar per symbol
+ * and silently starved the strategy — which then reported a calm
+ * "insufficient history" for every symbol as though that were market
+ * reality. Always send an explicit start.
+ */
+export function barsLookbackDays(timeframe, limit) {
+  const tf = String(timeframe || "1Day").toLowerCase();
+  const m = tf.match(/^(\d+)\s*(min|hour|day|week|month)/);
+  const n = m ? Number(m[1]) : 1;
+  const unit = m ? m[2] : "day";
+
+  let barsPerTradingDay;
+  if (unit === "min") barsPerTradingDay = 390 / n;
+  else if (unit === "hour") barsPerTradingDay = 6.5 / n;
+  else if (unit === "day") barsPerTradingDay = 1 / n;
+  else if (unit === "week") barsPerTradingDay = 1 / (5 * n);
+  else barsPerTradingDay = 1 / (21 * n);
+
+  const tradingDays = limit / barsPerTradingDay;
+
+  // ~252 trading days per 365 calendar days, plus padding for holidays,
+  // long weekends and halts. Over-asking costs nothing; under-asking
+  // silently degrades every signal.
+  return Math.ceil(tradingDays * 1.5) + 10;
+}
+
+/** Historical bars from Alpaca, oldest first, keyed by symbol. */
+export async function getBars(input = {}) {
+  const symbols = (Array.isArray(input.symbols) ? input.symbols : [input.symbols])
+    .map((s) => String(s || "").trim().toUpperCase())
+    .filter(Boolean);
+
+  if (symbols.length === 0) throw new Error("At least one symbol is required.");
+
+  const timeframe = input.timeframe || "1Day";
+  const limit = Math.min(Math.max(Number(input.limit) || 120, 30), 1000);
+
+  const start = new Date(
+    Date.now() - barsLookbackDays(timeframe, limit) * 86400000
+  )
+    .toISOString()
+    .slice(0, 10);
+
+  const bars = {};
+  let pageToken = null;
+  let pages = 0;
+
+  // Paginate rather than trust one response: a truncated page would look
+  // exactly like a short history, which is the failure we just fixed.
+  do {
+    const url =
+      `/stocks/bars?symbols=${encodeURIComponent(symbols.join(","))}` +
+      `&timeframe=${encodeURIComponent(timeframe)}` +
+      `&start=${start}&limit=10000&sort=asc` +
+      `&feed=${ALPACA_FEED}&adjustment=split` +
+      (pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : "");
+
+    const data = await alpacaDataRequest(url);
+
+    for (const [symbol, rows] of Object.entries(data.bars || {})) {
+      bars[symbol] = (bars[symbol] || []).concat(rows);
+    }
+
+    pageToken = data.next_page_token || null;
+    pages++;
+  } while (pageToken && pages < 20);
+
+  // Keep the most recent `limit` bars per symbol, still oldest-first.
+  for (const symbol of Object.keys(bars)) {
+    bars[symbol] = bars[symbol].slice(-limit);
+  }
+
+  return bars;
+}
+
+/** Alpaca's market clock — the authority on whether trading is possible. */
+export async function getClock() {
+  const c = await alpacaRequest("GET", "/clock");
+  return {
+    timestamp: c.timestamp,
+    isOpen: Boolean(c.is_open),
+    nextOpen: c.next_open,
+    nextClose: c.next_close
+  };
 }
 
 export async function getAccount() {
@@ -193,6 +491,42 @@ export async function cancelOrder(input = {}) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Asset tradability
+ *
+ * NAMING NOTE, kept deliberately literal: this is NOT live halt
+ * detection. Alpaca's /assets endpoint reports whether a symbol is
+ * structurally tradable on Alpaca at all (exists, is active, is not
+ * delisted or otherwise disabled) — it does not report an in-progress
+ * intraday trading halt, which needs the real-time trade/quote feed to
+ * see and which this account tier does not have. Calling this "halt
+ * detection" would be exactly the kind of overstated capability this
+ * codebase exists to avoid. What it DOES catch, which is real and worth
+ * catching: a delisted symbol, a typo'd or unsupported ticker, or a
+ * name Alpaca has otherwise disabled for trading — all of which
+ * previously would have been discovered only by the order failing (or
+ * worse, appearing to succeed against a name that silently doesn't
+ * behave the way the caller expects).
+ * ------------------------------------------------------------------ */
+
+export async function getAssetInfo(symbol) {
+  const sym = String(symbol || "").trim().toUpperCase();
+  if (!sym) throw new Error("symbol is required.");
+
+  const a = await alpacaRequest("GET", `/assets/${encodeURIComponent(sym)}`);
+
+  return {
+    symbol: a.symbol,
+    tradable: Boolean(a.tradable),
+    status: a.status, // "active" | "inactive"
+    exchange: a.exchange || null,
+    shortable: Boolean(a.shortable),
+    easyToBorrow: Boolean(a.easy_to_borrow),
+    fractionable: Boolean(a.fractionable),
+    marginable: Boolean(a.marginable)
+  };
+}
+
+/* ------------------------------------------------------------------ *
  * Guardrails
  *
  * Enforced in code before anything reaches Alpaca. These exist so an
@@ -243,13 +577,41 @@ async function checkGuardrails(order) {
   }
 
   // 4. Position size ceiling
+  //
+  // An order whose value cannot be determined is BLOCKED, not waved through:
+  // an unknown size is exactly the case the ceiling exists to catch.
   const estimatedUsd = await estimateOrderValue(order);
-  if (estimatedUsd !== null && estimatedUsd > LIMITS.maxPositionUsd) {
+
+  if (estimatedUsd === null) {
+    blocks.push(
+      `Could not determine the order's dollar value for ${order.symbol}, so the max position size check cannot be applied. Use a limit order or a notional amount.`
+    );
+  } else if (estimatedUsd > LIMITS.maxPositionUsd) {
     blocks.push(
       `Order value ~$${estimatedUsd.toFixed(2)} exceeds max position size $${
         LIMITS.maxPositionUsd
       }.`
     );
+  }
+
+  // 5. Asset tradability. A sell that reduces or closes an existing
+  // position is let through even if the asset now reports untradable —
+  // otherwise a symbol Alpaca disables mid-position would trap the
+  // account in it with no way to exit through this code path. A buy
+  // gets no such exception: opening a new position in a name Alpaca
+  // will not stand behind is exactly what this exists to stop.
+  let assetInfo = null;
+  if (order.side === "buy") {
+    try {
+      assetInfo = await getAssetInfo(order.symbol);
+      if (!assetInfo.tradable || assetInfo.status !== "active") {
+        blocks.push(
+          `${order.symbol} is not tradable on Alpaca right now (status: ${assetInfo.status}, tradable: ${assetInfo.tradable}). This checks structural tradability, not an intraday halt — an actively halted-but-otherwise-listed name would not be caught here.`
+        );
+      }
+    } catch (e) {
+      blocks.push(`Could not verify ${order.symbol}'s tradability with Alpaca: ${e.message}`);
+    }
   }
 
   return {
@@ -258,7 +620,8 @@ async function checkGuardrails(order) {
     context: {
       tradesToday: today.length,
       estimatedUsd,
-      dayPnl: account ? account.dayPnl : null
+      dayPnl: account ? account.dayPnl : null,
+      assetInfo
     }
   };
 }
@@ -269,13 +632,14 @@ async function estimateOrderValue(order) {
 
   if (order.limit_price) return Number(order.qty) * Number(order.limit_price);
 
-  // Market order: price it off the latest quote we can reach.
+  // Market order: price it off Alpaca's live quote. The Supabase market
+  // table is a historical snapshot and must never be used to size an order.
   try {
-    const data = await getMarketData({ symbols: [order.symbol] });
-    const row = data.stocks && data.stocks[0];
-    if (row && row.price) return Number(order.qty) * Number(row.price);
+    const { quotes } = await getQuote({ symbols: [order.symbol] });
+    const q = quotes && quotes[0];
+    if (q && q.price) return Number(order.qty) * Number(q.price);
   } catch (e) {
-    /* fall through - unknown value is reported as null, not assumed safe */
+    /* fall through - the caller blocks on null rather than assuming safe */
   }
 
   return null;
@@ -348,7 +712,27 @@ export async function placeOrder(input = {}) {
     rationale: input.rationale || null,
     guardrailContext: guard.context,
     submittedAt: new Date().toISOString(),
-    mode: isLiveEndpoint() ? "LIVE" : "PAPER"
+    mode: isLiveEndpoint() ? "LIVE" : "PAPER",
+
+    // The decision's own context, stored structurally rather than buried in
+    // a prose rationale. Without the stop price there is no way to express
+    // an outcome in R multiples later, and without the score there is no
+    // way to ask whether the model's confidence meant anything.
+    signal: input.signal
+      ? {
+          score: input.signal.score ?? null,
+          confidence: input.signal.confidence ?? null,
+          regime: input.signal.indicators?.marketRegime ?? null,
+          stopPrice: input.signal.stopPrice ?? null,
+          targetPrice: input.signal.targetPrice ?? null,
+          action: input.signal.action ?? null
+        }
+      : null,
+
+    // A submitted order is a request, not an outcome. Orders are rarely
+    // filled at submission time, so this starts empty and is patched by
+    // reconcileFills() once the broker reports what actually happened.
+    fill: fillFrom(result)
   });
 
   return {
@@ -393,20 +777,55 @@ export async function getMarketData(input = {}) {
   }
 
   const payload = await res.json();
-  let stocks = Array.isArray(payload.stocks) ? payload.stocks : [];
+  const all = Array.isArray(payload.stocks) ? payload.stocks : [];
 
+  let stocks = all;
   if (symbols.length > 0) {
-    stocks = stocks.filter((s) =>
+    stocks = all.filter((s) =>
       symbols.includes(String(s.symbol || "").toUpperCase())
     );
   }
 
-  const limit = Math.min(Math.max(Number(input.limit) || 25, 1), 100);
+  // No artificial cap: return everything unless the caller asks otherwise.
+  const limit = Number(input.limit) > 0 ? Number(input.limit) : stocks.length;
+  const returned = stocks.slice(0, limit);
+
+  const dataAsOf =
+    all[0]?.updated_at || all[0]?.last_updated || all[0]?.updatedAt || null;
+
+  const ageHours = dataAsOf
+    ? (Date.now() - new Date(dataAsOf).getTime()) / 3600000
+    : null;
+
+  const history = {};
+  if (payload.historyByStock && symbols.length > 0) {
+    for (const row of returned) {
+      const key = row.id ?? row.symbol;
+      if (payload.historyByStock[key]) history[row.symbol] = payload.historyByStock[key];
+    }
+  }
 
   return {
-    totalAvailable: Array.isArray(payload.stocks) ? payload.stocks.length : 0,
-    returned: Math.min(stocks.length, limit),
-    stocks: stocks.slice(0, limit),
-    dataAsOf: stocks[0]?.updated_at || stocks[0]?.last_updated || null
+    source: "AutoTradeFlux market table (historical snapshot, NOT a live feed)",
+    dataAsOf,
+    ageHours: ageHours === null ? null : Math.round(ageHours),
+    stale: ageHours !== null && ageHours > 24,
+    staleWarning:
+      ageHours !== null && ageHours > 24
+        ? `This snapshot is about ${Math.round(
+            ageHours / 24
+          )} day(s) old. Use get_quote for current prices; never price a trade from this data.`
+        : null,
+    universeSize: all.length,
+    matched: stocks.length,
+    returned: returned.length,
+    stocks: returned,
+    history: Object.keys(history).length > 0 ? history : undefined,
+    missing:
+      symbols.length > 0
+        ? symbols.filter(
+            (s) => !all.some((row) => String(row.symbol || "").toUpperCase() === s)
+          )
+        : []
   };
 }
