@@ -22,6 +22,7 @@ import {
   getMarketData,
   getQuote,
   getTradeLog,
+  getBars,
   reconcileFills,
   tradeLogInfo,
   isLiveEndpoint,
@@ -34,7 +35,8 @@ import {
   getRuns as autoTraderRuns,
   getStops as autoTraderStops,
   getHistoryInfo as autoTraderHistoryInfo,
-  setKillSwitch
+  setKillSwitch,
+  CONFIG as AUTOTRADER_CONFIG
 } from "./autotrader.js";
 import { stateInfo } from "./state.js";
 import { resolveExport } from "./history-export.js";
@@ -49,6 +51,8 @@ import {
   keyByRegime,
   keyByConfidenceBucket
 } from "./performance.js";
+import { backtest as runBacktest, runWindows as runBacktestWindows, BACKTEST_DEFAULTS } from "./backtest.js";
+import { RISK_DEFAULTS } from "./risk.js";
 
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(process.env.HOME || ".", "darkly-leads.json");
@@ -114,7 +118,7 @@ Be direct, human, specific. No corporate padding.
 
 --- TRADING MODULE ---
 
-You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_quote, get_market_data, place_order, cancel_order, get_trade_log, get_performance.
+You also manage a stock portfolio through Alpaca. Tools: get_account, get_positions, get_orders, get_quote, get_market_data, place_order, cancel_order, get_trade_log, get_performance, run_backtest.
 
 DESCRIBE ONLY WHAT EXISTS. When asked how you decide, what you check, or what you can do, describe exactly the tools, filters and guardrails listed here — nothing more. Do not invent analysis that is not performed. There is still NO halted-stock detection, NO sector classification, NO earnings-calendar awareness, NO options or margin logic, NO short selling, and NO machine learning of any kind. The free-text rationale you pass with a manual order is stored for audit; nothing scores it. If asked about a capability that does not exist, say plainly that it does not exist rather than describing how it would work.
 
@@ -126,9 +130,11 @@ Signal model: moving-average structure, RSI, MACD, trend slope and volume confir
 
 Risk controls, all enforced in code (risk.js): positions are sized so that being stopped out costs a fixed fraction of equity, which means position size follows from stop distance rather than being a fixed dollar amount; stops are set from ATR so they scale with each instrument's own volatility; stops trail upward with price and never loosen; total portfolio heat is capped, and positions with no known stop are counted at FULL value when measuring it; candidates too correlated with something already held are rejected as the same bet rather than diversification; illiquid and sub-minimum-price names are rejected on average dollar volume; and no new long is opened while the benchmark is below its long moving average, though exits always continue to run.
 
-Be accurate about what all this is. The risk controls are real and are the part most likely to matter. The signal model is conventional public-domain indicators on public data: no proven edge, no proprietary data, no backtest, no track record. Better risk management improves survival and consistency; it does not create predictive power, and you never imply it does.
+Be accurate about what all this is. The risk controls are real and are the part most likely to matter. The signal model is conventional public-domain indicators on public data: no proven edge, no proprietary data, no live track record. Better risk management improves survival and consistency; it does not create predictive power, and you never imply it does.
 
-PERFORMANCE. Use get_performance for any question about how the trading is actually going. Never estimate from the trade log yourself. Every figure it returns carries a sample size and a reliability flag, and below 30 closed trades results are indistinguishable from luck — when you report a number from it, report that caveat in the same breath. If it returns zero closed trades, say exactly that: zero closed trades is not a zero result, it means nothing has completed a round-trip yet. Never annualize, extrapolate or project.
+PERFORMANCE. Use get_performance for any question about how the LIVE trading is actually going. Never estimate from the trade log yourself. Every figure it returns carries a sample size and a reliability flag, and below 30 closed trades results are indistinguishable from luck — when you report a number from it, report that caveat in the same breath. If it returns zero closed trades, say exactly that: zero closed trades is not a zero result, it means nothing has completed a round-trip yet. Never annualize, extrapolate or project.
+
+BACKTESTING. Use run_backtest for any question about how the strategy WOULD HAVE done historically, or before recommending any change to the strategy or its parameters. It replays the exact same code (strategy.js + risk.js) against historical daily bars, filling decisions only at the next bar's open (no lookahead), and returns a scored report plus an 'honesty' field you must read and weigh in with — a backtest is a description of one historical sample, not a predictor, and a strategy that never beat simple buy-and-hold on its own benchmark is not a strategy worth trading. Always report the benchmark comparison ('beatBuyAndHold') alongside any return number — a strategy that made money but underperformed just holding the index has not demonstrated anything the market didn't hand out for free. Below the reliability floor, say so, same as get_performance. Use the 'windows' option when someone wants to know if a result holds up outside one period, and report a mixed or negative result exactly as plainly as a positive one — this tool exists to find out whether the strategy is worth running, not to justify running it.
 
 Price sources, and the difference matters:
 - get_quote is Alpaca's LIVE price feed and covers any symbol. It is authoritative.
@@ -434,6 +440,50 @@ const CLAUDE_TOOLS = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: "run_backtest",
+    description:
+      "Replay the exact strategy and risk rules (strategy.js + risk.js, the same code the live autotrader runs) against historical daily bars. This is a simulation, not a prediction — read the returned 'honesty' field before saying anything about the result. No lookahead: decisions made from a day's close are only ever filled at the next day's open. Fetches its own historical bars; costs one or more real market-data calls, so don't call this on every message, only when the user is actually asking about backtested or historical strategy performance. Pass `windows` to run the identical unmodified rules across several independent date ranges instead of one (closer to genuine out-of-sample checking than a single period).",
+    input_schema: {
+      type: "object",
+      properties: {
+        universe: {
+          type: "array",
+          items: { type: "string" },
+          description: "Symbols to trade in the simulation. Defaults to the autotrader's configured watchlist."
+        },
+        lookbackTradingDays: {
+          type: "integer",
+          minimum: 260,
+          maximum: 1500,
+          description: "How many trading days of history to fetch before slicing into the warmup + test period. Default 500 (~2 years). More costs more data calls and a longer warmup eats into the usable test period."
+        },
+        aggressiveness: {
+          type: "string",
+          enum: ["conservative", "moderate", "aggressive"],
+          description: "Defaults to the autotrader's currently configured aggressiveness."
+        },
+        startingEquity: {
+          type: "number",
+          description: "Simulated starting cash. Default 100000. Purely a scaling factor for dollar figures — percentages are unaffected."
+        },
+        windows: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              start: { type: "string", description: "YYYY-MM-DD" },
+              end: { type: "string", description: "YYYY-MM-DD" }
+            },
+            required: ["label", "start", "end"]
+          },
+          description: "Optional: run the same rules across several disjoint date ranges (e.g. different years) instead of one continuous backtest, and compare them."
+        }
+      },
+      additionalProperties: false
+    }
   }
 ];
 
@@ -596,6 +646,74 @@ async function executeClaudeTool(name, input = {}) {
       honesty:
         "Past results do not establish skill. Below 30 closed trades the dominant explanation for any figure here is luck, and the reliability flag says so explicitly. Report the caveat whenever you report the number."
     };
+  }
+
+  if (name === "run_backtest") {
+    const universe = Array.isArray(input.universe) && input.universe.length
+      ? input.universe.map((s) => String(s).toUpperCase())
+      : AUTOTRADER_CONFIG.universe;
+    const benchmarkSymbol = RISK_DEFAULTS.benchmarkSymbol;
+    const aggressiveness = input.aggressiveness || AUTOTRADER_CONFIG.aggressiveness;
+    const startingEquity = Number.isFinite(Number(input.startingEquity)) ? Number(input.startingEquity) : 100000;
+    const limit = Math.min(Math.max(Number(input.lookbackTradingDays) || 500, 260), 1500);
+
+    let barsBySymbol;
+    try {
+      barsBySymbol = await getBars({
+        symbols: Array.from(new Set([...universe, benchmarkSymbol])),
+        timeframe: "1Day",
+        limit
+      });
+    } catch (e) {
+      return { ok: false, error: `Could not fetch historical bars: ${e.message}` };
+    }
+
+    const backtestOptions = { universe, benchmarkSymbol, aggressiveness, startingEquity };
+
+    // Trim what goes back to the model: a full equity curve and every
+    // closed trade would burn the context window on every call. The
+    // summary statistics carry the substance; a small sample of trades
+    // is enough to ground a specific question about one of them.
+    const slim = (report) => {
+      if (!report.ok) return report;
+      const trades = report.closedTrades;
+      return {
+        ok: true,
+        period: report.period,
+        universe: report.universe,
+        benchmarkSymbol: report.benchmarkSymbol,
+        params: report.params,
+        startingEquity: report.startingEquity,
+        finalEquity: report.finalEquity,
+        strategyReturnPercent: report.strategyReturnPercent,
+        benchmark: report.benchmark,
+        beatBuyAndHold: report.beatBuyAndHold,
+        performance: report.performance,
+        drawdown: report.drawdown,
+        tradeCounts: report.tradeCounts,
+        openAtEnd: report.openAtEnd,
+        sampleClosedTrades: {
+          note: `Showing up to 10 of ${trades.length} closed trades (first 5, last 5). Use the 'performance' summary above for aggregate figures.`,
+          trades: trades.length <= 10 ? trades : [...trades.slice(0, 5), ...trades.slice(-5)]
+        },
+        warnings: report.warnings,
+        honesty: report.honesty
+      };
+    };
+
+    if (Array.isArray(input.windows) && input.windows.length > 0) {
+      const result = runBacktestWindows(barsBySymbol, input.windows, backtestOptions);
+      return {
+        windowCount: result.windowCount,
+        usableCount: result.usableCount,
+        consistency: result.consistency,
+        honesty: result.honesty,
+        windows: result.windows.map((w) => ({ label: w.label, start: w.start, end: w.end, report: slim(w.report) }))
+      };
+    }
+
+    const report = runBacktest(barsBySymbol, backtestOptions);
+    return slim(report);
   }
 
   throw new Error(`Unknown Claude tool: ${name}`);
