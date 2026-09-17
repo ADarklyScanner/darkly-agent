@@ -1,15 +1,1723 @@
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import Anthropic from "@anthropic-ai/sdk";
+import {
+  readAllLeads,
+  readActiveMarket,
+  readEngineConfig,
+  readBusinessProspects,
+  readConnectorCandidateUniverse,
+  readBusinessCandidateUniverse,
+  pickDailyQueue,
+  updateLeadStatus,
+  DAILY_LIMIT
+} from "./sheets.js";
 
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
+const DATA_FILE = path.join(process.env.HOME || ".", "darkly-leads.json");
 
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({
-    status: "ok",
-    service: "referral-market-agent"
-  }));
+function loadLeads() {
+  try {
+    if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+  } catch(e) {}
+  return [];
+}
+
+function saveLeads(leads) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(leads, null, 2));
+}
+
+function upsertLead(lead) {
+  const leads = loadLeads();
+  const idx = leads.findIndex(l => l.id === lead.id);
+  if (idx >= 0) leads[idx] = lead; else leads.push(lead);
+  saveLeads(leads);
+}
+
+function getLeadById(id) {
+  return loadLeads().find(l => l.id === id);
+}
+
+const sessions = new Map();
+function getHistory(sid) {
+  if (!sessions.has(sid)) sessions.set(sid, []);
+  return sessions.get(sid);
+}
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+const SYSTEM_PROMPT = `You are Darkly Agent, the private operations assistant for Referral Market.
+
+When the user pastes a connector lead row, process it fully:
+1. Identify the lead and connector roles
+2. Classify tier: GREEN / YELLOW / ORANGE / RED
+3. Recommend: CHASE NOW / ASK PERMISSION FIRST / HOLD / DO NOT CHASE
+4. Why it matters
+5. What you verified vs inferred
+6. Exact numbered steps
+7. Complete copy/paste outreach email
+8. Response scripts for common replies
+9. Follow-up schedule with exact dates
+10. Exact sheet log entry
+11. One-line NEXT ACTION
+
+At the very end output this exact block so the system can save the lead:
+LEAD_DATA_JSON:{"id":"<channel_id>","name":"<lead_name>","market":"<market>","status":"New","tier":"<TIER>","contact":"<email_or_phone>","nextFollowUp":"<YYYY-MM-DD>","outreachEmail":{"subject":"<subject>","body":"<body>"},"log":[]}
+
+Commands:
+LIST LEADS - show all tracked leads by status
+FOLLOW UP <id> - generate follow-up for that lead
+LOG <id> <outcome> - acknowledge logging outcome
+
+You have live tool access to the ReferralMarket master Google Sheet. Use those tools whenever the user asks about the sheet, markets, channels, leads, policy state, actionability, or current ReferralMarket data. Never claim you lack Sheet access when a relevant tool is available.
+
+Engine Config is the authoritative source for ReferralMarket operating policy. Before giving operational advice about lifecycle, saturation, switching, discovery eligibility, outreach, drafts, sending, policy gates, Gmail, maintenance, thresholds, or market rotation, read the relevant Engine Config values with get_engine_config. Do not invent thresholds or rules. Do not treat descriptive market notes or Saturation State as overriding the canonical Discovery Phase. Never recommend promotional sending when PROSPECT_EMAIL_MODE is DRAFT_ONLY or PROSPECT_AUTO_SEND is FALSE.
+
+Be direct, human, specific. No corporate padding.`;
+
+const CLAUDE_TOOLS = [
+  {
+    name: "get_active_market",
+    description: "Read the current active ReferralMarket market directly from the live master Google Sheet.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_engine_config",
+    description: "Read authoritative ReferralMarket runtime policy directly from the live Engine Config tab. Use this before making claims about discovery lifecycle, switching, outreach permissions, Gmail behavior, policy gates, thresholds, saturation, drafts, sending, maintenance, or other engine rules.",
+    input_schema: {
+      type: "object",
+      properties: {
+        keys: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional Engine Config parameter names to retrieve. Omit to read the full current configuration."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "search_channels",
+    description: "Search ReferralMarket's canonical Channels rows in the live master Google Sheet. Use this for questions about connector channels, markets, policy states, actionability, scores, referral-system matches, or specific leads.",
+    input_schema: {
+      type: "object",
+      properties: {
+        market: {
+          type: "string",
+          description: "Optional market name or partial market name."
+        },
+        query: {
+          type: "string",
+          description: "Optional text to match anywhere in a channel row."
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Maximum rows to return. Default 25."
+        }
+      },
+      additionalProperties: false
+    }
+  }
+];
+
+async function executeClaudeTool(name, input = {}) {
+  if (name === "get_active_market") {
+    try {
+      return await readActiveMarket();
+    } catch (e) {
+      return {
+        activeMarket: null,
+        status: "NO_MARKET_LOCK",
+        message: "No single active market is currently required. Search and analysis may continue across the live databases."
+      };
+    }
+  }
+
+  if (name === "get_engine_config") {
+    return await readEngineConfig(input.keys || []);
+  }
+
+
+  if (name === "search_channels") {
+    const all = await readAllLeads();
+
+    const market = String(input.market || "").trim().toLowerCase();
+    const query = String(input.query || "").trim().toLowerCase();
+    const limit = Math.min(Math.max(Number(input.limit) || 25, 1), 100);
+
+    let rows = all;
+
+    if (market) {
+      rows = rows.filter(row =>
+        String(row.Market || "").toLowerCase().includes(market)
+      );
+    }
+
+    if (query) {
+      rows = rows.filter(row =>
+        Object.values(row).some(value =>
+          String(value ?? "").toLowerCase().includes(query)
+        )
+      );
+    }
+
+    return {
+      totalMatches: rows.length,
+      returned: Math.min(rows.length, limit),
+      rows: rows.slice(0, limit)
+    };
+  }
+
+  throw new Error(`Unknown Claude tool: ${name}`);
+}
+
+
+const CORE_ENGINE_CONFIG_KEYS = [
+  "PROSPECT_EMAIL_MODE",
+  "PROSPECT_AUTO_SEND",
+  "MAX_FRESH_DISCOVERY_RUNS_PER_MARKET_CYCLE",
+  "FOURTH_RUN_REQUIRES_NEW_SOURCE_FAMILY",
+  "SMALL_LEFTOVER_YIELD_EXTENDS_CITY",
+  "SWITCH_AFTER_DIMINISHING_RETURNS",
+  "POLICY_GATE_REQUIRED_BEFORE_ACTIONABLE",
+  "POLICY_UNKNOWN_COUNTS_AS_ACTIONABLE",
+  "ACTIONABLE_POOL_STATES",
+  "SWITCH_USES_ACTIONABLE_NEW_AB",
+  "GLOBAL_MAINTENANCE_RECHECK_LIMIT",
+  "OWNER_DIGEST_SEND",
+  "RUN_TIMESTAMP_TIMEZONE",
+  "RUN_TIMESTAMP_FORMAT"
+];
+
+async function buildLiveRuntimeContext() {
+  const [market, config] = await Promise.all([
+    readActiveMarket(),
+    readEngineConfig(CORE_ENGINE_CONFIG_KEYS)
+  ]);
+
+  return {
+    activeMarket: market,
+    engineConfig: config.byKey
+  };
+}
+
+async function askClaude(history, userMessage) {
+  const runtimeContext = await buildLiveRuntimeContext();
+
+  const runtimeSystem =
+    SYSTEM_PROMPT +
+    "\n\nLIVE AUTHORITATIVE RUNTIME CONTEXT — fetched from the master Google Sheet for this request:\n" +
+    JSON.stringify(runtimeContext, null, 2) +
+    "\n\nRules for this runtime context: Engine Config overrides inference and descriptive notes. A missing active market means NO_MARKET_LOCK and must never block ordinary chat, database research, or cross-market analysis. Discovery Phase is only relevant when discussing or executing a market-specific production run. Never invent fixed thresholds. Never recommend promotional sending when PROSPECT_EMAIL_MODE=DRAFT_ONLY or PROSPECT_AUTO_SEND=FALSE.";
+
+  const messages = [...history, { role: "user", content: userMessage }];
+
+  for (let round = 0; round < 8; round++) {
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 4096,
+      system: runtimeSystem,
+      tools: CLAUDE_TOOLS,
+      messages
+    });
+
+    const toolUses = response.content.filter(block => block.type === "tool_use");
+
+    if (toolUses.length === 0) {
+      return response.content
+        .filter(block => block.type === "text")
+        .map(block => block.text)
+        .join("\n")
+        .trim();
+    }
+
+    messages.push({
+      role: "assistant",
+      content: response.content
+    });
+
+    const toolResults = [];
+
+    for (const toolUse of toolUses) {
+      try {
+        const result = await executeClaudeTool(
+          toolUse.name,
+          toolUse.input || {}
+        );
+
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          content: JSON.stringify(result)
+        });
+      } catch (error) {
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          is_error: true,
+          content: String(error.message || error)
+        });
+      }
+    }
+
+    messages.push({
+      role: "user",
+      content: toolResults
+    });
+  }
+
+  throw new Error("Claude exceeded tool-call round limit");
+}
+
+async function extractAndSaveLead(reply) {
+  const marker = "LEAD_DATA_JSON:";
+  const idx = reply.indexOf(marker);
+
+  if (idx === -1) return null;
+
+  try {
+    const jsonStr = reply
+      .slice(idx + marker.length)
+      .split("\n")[0]
+      .trim();
+
+    let lead = JSON.parse(jsonStr);
+
+    if (!lead.id || !lead.name) return null;
+
+    const existing = getLeadById(lead.id);
+
+    if (existing) {
+      lead = {
+        ...existing,
+        ...lead,
+        log: [
+          ...(existing.log || []),
+          ...(lead.log || [])
+        ]
+      };
+    }
+
+    upsertLead(lead);
+
+    if (
+      isEmailAddress(lead.contact) &&
+      lead.outreachEmail?.subject &&
+      lead.outreachEmail?.body &&
+      !lead.gmailDraftUid
+    ) {
+      try {
+        const draft = await createGmailDraft(lead);
+
+        lead.gmailDraftUid = draft.uid;
+        lead.gmailDraftMailbox = draft.mailbox;
+        lead.gmailDraftCreatedAt = new Date().toISOString();
+
+        lead.log = lead.log || [];
+        lead.log.push({
+          date: lead.gmailDraftCreatedAt,
+          action: "Gmail draft created",
+          subject: lead.outreachEmail.subject
+        });
+
+        upsertLead(lead);
+
+        console.log(
+          "Gmail draft created:",
+          lead.id,
+          draft.uid
+        );
+      } catch (e) {
+        console.error(
+          "Gmail draft failed:",
+          lead.id,
+          e.message
+        );
+      }
+    }
+
+    return lead;
+  } catch (e) {
+    console.error("Lead extract error", e.message);
+    return null;
+  }
+}
+
+function cleanReply(reply) {
+  const idx = reply.indexOf("LEAD_DATA_JSON:");
+  return idx === -1 ? reply : reply.slice(0, idx).trim();
+}
+
+function isEmailAddress(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+    String(value || "").trim()
+  );
+}
+
+function getBusinessGmailCredentials() {
+  const REQUIRED = "referralmarket.site@gmail.com";
+
+  const user = String(process.env.GMAIL_USER || "")
+    .trim()
+    .toLowerCase();
+
+  if (user !== REQUIRED) {
+    throw new Error(
+      "Wrong Gmail account: " + (user || "NOT SET")
+    );
+  }
+
+  if (!process.env.GMAIL_APP_PASSWORD) {
+    throw new Error("GMAIL_APP_PASSWORD is missing");
+  }
+
+  return {
+    user: REQUIRED,
+    password: process.env.GMAIL_APP_PASSWORD
+  };
+}
+
+async function createGmailDraft(lead) {
+  if (
+    !lead?.outreachEmail?.subject ||
+    !lead?.outreachEmail?.body
+  ) {
+    throw new Error("Lead has no outreach email");
+  }
+
+  if (!isEmailAddress(lead.contact)) {
+    throw new Error("Lead contact is not an email address");
+  }
+
+  const { user, password } =
+    getBusinessGmailCredentials();
+
+  const { createTransport } =
+    await import("nodemailer");
+
+  const { ImapFlow } =
+    await import("imapflow");
+
+  const builder = createTransport({
+    streamTransport: true,
+    newline: "unix",
+    buffer: true
+  });
+
+  const message = await builder.sendMail({
+    from: user,
+    to: lead.contact,
+    subject: lead.outreachEmail.subject,
+    text: lead.outreachEmail.body
+  });
+
+  const client = new ImapFlow({
+    host: "imap.gmail.com",
+    port: 993,
+    secure: true,
+    auth: {
+      user,
+      pass: password
+    },
+    logger: false
+  });
+
+  await client.connect();
+
+  try {
+    const boxes = await client.list();
+
+    const drafts =
+      boxes.find(
+        b => b.specialUse === "\\Drafts"
+      )?.path ||
+      boxes.find(
+        b => /draft/i.test(b.path)
+      )?.path;
+
+    if (!drafts) {
+      throw new Error("Gmail Drafts mailbox not found");
+    }
+
+    const result = await client.append(
+      drafts,
+      message.message,
+      ["\\Draft"]
+    );
+
+    return {
+      mailbox: drafts,
+      uid: result?.uid ? String(result.uid) : ""
+    };
+  } finally {
+    await client.logout();
+  }
+}
+
+function htmlPage() {
+  return `<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Darkly Research Console</title>
+<style>
+*{box-sizing:border-box}
+body{
+  font-family:system-ui,-apple-system,sans-serif;
+  margin:0;
+  background:#0d0d0f;
+  color:#e8e8eb;
+  height:100vh;
+  overflow:hidden;
+}
+button,input,select,textarea{font:inherit}
+button{cursor:pointer}
+
+#login-overlay{
+  position:fixed;inset:0;background:#0d0d0f;
+  display:flex;align-items:center;justify-content:center;
+  z-index:1000;
+}
+#login-box{
+  width:min(340px,88vw);
+  background:#151519;
+  border:1px solid #303038;
+  border-radius:18px;
+  padding:28px;
+}
+#login-box h2{margin:0 0 8px}
+#login-box p{color:#888;margin:0 0 18px;font-size:13px}
+#pass{
+  width:100%;padding:12px;
+  border-radius:10px;border:1px solid #34343d;
+  background:#1b1b20;color:#fff;margin-bottom:10px;
+}
+#unlock-btn{
+  width:100%;padding:12px;border:0;border-radius:10px;
+  background:#243d31;color:#68e59c;
+}
+
+#app{
+  height:100vh;
+  display:flex;
+  flex-direction:column;
+}
+
+#topbar{
+  min-height:56px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 12px;
+  border-bottom:1px solid #26262d;
+  background:#141417;
+}
+#title{
+  font-weight:700;
+  font-size:17px;
+  white-space:nowrap;
+}
+.mode-badge{
+  font-size:10px;
+  padding:4px 7px;
+  border-radius:999px;
+  background:#2a1c34;
+  color:#dc8cff;
+  white-space:nowrap;
+}
+#row-count{
+  font-size:11px;color:#999;
+  white-space:nowrap;
+}
+.spacer{flex:1}
+.navbtn{
+  border:1px solid #33333a;
+  border-radius:9px;
+  padding:7px 10px;
+  background:#1b1b1f;
+  color:#aaa;
+}
+.navbtn.active{
+  background:#243d31;
+  color:#6ce5a0;
+  border-color:#315743;
+}
+
+#research-view{
+  flex:1;
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+}
+
+#summary{
+  display:flex;
+  gap:7px;
+  overflow-x:auto;
+  padding:8px 10px;
+  border-bottom:1px solid #232329;
+  scrollbar-width:none;
+}
+.stat{
+  flex:0 0 auto;
+  padding:7px 10px;
+  border-radius:10px;
+  background:#17171b;
+  border:1px solid #292930;
+  min-width:90px;
+}
+.stat .n{font-weight:700;font-size:16px}
+.stat .l{color:#777;font-size:9px;text-transform:uppercase;letter-spacing:.5px}
+
+#filters{
+  display:flex;
+  gap:7px;
+  flex-wrap:wrap;
+  padding:8px 10px;
+  border-bottom:1px solid #24242a;
+  background:#111114;
+}
+#filters input,#filters select{
+  background:#19191e;
+  border:1px solid #303038;
+  color:#ddd;
+  border-radius:8px;
+  padding:8px;
+  min-height:38px;
+}
+#search{flex:1;min-width:180px}
+.filter-small{max-width:175px}
+#refresh-btn{
+  border:0;border-radius:8px;
+  padding:8px 12px;
+  background:#243d31;color:#68e59c;
+}
+
+#table-wrap{
+  flex:1;
+  overflow:auto;
+  position:relative;
+}
+table{
+  border-collapse:separate;
+  border-spacing:0;
+  min-width:1500px;
+  width:100%;
+  font-size:11px;
+}
+th{
+  position:sticky;
+  top:0;
+  z-index:4;
+  background:#17171b;
+  color:#8b8b96;
+  text-align:left;
+  padding:8px 7px;
+  border-bottom:1px solid #33333a;
+  white-space:nowrap;
+  cursor:pointer;
+}
+td{
+  padding:7px;
+  border-bottom:1px solid #202026;
+  vertical-align:top;
+}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:#17171c}
+.rank{
+  color:#777;
+  text-align:right;
+  width:45px;
+}
+.name{
+  font-weight:650;
+  color:#eee;
+  max-width:250px;
+}
+.id{color:#777;white-space:nowrap}
+.market{white-space:nowrap}
+.muted{color:#777}
+.good{color:#69df9d}
+.warn{color:#f0c35a}
+.bad{color:#ff7878}
+.top-tier{
+  color:#e999ff;
+  font-weight:700;
+}
+.kind-pill{
+  padding:3px 6px;
+  border-radius:6px;
+  font-size:9px;
+  white-space:nowrap;
+}
+.kind-channel{background:#20382d;color:#65df98}
+.kind-prospect{background:#253247;color:#83b7ff}
+.kind-connectorCandidate{background:#403421;color:#efc56d}
+.kind-businessCandidate{background:#382444;color:#db91f0}
+
+#footer{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:7px 10px;
+  border-top:1px solid #292930;
+  font-size:11px;
+  color:#777;
+}
+#visible-info{flex:1}
+
+#chat-view{
+  display:none;
+  flex:1;
+  overflow:hidden;
+  flex-direction:column;
+}
+#chat{
+  flex:1;
+  overflow-y:auto;
+  padding:14px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.msg{
+  padding:11px 14px;
+  border-radius:13px;
+  white-space:pre-wrap;
+  line-height:1.45;
+  font-size:14px;
+}
+.me{align-self:flex-end;background:#203126;max-width:88%}
+.bot{
+  align-self:flex-start;background:#18181c;
+  border:1px solid #292930;max-width:96%
+}
+#inputbar{
+  display:flex;gap:8px;padding:10px;
+  border-top:1px solid #292930;
+}
+#message{
+  flex:1;min-height:52px;max-height:150px;
+  border-radius:11px;border:1px solid #33333b;
+  background:#19191e;color:#eee;padding:10px;
+  resize:vertical;
+}
+#send-btn{
+  border:0;border-radius:11px;
+  background:#243d31;color:#68e59c;padding:10px 16px;
+}
+
+#modal{
+  display:none;
+  position:fixed;inset:0;
+  background:rgba(0,0,0,.85);
+  z-index:500;
+  align-items:center;justify-content:center;
+}
+#modal.open{display:flex}
+#modal-box{
+  width:min(760px,94vw);
+  max-height:88vh;
+  overflow:auto;
+  background:#151519;
+  border:1px solid #323239;
+  border-radius:15px;
+  padding:18px;
+}
+#modal-head{
+  display:flex;gap:10px;align-items:flex-start;
+  margin-bottom:12px;
+}
+#modal-name{font-size:18px;font-weight:700;flex:1}
+#close-modal{
+  border:1px solid #33333a;background:#202025;color:#aaa;
+  border-radius:8px;padding:6px 10px;
+}
+#detail-grid{
+  display:grid;
+  grid-template-columns:150px 1fr;
+  gap:1px;
+  background:#25252b;
+  border:1px solid #292930;
+}
+.dk,.dv{padding:7px;background:#151519}
+.dk{color:#777;font-size:10px;text-transform:uppercase}
+.dv{font-size:12px;white-space:pre-wrap;word-break:break-word}
+
+@media(max-width:700px){
+  #title{font-size:15px}
+  .mode-badge{display:none}
+  #topbar{padding:7px}
+  #filters{padding:7px}
+  #summary{padding:7px}
+  table{font-size:10px}
+  th,td{padding:6px}
+  #detail-grid{grid-template-columns:105px 1fr}
+}
+</style>
+</head>
+
+<body>
+
+<div id="login-overlay">
+  <div id="login-box">
+    <h2>Darkly Agent</h2>
+    <p>ReferralMarket research console</p>
+    <input id="pass" type="password" placeholder="Passcode">
+    <button id="unlock-btn">Unlock</button>
+  </div>
+</div>
+
+<div id="app">
+
+  <div id="topbar">
+    <div id="title">Darkly Research</div>
+    <div class="mode-badge">PRE-LAUNCH CALIBRATION</div>
+    <div id="row-count">0 rows</div>
+    <div class="spacer"></div>
+    <button id="research-tab" class="navbtn active">Research</button>
+    <button id="chat-tab" class="navbtn">Chat</button>
+  </div>
+
+  <section id="research-view">
+
+    <div id="summary">
+      <div class="stat"><div class="n" id="s-total">0</div><div class="l">All records</div></div>
+      <div class="stat"><div class="n" id="s-channels">0</div><div class="l">Channels</div></div>
+      <div class="stat"><div class="n" id="s-prospects">0</div><div class="l">Prospects</div></div>
+      <div class="stat"><div class="n" id="s-raw">0</div><div class="l">Raw candidates</div></div>
+      <div class="stat"><div class="n" id="s-top">0</div><div class="l">Top tier</div></div>
+      <div class="stat"><div class="n" id="s-ready">0</div><div class="l">Ready</div></div>
+      <div class="stat"><div class="n" id="s-review">0</div><div class="l">Policy review</div></div>
+      <div class="stat"><div class="n" id="s-market">—</div><div class="l">Active market</div></div>
+    </div>
+
+    <div id="filters">
+
+      <input id="search" placeholder="Search name, ID, type, source, market...">
+
+      <select id="kind-filter" class="filter-small">
+        <option value="">All datasets</option>
+        <option value="channel">Channels</option>
+        <option value="prospect">Business prospects</option>
+        <option value="connectorCandidate">Connector candidates</option>
+        <option value="businessCandidate">Business candidates</option>
+      </select>
+
+      <select id="market-filter" class="filter-small">
+        <option value="">All markets</option>
+      </select>
+
+      <select id="state-filter" class="filter-small">
+        <option value="">All states</option>
+        <option value="READY">READY</option>
+        <option value="APPROVAL REQUIRED">APPROVAL REQUIRED</option>
+        <option value="POLICY REVIEW">POLICY REVIEW</option>
+        <option value="INSTITUTIONAL ONLY">INSTITUTIONAL ONLY</option>
+        <option value="BLOCKED">BLOCKED</option>
+        <option value="ELIGIBLE">ELIGIBLE</option>
+        <option value="REVIEW">REVIEW</option>
+      </select>
+
+      <select id="special-filter" class="filter-small">
+        <option value="">All records</option>
+        <option value="top">TOP TIER only</option>
+        <option value="actionable">Actionable only</option>
+        <option value="referral">Referral-system matches</option>
+        <option value="policy">Policy review/intelligence</option>
+      </select>
+
+      <select id="sort-select" class="filter-small">
+        <option value="rank">Research rank</option>
+        <option value="market">Market</option>
+        <option value="quality">Quality score</option>
+        <option value="scalability">Scalability</option>
+        <option value="latest">Newest evidence</option>
+        <option value="name">Name</option>
+      </select>
+
+      <select id="limit-select" class="filter-small">
+        <option value="50">50 rows</option>
+        <option value="100">100 rows</option>
+        <option value="250" selected>250 rows</option>
+        <option value="500">500 rows</option>
+        <option value="all">All rows</option>
+      </select>
+
+      <button id="refresh-btn">Refresh Live Data</button>
+    </div>
+
+    <div id="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th data-sort="rank">#</th>
+            <th>Dataset</th>
+            <th data-sort="market">Market</th>
+            <th>ID</th>
+            <th data-sort="name">Name</th>
+            <th>Type / Family</th>
+            <th>Connector / Category</th>
+            <th>Priority</th>
+            <th>Actionability / State</th>
+            <th>Policy</th>
+            <th>Referral Match</th>
+            <th>Top Tier</th>
+            <th data-sort="quality">Quality</th>
+            <th data-sort="scalability">Scale</th>
+            <th>Recommendation</th>
+            <th data-sort="latest">Last Evidence</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+
+    <div id="footer">
+      <div id="visible-info">Loading...</div>
+      <div id="load-status"></div>
+    </div>
+
+  </section>
+
+  <section id="chat-view">
+    <div id="chat"></div>
+    <div id="inputbar">
+      <textarea id="message" placeholder="Ask Darkly about the live ReferralMarket data..."></textarea>
+      <button id="send-btn">Send</button>
+    </div>
+  </section>
+
+</div>
+
+<div id="modal">
+  <div id="modal-box">
+    <div id="modal-head">
+      <div id="modal-name">Record</div>
+      <button id="close-modal">Close</button>
+    </div>
+    <div id="detail-grid"></div>
+  </div>
+</div>
+
+<script>
+let passcode="";
+const sid=Math.random().toString(36).slice(2);
+
+let researchRows=[];
+let activeMarket=null;
+let currentSort="rank";
+
+const byId=id=>document.getElementById(id);
+
+byId("unlock-btn").onclick=unlock;
+byId("pass").onkeydown=e=>{if(e.key==="Enter")unlock()};
+
+function unlock(){
+  const p=byId("pass").value.trim();
+  if(!p)return;
+
+  passcode=p;
+  byId("login-overlay").style.display="none";
+
+  loadResearch();
+
+  addMsg(
+    "Darkly Agent ready. Live market data is available in the Research view.",
+    "bot"
+  );
+}
+
+byId("research-tab").onclick=()=>showView("research");
+byId("chat-tab").onclick=()=>showView("chat");
+
+function showView(which){
+  const research=which==="research";
+
+  byId("research-view").style.display=research?"flex":"none";
+  byId("chat-view").style.display=research?"none":"flex";
+
+  byId("research-tab").classList.toggle("active",research);
+  byId("chat-tab").classList.toggle("active",!research);
+
+  if(!research)byId("message").focus();
+}
+
+function esc(value){
+  return String(value??"")
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;");
+}
+
+function num(v){
+  const n=parseFloat(String(v??"").replace(/[^0-9.-]/g,""));
+  return Number.isFinite(n)?n:0;
+}
+
+function str(v){return String(v??"").trim()}
+
+function normalizeChannel(raw){
+  return {
+    kind:"channel",
+    id:str(raw["Channel ID"]),
+    name:str(raw["Channel"]),
+    market:str(raw["Market"]||raw["City Group"]),
+    type:str(raw["Channel Type"]),
+    category:str(raw["Connector Type"]),
+    family:str(raw["Parent / Branch Source"]),
+    priority:str(raw["Priority"]),
+    state:str(raw["Actionability State"]),
+    policy:str(raw["Policy Compatibility"]),
+    referral:str(raw["Referral-System Match"]),
+    topTier:str(raw["Top-Tier Candidate"]),
+    quality:num(raw["Quality Score"]),
+    scalability:num(raw["Scalability Score"]),
+    recommendation:num(raw["Recommendation Score"]),
+    last:str(raw["Last Checked"]||raw["Policy Checked At (PT)"]),
+    status:str(raw["Status"]),
+    confidence:str(raw["Verification Confidence"]),
+    raw
+  };
+}
+
+function normalizeProspect(raw){
+  return {
+    kind:"prospect",
+    id:str(raw["Prospect ID"]),
+    name:str(raw["Business"]),
+    market:str(raw["Market"]),
+    type:str(raw["Category"]),
+    category:str(raw["Referral Fit"]),
+    family:str(raw["Eligibility"]),
+    priority:String(raw["Prospect Score"]??""),
+    state:str(raw["Outreach State"]||raw["Eligibility"]),
+    policy:"",
+    referral:str(raw["Referral Fit"]),
+    topTier:"",
+    quality:num(raw["Prospect Score"]),
+    scalability:0,
+    recommendation:0,
+    last:str(raw["Last Checked"]||raw["First Found"]),
+    status:str(raw["Eligibility"]),
+    confidence:str(raw["Verification Confidence"]),
+    raw
+  };
+}
+
+function normalizeConnectorCandidate(raw){
+  return {
+    kind:"connectorCandidate",
+    id:str(raw["Candidate ID"]),
+    name:str(raw["Candidate / Organization"]),
+    market:str(raw["Market"]),
+    type:str(raw["Source Family"]),
+    category:str(raw["Connector Role(s)"]),
+    family:str(raw["Discovery Source"]||raw["Source Family"]),
+    priority:str(raw["Qualification Priority"]),
+    state:str(raw["Universe State"]),
+    policy:str(raw["Policy Status"]),
+    referral:"",
+    topTier:"",
+    quality:0,
+    scalability:0,
+    recommendation:0,
+    last:str(raw["Discovered At (PT)"]),
+    status:str(raw["Universe State"]),
+    confidence:"",
+    raw
+  };
+}
+
+function normalizeBusinessCandidate(raw){
+  return {
+    kind:"businessCandidate",
+    id:str(raw["Candidate ID"]),
+    name:str(raw["Business / Venue"]),
+    market:str(raw["Market"]),
+    type:str(raw["Category"]),
+    category:"",
+    family:str(raw["Universe State"]),
+    priority:str(raw["Qualification Priority"]),
+    state:str(raw["Universe State"]),
+    policy:"",
+    referral:"",
+    topTier:"",
+    quality:0,
+    scalability:0,
+    recommendation:0,
+    last:str(raw["Discovered At (PT)"]),
+    status:str(raw["Universe State"]),
+    confidence:"",
+    raw
+  };
+}
+
+function rankRecord(r){
+  let score=0;
+
+  if(r.kind==="channel"){
+    score+=40000;
+
+    const action=r.state.toUpperCase();
+
+    if(action==="READY")score+=18000;
+    else if(action==="APPROVAL REQUIRED")score+=15000;
+    else if(action==="POLICY REVIEW")score+=7000;
+    else if(action==="INSTITUTIONAL ONLY")score+=4000;
+    else if(action==="BLOCKED")score-=5000;
+
+    if(r.topTier.toUpperCase()==="TOP TIER")score+=25000;
+
+    const referral=r.referral.toUpperCase();
+    if(referral==="YES"||referral==="EXPLICIT")score+=7000;
+    else if(referral==="PARTIAL")score+=2500;
+
+    if(r.priority.toUpperCase()==="A")score+=5000;
+    else if(r.priority.toUpperCase()==="B")score+=2500;
+
+    score+=r.quality*20;
+    score+=r.scalability*120;
+    score+=r.recommendation*5;
+
+    if(r.confidence.toUpperCase()==="HIGH")score+=800;
+    else if(r.confidence.toUpperCase()==="MEDIUM")score+=400;
+  }
+
+  if(r.kind==="prospect"){
+    score+=30000;
+
+    const state=r.state.toUpperCase();
+    const status=r.status.toUpperCase();
+
+    if(status==="ELIGIBLE")score+=8000;
+    if(state==="READY")score+=5000;
+    if(state==="DRAFTED")score+=4500;
+
+    score+=r.quality*30;
+
+    const fit=r.referral.toUpperCase();
+    if(fit.includes("VERY HIGH"))score+=5000;
+    else if(fit.includes("HIGH"))score+=3500;
+    else if(fit.includes("MEDIUM"))score+=1500;
+  }
+
+  if(r.kind==="connectorCandidate"){
+    score+=18000;
+
+    if(r.priority.toUpperCase()==="HIGH")score+=5000;
+    else if(r.priority.toUpperCase()==="MEDIUM")score+=2500;
+
+    if(r.policy.toUpperCase().includes("PENDING"))score+=500;
+  }
+
+  if(r.kind==="businessCandidate"){
+    score+=12000;
+
+    if(r.priority.toUpperCase()==="HIGH")score+=5000;
+    else if(r.priority.toUpperCase()==="MEDIUM")score+=2500;
+  }
+
+  r.rankScore=score;
+  return score;
+}
+
+function buildRows(data){
+  const out=[];
+
+  for(const r of data.channels||[])out.push(normalizeChannel(r));
+  for(const r of data.prospects||[])out.push(normalizeProspect(r));
+  for(const r of data.connectorCandidates||[])out.push(normalizeConnectorCandidate(r));
+  for(const r of data.businessCandidates||[])out.push(normalizeBusinessCandidate(r));
+
+  out.forEach(rankRecord);
+
+  return out;
+}
+
+async function loadResearch(){
+  byId("load-status").textContent="Loading live Sheet data...";
+
+  try{
+    const r=await fetch("/research-data",{
+      headers:{"X-Agent-Passcode":passcode}
+    });
+
+    if(r.status===401){
+      byId("login-overlay").style.display="flex";
+      byId("load-status").textContent="Wrong passcode";
+      return;
+    }
+
+    const data=await r.json();
+
+    if(!r.ok){
+      byId("load-status").textContent=data.error||"Load failed";
+      return;
+    }
+
+    activeMarket=data.activeMarket||null;
+    researchRows=buildRows(data);
+
+    populateMarkets();
+    updateSummary();
+    renderResearch();
+
+    byId("row-count").textContent=researchRows.length+" records";
+    byId("load-status").textContent="Live";
+  }catch(e){
+    byId("load-status").textContent="Error: "+e.message;
+  }
+}
+
+function populateMarkets(){
+  const select=byId("market-filter");
+  const old=select.value;
+
+  const markets=[...new Set(
+    researchRows.map(r=>r.market).filter(Boolean)
+  )].sort((a,b)=>a.localeCompare(b));
+
+  select.innerHTML='<option value="">All markets</option>';
+
+  for(const market of markets){
+    const option=document.createElement("option");
+    option.value=market;
+    option.textContent=market;
+    select.appendChild(option);
+  }
+
+  if(markets.includes(old))select.value=old;
+}
+
+function updateSummary(){
+  const channels=researchRows.filter(r=>r.kind==="channel");
+  const prospects=researchRows.filter(r=>r.kind==="prospect");
+  const raw=researchRows.filter(
+    r=>r.kind==="connectorCandidate"||r.kind==="businessCandidate"
+  );
+
+  const top=channels.filter(
+    r=>r.topTier.toUpperCase()==="TOP TIER"
+  );
+
+  const ready=channels.filter(
+    r=>r.state.toUpperCase()==="READY"
+  );
+
+  const review=channels.filter(
+    r=>r.state.toUpperCase()==="POLICY REVIEW"
+  );
+
+  byId("s-total").textContent=researchRows.length;
+  byId("s-channels").textContent=channels.length;
+  byId("s-prospects").textContent=prospects.length;
+  byId("s-raw").textContent=raw.length;
+  byId("s-top").textContent=top.length;
+  byId("s-ready").textContent=ready.length;
+  byId("s-review").textContent=review.length;
+
+  byId("s-market").textContent=
+    activeMarket?
+      (activeMarket.marketId||activeMarket["Market ID"]||"ACTIVE"):
+      "—";
+}
+
+function filteredRows(){
+  const q=byId("search").value.trim().toLowerCase();
+  const kind=byId("kind-filter").value;
+  const market=byId("market-filter").value;
+  const state=byId("state-filter").value.toUpperCase();
+  const special=byId("special-filter").value;
+
+  let rows=researchRows.filter(r=>{
+    if(kind && r.kind!==kind)return false;
+    if(market && r.market!==market)return false;
+
+    if(state){
+      const hay=(r.state+" "+r.status+" "+r.policy).toUpperCase();
+      if(!hay.includes(state))return false;
+    }
+
+    if(special==="top" && r.topTier.toUpperCase()!=="TOP TIER")
+      return false;
+
+    if(special==="actionable" &&
+      !["READY","APPROVAL REQUIRED"].includes(r.state.toUpperCase()))
+      return false;
+
+    if(special==="referral" &&
+      !(r.referral||"").trim())
+      return false;
+
+    if(special==="policy" &&
+      !["POLICY REVIEW","INSTITUTIONAL ONLY"].includes(r.state.toUpperCase()))
+      return false;
+
+    if(q){
+      const hay=[
+        r.id,r.name,r.market,r.type,r.category,r.family,r.priority,
+        r.state,r.policy,r.referral,r.topTier,r.status,r.confidence
+      ].join(" ").toLowerCase();
+
+      if(!hay.includes(q))return false;
+    }
+
+    return true;
+  });
+
+  const sort=byId("sort-select").value;
+
+  rows.sort((a,b)=>{
+    if(sort==="market")
+      return a.market.localeCompare(b.market)||b.rankScore-a.rankScore;
+
+    if(sort==="quality")
+      return b.quality-a.quality||b.rankScore-a.rankScore;
+
+    if(sort==="scalability")
+      return b.scalability-a.scalability||b.rankScore-a.rankScore;
+
+    if(sort==="latest")
+      return String(b.last).localeCompare(String(a.last));
+
+    if(sort==="name")
+      return a.name.localeCompare(b.name);
+
+    return b.rankScore-a.rankScore;
+  });
+
+  return rows;
+}
+
+function stateClass(v){
+  const s=String(v||"").toUpperCase();
+
+  if(s==="READY"||s==="COMPATIBLE"||s==="ELIGIBLE")
+    return "good";
+
+  if(s==="APPROVAL REQUIRED"||s==="CONDITIONAL"||s==="POLICY REVIEW")
+    return "warn";
+
+  if(s==="BLOCKED"||s==="INCOMPATIBLE")
+    return "bad";
+
+  return "";
+}
+
+function renderResearch(){
+  let rows=filteredRows();
+  const totalMatched=rows.length;
+
+  const limitValue=byId("limit-select").value;
+  const limit=limitValue==="all"?rows.length:parseInt(limitValue,10);
+
+  rows=rows.slice(0,limit);
+
+  const body=byId("results-body");
+  body.innerHTML="";
+
+  rows.forEach((r,i)=>{
+    const tr=document.createElement("tr");
+
+    tr.innerHTML=
+      '<td class="rank">'+(i+1)+'</td>'+
+      '<td><span class="kind-pill kind-'+esc(r.kind)+'">'+
+        esc(
+          r.kind==="channel"?"Channel":
+          r.kind==="prospect"?"Prospect":
+          r.kind==="connectorCandidate"?"Connector raw":"Business raw"
+        )+
+      '</span></td>'+
+      '<td class="market">'+esc(r.market)+'</td>'+
+      '<td class="id">'+esc(r.id)+'</td>'+
+      '<td class="name">'+esc(r.name)+'</td>'+
+      '<td>'+esc(r.type||r.family)+'</td>'+
+      '<td>'+esc(r.category)+'</td>'+
+      '<td>'+esc(r.priority)+'</td>'+
+      '<td class="'+stateClass(r.state)+'">'+esc(r.state)+'</td>'+
+      '<td class="'+stateClass(r.policy)+'">'+esc(r.policy)+'</td>'+
+      '<td>'+esc(r.referral)+'</td>'+
+      '<td class="'+(r.topTier.toUpperCase()==="TOP TIER"?"top-tier":"")+'">'+
+        esc(r.topTier)+
+      '</td>'+
+      '<td>'+esc(r.quality||"")+'</td>'+
+      '<td>'+esc(r.scalability||"")+'</td>'+
+      '<td>'+esc(r.recommendation||"")+'</td>'+
+      '<td class="muted">'+esc(r.last)+'</td>';
+
+    tr.onclick=()=>openDetail(r);
+    body.appendChild(tr);
+  });
+
+  byId("visible-info").textContent=
+    "Showing "+rows.length+" of "+totalMatched+
+    " matched · "+researchRows.length+" total loaded";
+}
+
+function openDetail(row){
+  byId("modal-name").textContent=row.name||row.id||"Record";
+
+  const grid=byId("detail-grid");
+  grid.innerHTML="";
+
+  const preferred=[
+    "Channel ID","Prospect ID","Candidate ID",
+    "Channel","Business","Candidate / Organization","Business / Venue",
+    "Market","Sub-zone",
+    "Channel Type","Connector Type","Source Family","Connector Role(s)","Category",
+    "Priority","Quality Score","Scalability Score","Priority Score",
+    "Actionability State","Actionable Score",
+    "Policy Compatibility","Acquisition Scope","Policy Status",
+    "Referral-System Match","Referral-System Evidence","Top-Tier Candidate",
+    "Eligibility","Eligibility Reason","Referral Fit","Prospect Score","Outreach State",
+    "Primary URL","Website / Source URL","Evidence Source","Source URL",
+    "Public Email","Public Contact URL","Phone","Contact / Access",
+    "Parent / Branch Source","Discovery Source",
+    "Verification Confidence",
+    "First Found","Discovered At (PT)","Last Checked","Policy Checked At (PT)",
+    "Notes","Policy Gate Notes"
+  ];
+
+  const used=new Set();
+
+  function addField(k,v){
+    if(v===undefined||v===null||String(v).trim()==="")return;
+
+    const dk=document.createElement("div");
+    dk.className="dk";
+    dk.textContent=k;
+
+    const dv=document.createElement("div");
+    dv.className="dv";
+    dv.textContent=String(v);
+
+    grid.appendChild(dk);
+    grid.appendChild(dv);
+    used.add(k);
+  }
+
+  for(const k of preferred){
+    if(Object.prototype.hasOwnProperty.call(row.raw,k))
+      addField(k,row.raw[k]);
+  }
+
+  for(const [k,v] of Object.entries(row.raw)){
+    if(k==="_rowIndex"||used.has(k))continue;
+    addField(k,v);
+  }
+
+  byId("modal").classList.add("open");
+}
+
+byId("close-modal").onclick=()=>byId("modal").classList.remove("open");
+byId("modal").onclick=e=>{
+  if(e.target===byId("modal"))
+    byId("modal").classList.remove("open");
+};
+
+for(const id of [
+  "search","kind-filter","market-filter","state-filter",
+  "special-filter","sort-select","limit-select"
+]){
+  byId(id).addEventListener(
+    id==="search"?"input":"change",
+    renderResearch
+  );
+}
+
+document.querySelectorAll("th[data-sort]").forEach(th=>{
+  th.onclick=()=>{
+    byId("sort-select").value=th.dataset.sort;
+    renderResearch();
+  };
 });
 
-server.listen(port, "0.0.0.0", () => {
-  console.log(`Agent running on port ${port}`);
+byId("refresh-btn").onclick=loadResearch;
+
+
+// ============================================================
+// CHAT
+// ============================================================
+
+byId("send-btn").onclick=sendMsg;
+byId("message").onkeydown=e=>{
+  if(e.key==="Enter"&&!e.shiftKey){
+    e.preventDefault();
+    sendMsg();
+  }
+};
+
+function addMsg(text,cls){
+  const c=byId("chat");
+  const d=document.createElement("div");
+
+  d.className="msg "+cls;
+  d.textContent=text;
+
+  c.appendChild(d);
+  d.scrollIntoView({behavior:"smooth",block:"end"});
+}
+
+async function sendMsg(){
+  const ta=byId("message");
+  const text=ta.value.trim();
+
+  if(!text)return;
+
+  addMsg(text,"me");
+  ta.value="";
+  byId("send-btn").disabled=true;
+
+  try{
+    const r=await fetch("/chat",{
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "X-Agent-Passcode":passcode,
+        "X-Session-Id":sid
+      },
+      body:JSON.stringify({message:text})
+    });
+
+    const data=await r.json();
+
+    if(r.status===401){
+      addMsg("Wrong passcode.","bot");
+      byId("login-overlay").style.display="flex";
+      return;
+    }
+
+    addMsg(data.reply||data.error||"No response","bot");
+
+    if(data.leadSaved)
+      loadResearch();
+
+  }catch(e){
+    addMsg("Error: "+e.message,"bot");
+  }
+
+  byId("send-btn").disabled=false;
+}
+
+setInterval(loadResearch,180000);
+</script>
+
+</body>
+</html>`;
+}
+
+const server = http.createServer(async (req, res) => {
+  function send(status, body, type) {
+    res.writeHead(status, {"Content-Type": type||"application/json","Cache-Control":"no-store"});
+    res.end(type==="text/html" ? body : JSON.stringify(body));
+  }
+  function auth() {
+    return process.env.AGENT_PASSCODE &&
+      req.headers["x-agent-passcode"] === process.env.AGENT_PASSCODE;
+  }
+  async function readBody() {
+    let raw="";
+    for await (const chunk of req) raw+=chunk;
+    return JSON.parse(raw||"{}");
+  }
+
+  if (req.method==="GET" && req.url==="/") return send(200, htmlPage(), "text/html");
+
+  if (req.method==="GET" && req.url==="/leads") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    return send(200, loadLeads());
+  }
+
+  if (req.method==="POST" && req.url==="/chat") {
+    if (!auth()) return send(401,{error:"Wrong passcode"});
+    const body = await readBody();
+    const message = String(body.message||"").trim();
+    if (!message) return send(400,{error:"Message required"});
+    const sid = req.headers["x-session-id"]||"default";
+    const history = getHistory(sid);
+
+    if (message.toUpperCase()==="LIST LEADS") {
+      const leads = loadLeads();
+      const reply = leads.length===0
+        ? "No leads tracked yet. Paste a lead row to get started."
+        : "Tracked leads:\n\n"+leads.map(l=>
+            `${l.id||"?"} — ${l.name} [${l.tier||"?"}] ${l.status||"New"} · Follow-up: ${l.nextFollowUp||"not set"}`
+          ).join("\n");
+      history.push({role:"user",content:message});
+      history.push({role:"assistant",content:reply});
+      return send(200,{reply});
+    }
+
+    try {
+      const reply = await askClaude(history, message);
+      history.push({role:"user",content:message});
+      history.push({role:"assistant",content:reply});
+      if (history.length>40) history.splice(0,2);
+      const lead = await extractAndSaveLead(reply);
+      return send(200,{reply:cleanReply(reply), leadSaved:!!lead});
+    } catch(e) {
+      console.error("Claude error",e.message);
+      return send(502,{error:"Model error: "+e.message});
+    }
+  }
+
+  if (req.method==="POST" && req.url==="/send-email") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    const body = await readBody();
+    const lead = getLeadById(body.leadId);
+    if (!lead) return send(404,{error:"Lead not found"});
+    if (!lead.outreachEmail||!lead.contact) return send(400,{error:"No email data for this lead"});
+
+    const REQUIRED_GMAIL = "referralmarket.site@gmail.com";
+    const gmailUser = String(process.env.GMAIL_USER || "").trim().toLowerCase();
+
+    if (!gmailUser || !process.env.GMAIL_APP_PASSWORD) {
+      return send(200,{
+        ok:false,
+        message:"ReferralMarket business Gmail is not configured."
+      });
+    }
+
+    if (gmailUser !== REQUIRED_GMAIL) {
+      return send(403,{
+        ok:false,
+        blocked:true,
+        error:
+          "Wrong Gmail account configured. ReferralMarket email must use " +
+          REQUIRED_GMAIL
+      });
+    }
+
+    try {
+      const {createTransport} = await import("nodemailer");
+      const transporter = createTransport({
+        service:"gmail",
+        auth:{
+          user:REQUIRED_GMAIL,
+          pass:process.env.GMAIL_APP_PASSWORD
+        }
+      });
+      await transporter.sendMail({
+        from:REQUIRED_GMAIL,
+        to:lead.contact,
+        subject:lead.outreachEmail.subject,
+        text:lead.outreachEmail.body
+      });
+      lead.log=lead.log||[];
+      lead.log.push({date:new Date().toISOString(),action:"Email sent",subject:lead.outreachEmail.subject});
+      lead.status="Contacted";
+      upsertLead(lead);
+      return send(200,{ok:true,message:"Email sent to "+lead.contact});
+    } catch(e) {
+      return send(500,{error:"Send failed: "+e.message});
+    }
+  }
+
+  // GET /research-data
+  // Read-only high-volume pre-launch calibration dataset.
+  if (req.method==="GET" && req.url==="/research-data") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+
+    try {
+      let activeMarket = null;
+
+      try {
+        activeMarket = await readActiveMarket();
+      } catch (e) {
+        activeMarket = null;
+      }
+
+      const [
+        channels,
+        prospects,
+        connectorCandidates,
+        businessCandidates
+      ] = await Promise.all([
+        readAllLeads(),
+        readBusinessProspects(),
+        readConnectorCandidateUniverse(),
+        readBusinessCandidateUniverse()
+      ]);
+
+      return send(200,{
+        activeMarket,
+        counts:{
+          channels:channels.length,
+          prospects:prospects.length,
+          connectorCandidates:connectorCandidates.length,
+          businessCandidates:businessCandidates.length,
+          total:
+            channels.length+
+            prospects.length+
+            connectorCandidates.length+
+            businessCandidates.length
+        },
+        channels,
+        prospects,
+        connectorCandidates,
+        businessCandidates
+      });
+
+    } catch(e) {
+      console.error("Research data error",e);
+      return send(500,{
+        error:"Research data failed: "+e.message
+      });
+    }
+  }
+
+  // GET /sheet-sync
+  if (req.method==="GET" && req.url==="/sheet-sync") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const activeMarket = await readActiveMarket();
+        const leads = await readAllLeads();
+        const queue = pickDailyQueue(leads, activeMarket);
+
+        return send(200,{
+          total: leads.length,
+          runMarket: activeMarket.canonicalMarket,
+          marketId: activeMarket.marketId,
+          queue: queue.length,
+          leads: queue
+        });
+    } catch(e) {
+      return send(500,{error:"Sheet sync failed: "+e.message});
+    }
+  }
+
+  // POST /upsert-lead
+  if (req.method==="POST" && req.url==="/upsert-lead") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    const body = await readBody();
+    if (body.id && body.name) upsertLead(body);
+    return send(200,{ok:true});
+  }
+
+  // POST /log-result
+  if (req.method==="POST" && req.url==="/log-result") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    const body = await readBody();
+    try {
+      await updateLeadStatus(body.rowIndex, body.status, body.followUpDate, body.notes);
+      return send(200,{ok:true});
+    } catch(e) {
+      return send(500,{error:"Log failed: "+e.message});
+    }
+  }
+
+  return send(404,{error:"Not found"});
+});
+
+server.listen(PORT,"0.0.0.0",()=>{
+  console.log("Darkly Agent v2 running on port "+PORT);
 });
