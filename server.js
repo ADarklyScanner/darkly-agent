@@ -53,6 +53,7 @@ import {
 } from "./performance.js";
 import { backtest as runBacktest, runWindows as runBacktestWindows, BACKTEST_DEFAULTS } from "./backtest.js";
 import { RISK_DEFAULTS } from "./risk.js";
+import { isQuotaOrRateLimitError, fallbackConfigured, callFallbackModel } from "./llm-provider.js";
 
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(process.env.HOME || ".", "darkly-leads.json");
@@ -764,34 +765,81 @@ async function askClaude(history, userMessage) {
     "\n\nRules for this runtime context: Engine Config overrides inference and descriptive notes. A missing active market means NO_MARKET_LOCK and must never block ordinary chat, database research, or cross-market analysis. Discovery Phase is only relevant when discussing or executing a market-specific production run. Never invent fixed thresholds. Never recommend promotional sending when PROSPECT_EMAIL_MODE=DRAFT_ONLY or PROSPECT_AUTO_SEND=FALSE.";
 
   const messages = [...history, { role: "user", content: userMessage }];
+  let providerUsed = "anthropic";
+
+  // One call, either provider, always the SAME system prompt and SAME
+  // tool list either way. This is the one place a fallback model differs
+  // from Claude at all: which wire format its response arrives in. See
+  // llm-provider.js for why that boundary is drawn exactly here.
+  async function callModelRound() {
+    try {
+      const response = await anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 4096,
+        system: runtimeSystem,
+        tools: CLAUDE_TOOLS,
+        messages
+      });
+      return { content: response.content };
+    } catch (error) {
+      if (!isQuotaOrRateLimitError(error) || !fallbackConfigured()) throw error;
+
+      console.error(
+        `[llm-fallback] Anthropic call failed (${error.message || error}); retrying via ${process.env.LITELLM_MODEL}.`
+      );
+      providerUsed = `fallback:${process.env.LITELLM_MODEL}`;
+
+      try {
+        const fb = await callFallbackModel({ system: runtimeSystem, tools: CLAUDE_TOOLS, messages });
+        return { content: fb.content };
+      } catch (fallbackError) {
+        // Both providers failed. Surface the ORIGINAL Anthropic error as
+        // the primary cause — that is almost always the more diagnosable
+        // one (a fallback misconfiguration is a distraction from "why did
+        // the primary provider fail" the first time this happens) — with
+        // the fallback failure appended rather than swallowed.
+        throw new Error(
+          `Anthropic failed (${error.message || error}) and the fallback also failed (${fallbackError.message || fallbackError}).`
+        );
+      }
+    }
+  }
 
   for (let round = 0; round < 8; round++) {
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system: runtimeSystem,
-      tools: CLAUDE_TOOLS,
-      messages
-    });
+    const { content } = await callModelRound();
 
-    const toolUses = response.content.filter(block => block.type === "tool_use");
+    const toolUses = content.filter((block) => block.type === "tool_use");
 
     if (toolUses.length === 0) {
-      return response.content
-        .filter(block => block.type === "text")
-        .map(block => block.text)
+      const text = content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
         .join("\n")
         .trim();
+      return { text, provider: providerUsed };
     }
 
     messages.push({
       role: "assistant",
-      content: response.content
+      content
     });
 
     const toolResults = [];
 
     for (const toolUse of toolUses) {
+      // A tool call whose arguments a fallback model produced as invalid
+      // JSON is reported back as a tool error, exactly like a live
+      // failure of that tool — never silently dropped, never guessed at.
+      if (toolUse._argumentParseError) {
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          is_error: true,
+          content: `Arguments for ${toolUse.name} were not valid JSON: ${toolUse._argumentParseError}`
+        });
+        continue;
+      }
+
       try {
         const result = await executeClaudeTool(
           toolUse.name,
@@ -2327,6 +2375,9 @@ async function sendMsg(){
       return;
     }
 
+    if(data.provider && data.provider.startsWith("fallback:")){
+      addMsg("⚠ Anthropic unavailable — answered by fallback model ("+data.provider.slice(9)+"). Same rules, weaker model; verify anything important.","bot");
+    }
     addMsg(data.reply||data.error||"No response","bot");
 
     if(data.leadSaved)
@@ -2501,12 +2552,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      const reply = await askClaude(history, message);
+      const { text: reply, provider } = await askClaude(history, message);
       history.push({role:"user",content:message});
       history.push({role:"assistant",content:reply});
       if (history.length>40) history.splice(0,2);
       const lead = await extractAndSaveLead(reply);
-      return send(200,{reply:cleanReply(reply), leadSaved:!!lead});
+      return send(200,{reply:cleanReply(reply), leadSaved:!!lead, provider});
     } catch(e) {
       console.error("Claude error",e.message);
       return send(502,{error:"Model error: "+e.message});
