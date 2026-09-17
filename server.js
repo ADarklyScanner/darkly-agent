@@ -54,6 +54,7 @@ import {
 import { backtest as runBacktest, runWindows as runBacktestWindows, BACKTEST_DEFAULTS } from "./backtest.js";
 import { RISK_DEFAULTS } from "./risk.js";
 import { isQuotaOrRateLimitError, fallbackConfigured, callFallbackModel } from "./llm-provider.js";
+import { geminiConfigured, callGemini } from "./gemini.js";
 
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(process.env.HOME || ".", "darkly-leads.json");
@@ -116,6 +117,8 @@ You have live tool access to the ReferralMarket master Google Sheet. Use those t
 Engine Config is the authoritative source for ReferralMarket operating policy. Before giving operational advice about lifecycle, saturation, switching, discovery eligibility, outreach, drafts, sending, policy gates, Gmail, maintenance, thresholds, or market rotation, read the relevant Engine Config values with get_engine_config. Do not invent thresholds or rules. Do not treat descriptive market notes or Saturation State as overriding the canonical Discovery Phase. Never recommend promotional sending when PROSPECT_EMAIL_MODE is DRAFT_ONLY or PROSPECT_AUTO_SEND is FALSE.
 
 Be direct, human, specific. No corporate padding.
+
+CREATIVE BRAINSTORMING. brainstorm_wild_ideas calls a different, deliberately less reliable model, chosen specifically for divergent, sometimes-wrong output — that is the point of the tool, not a defect. Only reach for it when the user explicitly wants brainstorming, wild ideas, or something to react against, never for anything factual. When you relay its output, keep it visibly labeled as unverified brainstorm material from a different model — never edit it into your own voice as though you vouched for it, and never let anything it says migrate into a factual claim, a lead recommendation, or a trading decision elsewhere in the conversation.
 
 --- TRADING MODULE ---
 
@@ -485,6 +488,22 @@ const CLAUDE_TOOLS = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: "brainstorm_wild_ideas",
+    description:
+      "Get raw, UNVERIFIED idea generation from a different model (Gemini), used deliberately for its high rate of confident wrongness — that unreliability is what makes it a useful divergent-thinking tool, not a bug to route around. ONLY call this when the user explicitly wants brainstorming, wild ideas, alternate angles, or something to react against creatively. NEVER call it for anything where correctness matters: no research questions, no facts, no financial or trading reasoning, no ReferralMarket operations. Its output must always be relayed clearly labeled as unverified Gemini brainstorm material — never blended into your own answer as if you or it verified it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "What to brainstorm about. Be specific about the kind of ideas wanted (e.g. 'wild, unconventional' vs 'practical but unusual')."
+        }
+      },
+      required: ["prompt"],
+      additionalProperties: false
+    }
   }
 ];
 
@@ -715,6 +734,26 @@ async function executeClaudeTool(name, input = {}) {
 
     const report = runBacktest(barsBySymbol, backtestOptions);
     return slim(report);
+  }
+
+  if (name === "brainstorm_wild_ideas") {
+    if (!geminiConfigured()) {
+      return {
+        ok: false,
+        error: "GEMINI_API_KEY is not set on this deployment, so wild-idea brainstorming isn't available right now."
+      };
+    }
+    try {
+      const result = await callGemini(input.prompt);
+      return {
+        ok: true,
+        source: "gemini (deliberately unverified — treat as raw brainstorm material, not fact or advice)",
+        model: result.model,
+        ideas: result.text
+      };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
   }
 
   throw new Error(`Unknown Claude tool: ${name}`);
