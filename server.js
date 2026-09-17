@@ -33,8 +33,11 @@ import {
   getStatus as autoTraderStatus,
   getRuns as autoTraderRuns,
   getStops as autoTraderStops,
+  getHistoryInfo as autoTraderHistoryInfo,
   setKillSwitch
 } from "./autotrader.js";
+import { stateInfo } from "./state.js";
+import { resolveExport } from "./history-export.js";
 import {
   pairTrades,
   summarize,
@@ -2247,6 +2250,61 @@ const server = http.createServer(async (req, res) => {
     return send(200, loadLeads());
   }
 
+  // --- History export ---------------------------------------------
+  //
+  // The run archive lives on a Railway volume, which is reachable from
+  // nowhere except this process. This streams it out so a copy can be
+  // kept on hardware you own.
+  //
+  // It supports a byte offset so repeated backups send only what is new:
+  // ask for the size, then request from where you left off. Over mobile
+  // data that is the difference between re-downloading the whole history
+  // every time and downloading the day's handful of KB.
+  if (req.method==="GET" && req.url.startsWith("/export-history")) {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+
+    try {
+      const url = new URL(req.url, "http://localhost");
+      const plan = resolveExport({
+        file: url.searchParams.get("file"),
+        offset: url.searchParams.get("offset")
+      });
+
+      if (!plan.ok) return send(plan.status, { error: plan.error });
+
+      // meta=1 answers "how much is there?" without transferring it, so a
+      // backup script can decide whether there is anything worth fetching.
+      if (url.searchParams.get("meta") === "1") {
+        return send(200, {
+          file: plan.name,
+          exists: plan.exists,
+          bytes: plan.size,
+          appendOnly: plan.appendOnly,
+          storage: autoTraderHistoryInfo(),
+          hint: "Request the same file with ?offset=<bytes you already have> to fetch only what is new."
+        });
+      }
+
+      const headers = {
+        "content-type": "text/plain",
+        "x-total-bytes": String(plan.size),
+        "x-offset": String(plan.start),
+        "x-new-bytes": String(plan.newBytes),
+        "x-restarted": plan.restarted ? "1" : "0"
+      };
+
+      if (!plan.exists || plan.newBytes === 0) {
+        res.writeHead(200, headers);
+        return res.end("");
+      }
+
+      res.writeHead(200, headers);
+      return fs.createReadStream(plan.path, { start: plan.start }).pipe(res);
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
+  }
+
   if (req.method==="GET" && req.url==="/autotrader-data") {
     if (!auth()) return send(401,{error:"Unauthorized"});
     try {
@@ -2487,6 +2545,15 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT,"0.0.0.0",()=>{
   console.log("Darkly Agent v2 running on port "+PORT);
+
+  // Say where state is going and whether it survives a restart. Without
+  // this line, a volume that silently failed to mount looks identical in
+  // the logs to one that worked, right up until a deploy erases the
+  // history and nothing says why.
+  const storage = stateInfo();
+  console.log(
+    `[state] ${storage.directory} — ${storage.durable ? "DURABLE (survives deploys)" : "EPHEMERAL (history will be lost on the next deploy)"}`
+  );
 
   const auto = startAutoTrader();
   if (auto.started) {
