@@ -12,7 +12,7 @@
  * looking reasonable.
  */
 
-import { alignByDate, filterDateRange, simulate, backtest, runWindows, BACKTEST_DEFAULTS } from "./backtest.js";
+import { alignByDate, filterDateRange, simulate, backtest, runWindows, sharpeRatio, BACKTEST_DEFAULTS } from "./backtest.js";
 
 let pass = 0;
 let fail = 0;
@@ -357,6 +357,172 @@ console.log("\nrunWindows()");
 {
   const result = runWindows({}, [], {});
   check("zero windows does not throw", result.windowCount === 0 && result.usableCount === 0);
+}
+
+/* ==================================================================== *
+ * sharpeRatio — the pure function, on constructed equity series
+ * ==================================================================== */
+
+console.log("\nsharpeRatio — degenerate inputs");
+
+{
+  const r = sharpeRatio([]);
+  check("empty series: sharpe is null, not 0 or NaN", r.sharpe === null);
+  check("empty series: explains why in missing", r.missing.length > 0);
+}
+
+{
+  const r = sharpeRatio([{ equity: 100000 }]);
+  check("a single equity point: no return exists, sharpe stays null", r.sharpe === null);
+}
+
+{
+  // Three points -> two returns, both exactly zero -> zero variance. (Two
+  // points would give only one return, which hits the "not enough
+  // returns" branch before variance is even computed — see the next
+  // case, which pins that distinct branch.)
+  const r = sharpeRatio([{ equity: 100000 }, { equity: 100000 }, { equity: 100000 }]);
+  check("flat equity across 3+ points: sharpe is null (not Infinity/NaN)", r.sharpe === null);
+  check("explains the zero-variance case rather than dividing by zero silently",
+    /zero/i.test(r.caveat), r.caveat);
+}
+
+{
+  const r = sharpeRatio([{ equity: 100000 }, { equity: 100000 }]);
+  check("exactly one return: too few to estimate variance, sharpe stays null",
+    r.sharpe === null && r.sampleSize === 1);
+}
+
+{
+  const r = sharpeRatio([{ equity: 100000 }, { equity: 0 }, { equity: 50000 }]);
+  check("a zero prior-equity day is excluded rather than producing Infinity/NaN",
+    Number.isFinite(r.stdevDailyReturnPercent) || r.stdevDailyReturnPercent === null);
+  check("the excluded day is named in missing", r.missing.some((m) => /zero/i.test(m)), JSON.stringify(r.missing));
+}
+
+console.log("\nsharpeRatio — a steady uptrend has a large positive Sharpe");
+
+{
+  // Perfectly steady 0.1%/day growth, no noise: the whole point of Sharpe
+  // is return-per-unit-of-volatility, so a smooth uptrend should score far
+  // higher than a noisy one with the same average return.
+  const smooth = [];
+  let eq = 100000;
+  for (let i = 0; i < 120; i++) {
+    smooth.push({ index: i, equity: eq });
+    eq *= 1.001;
+  }
+  const r = sharpeRatio(smooth);
+  check("a smooth uptrend has sharpe > 0", r.sharpe > 0, r.sharpe);
+  check("sampleSize counts the returns, not the equity points (one fewer)", r.sampleSize === 119, r.sampleSize);
+  check("meanDailyReturnPercent is close to the constructed 0.1%/day",
+    Math.abs(r.meanDailyReturnPercent - 0.1) < 0.01, r.meanDailyReturnPercent);
+  check("annualizedReturnPercent is roughly meanDaily * 252",
+    Math.abs(r.annualizedReturnPercent - r.meanDailyReturnPercent * 252) < 0.01);
+  check("120 trading days clears the reliability floor", r.reliable === true);
+}
+
+console.log("\nsharpeRatio — same average return, more noise -> lower Sharpe");
+
+{
+  const rand = mulberry32(42);
+  function series(driftPct, noisePct, n) {
+    const out = [];
+    let eq = 100000;
+    for (let i = 0; i < n; i++) {
+      out.push({ index: i, equity: eq });
+      const wobble = (rand() - 0.5) * 2 * noisePct;
+      eq *= 1 + driftPct + wobble;
+    }
+    return out;
+  }
+
+  const calm = sharpeRatio(series(0.001, 0.0002, 150));
+  const noisy = sharpeRatio(series(0.001, 0.01, 150));
+
+  check("both have a defined sharpe", Number.isFinite(calm.sharpe) && Number.isFinite(noisy.sharpe));
+  check("the calmer series (same avg return, less noise) scores a higher Sharpe",
+    calm.sharpe > noisy.sharpe, `calm=${calm.sharpe} noisy=${noisy.sharpe}`);
+}
+
+console.log("\nsharpeRatio — reliability floor and options");
+
+{
+  const short = [];
+  let eq = 100000;
+  for (let i = 0; i < 10; i++) {
+    short.push({ index: i, equity: eq });
+    eq *= 1.002;
+  }
+  const r = sharpeRatio(short);
+  check("fewer than MIN_RELIABLE_SHARPE_DAYS usable returns is flagged unreliable", r.reliable === false);
+  check("the caveat says the sample is short, not that the number is wrong",
+    /short|noise/i.test(r.caveat), r.caveat);
+}
+
+{
+  const smooth = [];
+  let eq = 100000;
+  for (let i = 0; i < 120; i++) {
+    smooth.push({ index: i, equity: eq });
+    eq *= 1.001;
+  }
+  const annualDefault = sharpeRatio(smooth);
+  const withRiskFree = sharpeRatio(smooth, { riskFreeAnnualPercent: 50 });
+  check("a nonzero risk-free rate lowers the Sharpe of the same series",
+    withRiskFree.sharpe < annualDefault.sharpe, `${withRiskFree.sharpe} vs ${annualDefault.sharpe}`);
+
+  // periodsPerYear scales annualized volatility by sqrt(periodsPerYear), so
+  // this needs an actually-noisy series — a perfectly smooth one has
+  // ~zero daily variance and both annualizations round to ~0 either way.
+  const rand = mulberry32(7);
+  const noisy = [];
+  let eq2 = 100000;
+  for (let i = 0; i < 120; i++) {
+    noisy.push({ index: i, equity: eq2 });
+    eq2 *= 1 + 0.001 + (rand() - 0.5) * 2 * 0.01;
+  }
+  const daily = sharpeRatio(noisy);
+  const weekly = sharpeRatio(noisy, { periodsPerYear: 52 });
+  check("a custom periodsPerYear is honored in the annualization",
+    weekly.periodsPerYear === 52 && weekly.annualizedVolatilityPercent !== daily.annualizedVolatilityPercent,
+    `weekly=${weekly.annualizedVolatilityPercent} daily=${daily.annualizedVolatilityPercent}`);
+}
+
+{
+  // Accepts either the full equityCurve/equitySeries point shape or a
+  // plain array of numbers, same convention as performance.js's
+  // maxDrawdown, so callers don't have to reshape data just for this.
+  const points = [{ equity: 100000 }, { equity: 100500 }, { equity: 101200 }];
+  const numbers = [100000, 100500, 101200];
+  check("plain numeric array and {equity} objects give the same result",
+    sharpeRatio(points).sharpe === sharpeRatio(numbers).sharpe);
+}
+
+/* ==================================================================== *
+ * sharpeRatio wired into backtest()'s report
+ * ==================================================================== */
+
+console.log("\nbacktest() report includes sharpe, built from its own equitySeries");
+
+{
+  const n = WARMUP + 200;
+  const data = flatUniverse(n, ["S"], "SPY", { drift: 0.006, noise: 0.004, gap: 0.001, volume: 5_000_000 });
+  const report = backtest(data, { universe: ["S"] });
+
+  check("backtest() report carries a sharpe field", report.sharpe !== undefined);
+  check("it matches calling sharpeRatio on the report's own equitySeries directly",
+    report.sharpe.sharpe === sharpeRatio(report.equitySeries).sharpe);
+  check("sample size in sharpe is one less than the equity series length (returns, not points)",
+    report.sharpe.sampleSize === report.equitySeries.length - 1);
+}
+
+{
+  // A universe with no bars at all still produces a (single-point)
+  // equitySeries from simulate()'s starting balance — sharpe must stay
+  // null/well-formed rather than throwing when there's nothing to score.
+  const report = backtest({}, { universe: [] });
+  check("an empty universe does not crash sharpe", report.ok === false || report.sharpe !== undefined);
 }
 
 /* ------------------------------------------------------------------ */

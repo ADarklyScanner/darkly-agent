@@ -142,6 +142,17 @@ function round(n, dp = 6) {
   return Math.round(n * f) / f;
 }
 
+function mean(values) {
+  if (!values.length) return null;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+// Below this many usable daily returns, a volatility estimate (and
+// therefore a Sharpe ratio built on it) is mostly measuring the sample
+// window rather than the strategy. Distinct from performance.js's
+// MIN_RELIABLE_SAMPLE, which counts closed TRADES, not trading DAYS.
+const MIN_RELIABLE_SHARPE_DAYS = 60;
+
 /* ------------------------------------------------------------------ *
  * The simulator
  * ------------------------------------------------------------------ */
@@ -513,6 +524,104 @@ function caveats(sim) {
 }
 
 /**
+ * Sharpe ratio computed from THIS BACKTEST'S OWN day-by-day mark-to-market
+ * equity series (sim.equitySeries) — deliberately not available for the
+ * live trade log in performance.js, and not an oversight: performance.js's
+ * own header rules out annualising anything, because the live log is a
+ * sparse, irregular sequence of trade exits with idle cash sitting between
+ * them, and stretching that into a daily return series would manufacture
+ * a data point for every day nothing happened. A backtest's equitySeries
+ * is different by construction — simulate() marks it to market once per
+ * actual trading day over a fixed historical calendar — so a standard
+ * daily-return Sharpe is a fair, ordinary thing to compute on it. It is
+ * still a description of one historical replay, not a forecast; the
+ * caveat on the result says so every time, not just in this comment.
+ *
+ * riskFreeAnnualPercent defaults to 0 (return over idle cash, not over a
+ * real T-bill rate) — pass it explicitly for a like-for-like Sharpe.
+ * periodsPerYear defaults to 252 (US trading days).
+ */
+export function sharpeRatio(equitySeries, options = {}) {
+  const periodsPerYear = Number(options.periodsPerYear) > 0 ? Number(options.periodsPerYear) : 252;
+  const riskFreeAnnualPercent = Number.isFinite(options.riskFreeAnnualPercent)
+    ? options.riskFreeAnnualPercent
+    : 0;
+  const riskFreeDaily = riskFreeAnnualPercent / 100 / periodsPerYear;
+
+  const points = Array.isArray(equitySeries) ? equitySeries : [];
+  const equities = points
+    .map((p) => (typeof p === "number" ? p : Number(p && p.equity)))
+    .filter((n) => Number.isFinite(n));
+
+  const missing = [];
+  const base = {
+    sharpe: null,
+    annualizedReturnPercent: null,
+    annualizedVolatilityPercent: null,
+    meanDailyReturnPercent: null,
+    stdevDailyReturnPercent: null,
+    periodsPerYear,
+    riskFreeAnnualPercent,
+    sampleSize: 0,
+    reliable: false,
+    caveat: null,
+    missing
+  };
+
+  if (equities.length < 2) {
+    missing.push("fewer than two equity points, so no daily return can be computed");
+    base.caveat = "Sharpe is undefined without at least one day-over-day return.";
+    return base;
+  }
+
+  const returns = [];
+  for (let i = 1; i < equities.length; i++) {
+    const prev = equities[i - 1];
+    if (prev === 0) {
+      missing.push(`day ${i}: prior equity was zero, so that day's return is undefined and excluded`);
+      continue;
+    }
+    returns.push((equities[i] - prev) / prev);
+  }
+
+  base.sampleSize = returns.length;
+
+  if (returns.length < 2) {
+    missing.push("fewer than two usable daily returns, so volatility (and therefore Sharpe) cannot be estimated");
+    base.caveat = "Sharpe needs return variance to divide by; this sample doesn't have enough usable trading days to estimate it.";
+    return base;
+  }
+
+  const meanReturn = mean(returns);
+  // Population variance, not a sample-variance estimate: this equity
+  // series IS the entire population being described (one finished
+  // historical replay), not a sample drawn from a larger one.
+  const variance = mean(returns.map((r) => (r - meanReturn) ** 2));
+  const stdev = Math.sqrt(variance);
+
+  base.meanDailyReturnPercent = round(meanReturn * 100, 6);
+  base.stdevDailyReturnPercent = round(stdev * 100, 6);
+  base.annualizedReturnPercent = round(meanReturn * periodsPerYear * 100, 4);
+  base.annualizedVolatilityPercent = round(stdev * Math.sqrt(periodsPerYear) * 100, 4);
+  base.reliable = returns.length >= MIN_RELIABLE_SHARPE_DAYS;
+
+  if (stdev === 0) {
+    missing.push("daily returns never varied (stdev is zero), so Sharpe is undefined rather than infinite");
+    base.caveat =
+      "A zero-volatility return series makes Sharpe a division by zero. That is a property of an unusually flat sample (e.g. no trades were ever placed), not evidence of risk-free profit.";
+    return base;
+  }
+
+  const dailyExcess = meanReturn - riskFreeDaily;
+  base.sharpe = round((dailyExcess / stdev) * Math.sqrt(periodsPerYear), 6);
+  base.caveat = base.reliable
+    ? "Computed from this backtest's own daily mark-to-market equity, under the same frictionless-fill assumptions as the rest of this report (see `honesty`). A backtest Sharpe describes one historical replay; it is not a forecast of a live Sharpe."
+    : `Only ${returns.length} usable trading day(s) behind this number — short enough that it is mostly measuring noise in the sample window, not the strategy. Treat it as provisional until the window covers at least ${MIN_RELIABLE_SHARPE_DAYS} trading days.`;
+
+  return base;
+}
+
+/**
  * Run a full backtest and score it with the same honesty machinery as
  * live performance (performance.js), plus a benchmark buy-and-hold
  * comparison so "the strategy made money" can be checked against
@@ -524,6 +633,7 @@ export function backtest(barsBySymbol, options = {}) {
 
   const performance = summarize(sim.closedTrades);
   const drawdown = maxDrawdown(sim.equitySeries);
+  const sharpe = sharpeRatio(sim.equitySeries, options.sharpe || {});
 
   const benchBars = alignByDate({ b: barsBySymbol[sim.benchmarkSymbol] || [] }).bars.b;
   const rangeBench = options.dateRange ? filterDateRange(barsBySymbol[sim.benchmarkSymbol] || [], options.dateRange) : (barsBySymbol[sim.benchmarkSymbol] || []);
@@ -567,6 +677,7 @@ export function backtest(barsBySymbol, options = {}) {
         : strategyReturnPercent > bench.buyHoldReturnPercent,
     performance,
     drawdown,
+    sharpe,
     tradeCounts: {
       closed: sim.closedTrades.length,
       openAtEnd: sim.openAtEnd.length,
