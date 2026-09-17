@@ -25,19 +25,78 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HERE/history"
 BASE="${AGENT_URL:-https://referral-market-production.up.railway.app}"
 
-# Keep the passcode out of the project directory that git tracks.
-if [ -z "${AGENT_PASSCODE:-}" ] && [ -f "$HOME/.darkly-backup-env" ]; then
-  . "$HOME/.darkly-backup-env"
+FULL=0
+ENV_FILE="$HOME/.darkly-backup-env"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --full) FULL=1 ;;
+    --passcode) shift; AGENT_PASSCODE="${1:-}" ;;
+    --save-passcode)
+      shift
+      printf 'AGENT_PASSCODE=%s\n' "${1:-}" > "$ENV_FILE"
+      chmod 600 "$ENV_FILE"
+      echo "Saved to $ENV_FILE (${#1} characters)."
+      exit 0
+      ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+  shift
+done
+
+# Read the passcode by PARSING the file, never by sourcing it.
+#
+# Sourcing executes the file as shell, which means a stray $ or quote in
+# the value crashes the script with something unrelated to the actual
+# problem -- and it makes a secrets file into executable code, which is a
+# bad habit even when you wrote the file yourself.
+if [ -z "${AGENT_PASSCODE:-}" ] && [ -f "$ENV_FILE" ]; then
+  AGENT_PASSCODE=$(
+    sed -n 's/^[[:space:]]*AGENT_PASSCODE[[:space:]]*=[[:space:]]*//p' "$ENV_FILE" \
+      | head -1 | tr -d '\r'
+  )
+  # Tolerate a value someone wrapped in quotes.
+  AGENT_PASSCODE=${AGENT_PASSCODE#\"}; AGENT_PASSCODE=${AGENT_PASSCODE%\"}
+  AGENT_PASSCODE=${AGENT_PASSCODE#\'}; AGENT_PASSCODE=${AGENT_PASSCODE%\'}
 fi
 
 if [ -z "${AGENT_PASSCODE:-}" ]; then
-  echo "AGENT_PASSCODE is not set."
-  echo "Put it in ~/.darkly-backup-env as:  AGENT_PASSCODE=your-passcode"
+  echo "No passcode found."
+  if [ -f "$ENV_FILE" ]; then
+    echo "  $ENV_FILE exists but has no usable AGENT_PASSCODE= line."
+  else
+    echo "  $ENV_FILE does not exist."
+  fi
+  echo
+  echo "Save it with:"
+  echo "  bash backup-history.sh --save-passcode YOURPASSCODE"
   exit 1
 fi
 
-FULL=0
-[ "${1:-}" = "--full" ] && FULL=1
+# Catch the two ways this has actually gone wrong, rather than sending a
+# bad passcode and reporting a confusing 401.
+case "$AGENT_PASSCODE" in
+  '$'[A-Za-z_]*|'${'*)
+    # An unexpanded shell variable, not a passcode. A '$' elsewhere in the
+    # value is fine and is left alone -- the file is parsed, not executed.
+    echo "The stored passcode looks like an unexpanded shell variable"
+    echo "($AGENT_PASSCODE), not an actual value."
+    echo "Re-save it with:  bash backup-history.sh --save-passcode YOURPASSCODE"
+    exit 1
+    ;;
+  ghp_*|github_pat_*)
+    echo "That looks like a GitHub token, not the console passcode."
+    echo "AGENT_PASSCODE is the passcode you type to log into Darkly."
+    exit 1
+    ;;
+  your-passcode*|YOURPASSCODE*)
+    echo "The stored passcode is still the placeholder text."
+    echo "Re-save it with:  bash backup-history.sh --save-passcode YOURPASSCODE"
+    exit 1
+    ;;
+esac
+
+echo "Using a passcode of ${#AGENT_PASSCODE} characters."
 
 mkdir -p "$DEST"
 
@@ -49,10 +108,20 @@ fetch() {
     "$BASE/export-history?file=$key&meta=1") || {
       echo "  !! could not reach the agent"; return 1; }
 
-  if echo "$meta" | grep -q '"error"'; then
-    echo "  !! $meta"
-    return 1
-  fi
+  case "$meta" in
+    *Unauthorized*)
+      echo "  !! $key: the server rejected the passcode."
+      echo "     It must match AGENT_PASSCODE in the Railway variables —"
+      echo "     the same passcode you use to log into the console."
+      return 1 ;;
+    *"Not found"*)
+      echo "  !! $key: the server has no /export-history route."
+      echo "     The deployed build predates it. Run 'railway up' and retry."
+      return 1 ;;
+    *'"error"'*)
+      echo "  !! $key: $meta"
+      return 1 ;;
+  esac
 
   local remote_bytes
   remote_bytes=$(echo "$meta" | grep -o '"bytes":[0-9]*' | head -1 | cut -d: -f2)
