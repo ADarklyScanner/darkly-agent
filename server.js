@@ -36,6 +36,8 @@ import {
   getRuns as autoTraderRuns,
   getStops as autoTraderStops,
   getHistoryInfo as autoTraderHistoryInfo,
+  getHeartbeat as autoTraderHeartbeat,
+  getAlertStatus as autoTraderAlertStatus,
   setKillSwitch,
   CONFIG as AUTOTRADER_CONFIG
 } from "./autotrader.js";
@@ -2477,6 +2479,29 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method==="GET" && req.url==="/") return send(200, htmlPage(), "text/html");
 
+  // GET /health — deliberately unauthenticated: a monitor pinging this
+  // has to work even when it doesn't carry AGENT_PASSCODE. Kept to the
+  // scheduler heartbeat only (schedulerHeartbeat — no run in far longer
+  // than the configured interval means the process itself may have
+  // stopped, not just declined to trade), so an external uptime check can
+  // catch the case a run-triggered email never could: the scheduler going
+  // silent entirely. This deliberately does NOT include getAlertStatus()'s
+  // lastAlert — its reason text can embed account P&L (see the daily-loss
+  // case in alerts.js), which has no business being readable without
+  // AGENT_PASSCODE. That fuller picture is in GET /autotrader-data instead.
+  if (req.method==="GET" && req.url==="/health") {
+    try {
+      const heartbeat = autoTraderHeartbeat();
+      return send(heartbeat.alive === false ? 503 : 200, {
+        ok: heartbeat.alive !== false,
+        heartbeat,
+        alertingConfigured: autoTraderAlertStatus().configured
+      });
+    } catch (e) {
+      return send(500, { ok: false, error: String(e.message || e) });
+    }
+  }
+
   if (req.method==="GET" && req.url==="/leads") {
     if (!auth()) return send(401,{error:"Unauthorized"});
     return send(200, loadLeads());
@@ -2542,7 +2567,9 @@ const server = http.createServer(async (req, res) => {
     try {
       return send(200, {
         status: autoTraderStatus(),
-        runs: autoTraderRuns(10)
+        runs: autoTraderRuns(10),
+        heartbeat: autoTraderHeartbeat(),
+        alerting: autoTraderAlertStatus()
       });
     } catch (e) {
       return send(500, { error: String(e.message || e) });

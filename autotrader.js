@@ -43,6 +43,9 @@ import {
 
 import { scoreSymbol } from "./strategy.js";
 
+import { classifyRunForAlert, shouldSendAlert, schedulerHeartbeat } from "./alerts.js";
+import { alertingConfigured, sendAlertMail } from "./mailer.js";
+
 import {
   positionSize,
   atrStop,
@@ -73,7 +76,11 @@ export const CONFIG = {
   positionUsd: Number(process.env.AUTO_TRADE_POSITION_USD || 500),
   maxPositions: Number(process.env.AUTO_TRADE_MAX_POSITIONS || 5),
   stopLossPercent: Number(process.env.AUTO_TRADE_STOP_LOSS_PERCENT || 8),
-  takeProfitPercent: Number(process.env.AUTO_TRADE_TAKE_PROFIT_PERCENT || 15)
+  takeProfitPercent: Number(process.env.AUTO_TRADE_TAKE_PROFIT_PERCENT || 15),
+  // How long a given alert REASON stays throttled before repeating (see
+  // alerts.js's shouldSendAlert). A new/different reason still alerts
+  // immediately regardless of this window.
+  alertThrottleMinutes: Number(process.env.ALERT_THROTTLE_MINUTES || 60)
 };
 
 /* ------------------------------------------------------------------ *
@@ -150,6 +157,90 @@ function recordRun(run) {
   state.runs = [...(state.runs || []), run];
   state.lastRunAt = run.startedAt;
   saveState(state);
+
+  // Fire-and-forget: alerting is a side effect of recording a run, not a
+  // condition of it. recordRun stays synchronous so every existing call
+  // site above is unaffected, and nothing here can make a run itself
+  // fail. Queued as a microtask so it runs after runOnce's own `finally`
+  // has set run.finishedAt, since some call sites call recordRun before
+  // that block runs.
+  queueMicrotask(() => {
+    maybeAlert(run).catch((e) => {
+      console.error("Alert dispatch failed", e?.message || e);
+    });
+  });
+}
+
+function getLastAlert() {
+  return loadState().lastAlert || null;
+}
+
+function saveLastAlert(alert) {
+  const state = loadState();
+  state.lastAlert = alert;
+  saveState(state);
+}
+
+/**
+ * Decide whether this run is worth waking someone up for and, if so, send
+ * it. Never throws out of here — see alerts.js's doc comment for why a
+ * completed-but-erroring run and a fully silent scheduler are treated as
+ * two distinct failure modes; this function handles only the former.
+ */
+async function maybeAlert(run) {
+  const classification = classifyRunForAlert(run);
+  if (!classification.alert) return;
+
+  const lastAlert = getLastAlert();
+  if (!shouldSendAlert({ classification, lastAlert, throttleMinutes: CONFIG.alertThrottleMinutes })) {
+    return;
+  }
+
+  // Stay quiet, not broken, until the user deliberately configures a
+  // destination — see mailer.js for why this has no default recipient.
+  if (!alertingConfigured()) return;
+
+  const sent = await sendAlertMail({
+    subject: `[Darkly ${classification.severity === "notice" ? "notice" : "ALERT"}] ${run.mode} run — ${run.startedAt}`,
+    text:
+      `${classification.reason}\n\n` +
+      `Mode: ${run.mode}\n` +
+      `Started: ${run.startedAt}\n` +
+      `Finished: ${run.finishedAt || "n/a"}\n` +
+      (run.account ? `Account equity: ${run.account.equity}, day P&L: ${run.account.dayPnl}\n` : "")
+  });
+
+  if (sent.ok) {
+    saveLastAlert({
+      at: new Date().toISOString(),
+      reason: classification.reason,
+      severity: classification.severity
+    });
+  }
+}
+
+/**
+ * Is the scheduler itself still running? Distinct from maybeAlert above:
+ * this has nothing to inspect from inside a run, by design — the failure
+ * it catches is that no run happened at all. Exposed through GET /health
+ * in server.js for an external uptime pinger, not through email, since a
+ * scheduler that's already stopped can't be relied on to send its own
+ * "I've stopped" email.
+ */
+export function getHeartbeat() {
+  const state = loadState();
+  return schedulerHeartbeat({ lastRunAt: state.lastRunAt, intervalMinutes: CONFIG.intervalMinutes });
+}
+
+/** Whether alert email is configured, and what was last sent — surfaced
+ * alongside the heartbeat so /health can show the whole alerting picture
+ * in one place. */
+export function getAlertStatus() {
+  return {
+    configured: alertingConfigured(),
+    throttleMinutes: CONFIG.alertThrottleMinutes,
+    lastAlert: getLastAlert()
+  };
 }
 
 /* ------------------------------------------------------------------ *
