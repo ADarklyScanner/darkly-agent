@@ -59,6 +59,7 @@ import { backtest as runBacktest, runWindows as runBacktestWindows, BACKTEST_DEF
 import { RISK_DEFAULTS } from "./risk.js";
 import { isQuotaOrRateLimitError, fallbackConfigured, callFallbackModel } from "./llm-provider.js";
 import { geminiConfigured, callGemini } from "./gemini.js";
+import { getHistory, saveHistory, resetHistory } from "./chat-store.js";
 
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(process.env.HOME || ".", "darkly-leads.json");
@@ -83,12 +84,6 @@ function upsertLead(lead) {
 
 function getLeadById(id) {
   return loadLeads().find(l => l.id === id);
-}
-
-const sessions = new Map();
-function getHistory(sid) {
-  if (!sessions.has(sid)) sessions.set(sid, []);
-  return sessions.get(sid);
 }
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -1361,6 +1356,15 @@ tbody tr:hover{background:#17171c}
   overflow:hidden;
   flex-direction:column;
 }
+#chat-header{
+  display:flex;justify-content:flex-end;
+  padding:8px 10px 0;
+}
+#new-chat-btn{
+  border:1px solid #33333b;border-radius:9px;
+  background:#18181c;color:#999;padding:6px 12px;
+  font-size:12px;
+}
 #chat{
   flex:1;
   overflow-y:auto;
@@ -1715,6 +1719,9 @@ tbody tr:hover{background:#17171c}
   </section>
 
   <section id="chat-view">
+    <div id="chat-header">
+      <button id="new-chat-btn" title="Start a fresh conversation on this device">New chat</button>
+    </div>
     <div id="chat"></div>
     <div id="inputbar">
       <textarea id="message" placeholder="Ask Darkly about the live ReferralMarket data..."></textarea>
@@ -1736,7 +1743,26 @@ tbody tr:hover{background:#17171c}
 
 <script>
 let passcode="";
-const sid=Math.random().toString(36).slice(2);
+
+// The session id used to be regenerated on every page load, which meant
+// the server could persist chat history forever and it still wouldn't
+// matter — nothing pointed back at it after a refresh. Keeping it in
+// localStorage is what actually makes chat-store.js's durability useful:
+// reopening this page (even after a Railway restart) reconnects to the
+// same conversation instead of starting a fresh, unreachable one.
+// Wrapped in try/catch: localStorage can throw (private browsing, a
+// locked-down webview) and losing persistence is fine, losing the page
+// to an uncaught exception is not.
+let sid;
+try {
+  sid = localStorage.getItem("darkly-sid");
+  if (!sid) {
+    sid = Math.random().toString(36).slice(2);
+    localStorage.setItem("darkly-sid", sid);
+  }
+} catch (e) {
+  sid = Math.random().toString(36).slice(2);
+}
 
 let researchRows=[];
 let activeMarket=null;
@@ -1747,7 +1773,7 @@ const byId=id=>document.getElementById(id);
 byId("unlock-btn").onclick=unlock;
 byId("pass").onkeydown=e=>{if(e.key==="Enter")unlock()};
 
-function unlock(){
+async function unlock(){
   const p=byId("pass").value.trim();
   if(!p)return;
 
@@ -1755,17 +1781,71 @@ function unlock(){
   byId("login-overlay").style.display="none";
 
   loadResearch();
+  await restoreChatHistory();
+}
 
-  addMsg(
-    "Darkly Agent ready. Live market data is available in the Research view.",
-    "bot"
-  );
+// Replay whatever this session id's conversation already holds on the
+// server (chat-store.js), so reopening the console shows the actual
+// prior conversation instead of an empty pane pretending nothing was
+// ever said. Falls back to the original one-line greeting only when
+// there's genuinely no history yet (first visit, or after "New chat").
+async function restoreChatHistory(){
+  try {
+    const r = await fetch("/chat-history", {
+      headers: { "X-Agent-Passcode": passcode, "X-Session-Id": sid }
+    });
+
+    if (r.status===401) {
+      addMsg("Wrong passcode.","bot");
+      byId("login-overlay").style.display="flex";
+      return;
+    }
+
+    const data = await r.json();
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+
+    if (messages.length===0) {
+      addMsg(
+        "Darkly Agent ready. Live market data is available in the Research view.",
+        "bot"
+      );
+      return;
+    }
+
+    byId("chat").innerHTML="";
+    for (const m of messages) {
+      addMsg(m.content, m.role==="user" ? "me" : "bot");
+    }
+  } catch (e) {
+    // A failed restore should not block using the console — fall back
+    // to the plain greeting and let the next real message try again.
+    addMsg(
+      "Darkly Agent ready. (Could not load prior chat history: "+e.message+")",
+      "bot"
+    );
+  }
+}
+
+async function newChat(){
+  try {
+    await fetch("/chat-reset", {
+      method: "POST",
+      headers: { "X-Agent-Passcode": passcode, "X-Session-Id": sid }
+    });
+  } catch (e) {
+    // Even if the server-side clear fails, still give a visibly fresh
+    // pane locally — the next message will just carry stale context
+    // from the server's side rather than losing the UI action entirely.
+  }
+  byId("chat").innerHTML="";
+  addMsg("New conversation started.","bot");
 }
 
 byId("research-tab").onclick=()=>showView("research");
 byId("stocks-tab").onclick=()=>showView("stocks");
 byId("chat-tab").onclick=()=>showView("chat");
 byId("stocks-refresh").onclick=()=>loadStocks();
+byId("new-chat-btn").onclick=newChat;
 
 let stocksLoaded=false;
 
@@ -2641,6 +2721,7 @@ const server = http.createServer(async (req, res) => {
           ).join("\n");
       history.push({role:"user",content:message});
       history.push({role:"assistant",content:reply});
+      saveHistory(sid);
       return send(200,{reply});
     }
 
@@ -2648,13 +2729,34 @@ const server = http.createServer(async (req, res) => {
       const { text: reply, provider } = await askClaude(history, message);
       history.push({role:"user",content:message});
       history.push({role:"assistant",content:reply});
-      if (history.length>40) history.splice(0,2);
+      saveHistory(sid);
       const lead = await extractAndSaveLead(reply);
       return send(200,{reply:cleanReply(reply), leadSaved:!!lead, provider});
     } catch(e) {
       console.error("Claude error",e.message);
       return send(502,{error:"Model error: "+e.message});
     }
+  }
+
+  // GET /chat-history — replay a session's persisted conversation so
+  // reopening the console (a new page load, a different device, or after
+  // a Railway restart) restores what was actually said instead of
+  // starting from an empty pane with a server that secretly still
+  // remembers a different, now-unreachable session.
+  if (req.method==="GET" && req.url==="/chat-history") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    const sid = req.headers["x-session-id"]||"default";
+    return send(200, { messages: getHistory(sid) });
+  }
+
+  // POST /chat-reset — an explicit "start a new conversation" action.
+  // Only clears the one session named by X-Session-Id; every other
+  // session (another device, an old id) is untouched.
+  if (req.method==="POST" && req.url==="/chat-reset") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    const sid = req.headers["x-session-id"]||"default";
+    resetHistory(sid);
+    return send(200, { ok: true });
   }
 
   if (req.method==="POST" && req.url==="/send-email") {
