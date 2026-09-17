@@ -25,7 +25,8 @@ const {
   writeState,
   appendLine,
   tailLines,
-  archiveInfo
+  archiveInfo,
+  resetStateDir
 } = await import("./state.js");
 
 let pass = 0;
@@ -143,6 +144,41 @@ check("total append time stayed reasonable", appendMs < 20_000, `${appendMs}ms f
 console.log(
   `\n  (archive ${info.megabytes} MB, ${info.records} records; tail read ${readMs}ms)`
 );
+
+/* ------------------------------------------------------------------ */
+
+console.log("\nresetStateDir — actually picks up a NEW directory, not just re-checks the old one");
+
+{
+  // Self-caught bug: this used to be a top-level `const CANDIDATES`
+  // evaluated once at import time, so resetStateDir() forgot the cached
+  // *directory* but stateDir() still iterated the *same frozen list* —
+  // meaning a test (or anything else) that changed DARKLY_STATE_DIR
+  // after import and called resetStateDir() silently landed back on the
+  // original directory (or /data) instead of the new one. Found while
+  // writing leads-store.test.mjs, which genuinely needs several distinct
+  // durable stores within one process.
+  const before = stateDir();
+
+  const SCRATCH2 = path.join(os.tmpdir(), "darkly-state-test-2");
+  fs.rmSync(SCRATCH2, { recursive: true, force: true });
+  fs.mkdirSync(SCRATCH2, { recursive: true });
+  process.env.DARKLY_STATE_DIR = SCRATCH2;
+  resetStateDir();
+
+  check("stateDir() reflects the newly-set DARKLY_STATE_DIR after reset", stateDir() === SCRATCH2, stateDir());
+  check("it's actually a different directory than before", stateDir() !== before);
+
+  writeState("resettest.json", { marker: "in-scratch2" });
+  check("writes after reset land in the new directory", fs.existsSync(path.join(SCRATCH2, "resettest.json")));
+  check("the OLD directory does not receive the new write",
+    !fs.existsSync(path.join(SCRATCH, "resettest.json")));
+
+  // Restore for anything that runs after this block in-process.
+  process.env.DARKLY_STATE_DIR = SCRATCH;
+  resetStateDir();
+  check("resetting back to the original directory works too", stateDir() === SCRATCH);
+}
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);

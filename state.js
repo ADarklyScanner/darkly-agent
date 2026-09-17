@@ -19,12 +19,21 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const CANDIDATES = [
-  process.env.DARKLY_STATE_DIR,
-  "/data",
-  process.env.HOME,
-  "."
-].filter(Boolean);
+// A function, not a frozen array: computed fresh every time stateDir()
+// needs it, which in practice means "once per process" (stateDir()
+// caches the result in `resolved`) UNLESS a test calls resetStateDir().
+// Originally this was a top-level const evaluated once at import time,
+// which quietly broke resetStateDir()'s own promise ("forget the
+// resolved directory so a new one can be picked up") — the cached
+// DIRECTORY was forgotten, but the candidate LIST still baked in
+// whatever DARKLY_STATE_DIR held at first import, so a test changing it
+// afterward and calling resetStateDir() kept silently landing back on
+// the original directory (or /data). See leads-store.test.mjs, which
+// needs several distinct durable stores in one process and is what
+// surfaced this.
+function candidates() {
+  return [process.env.DARKLY_STATE_DIR, "/data", process.env.HOME, "."].filter(Boolean);
+}
 
 let resolved = null;
 
@@ -40,10 +49,11 @@ function isWritable(dir) {
   }
 }
 
-/** The directory durable state is written to. Resolved once per process. */
+/** The directory durable state is written to. Resolved once per process
+ * (or once per resetStateDir() call, for tests). */
 export function stateDir() {
   if (resolved) return resolved;
-  for (const dir of CANDIDATES) {
+  for (const dir of candidates()) {
     if (isWritable(dir)) {
       resolved = dir;
       return resolved;

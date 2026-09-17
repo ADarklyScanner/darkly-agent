@@ -59,20 +59,67 @@ import { backtest as runBacktest, runWindows as runBacktestWindows, BACKTEST_DEF
 import { RISK_DEFAULTS } from "./risk.js";
 import { isQuotaOrRateLimitError, fallbackConfigured, callFallbackModel } from "./llm-provider.js";
 import { geminiConfigured, callGemini } from "./gemini.js";
-import { getHistory, saveHistory, resetHistory } from "./chat-store.js";
+import { getHistory as getPersistentHistory, saveHistory as savePersistentHistory, resetHistory as resetPersistentHistory } from "./chat-store.js";
+import { loadLeads, saveLeads, migrateLegacyLeadsIfNeeded } from "./leads-store.js";
 
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(process.env.HOME || ".", "darkly-leads.json");
 
-function loadLeads() {
-  try {
-    if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch(e) {}
-  return [];
+/* ------------------------------------------------------------------ *
+ * Chat slots: one persistent main thread, four disposable side ones.
+ *
+ * "chat" is the single durable conversation (chat-store.js — survives a
+ * restart/redeploy). "2" through "5" are deliberately NOT persisted: a
+ * plain in-memory Map, gone the moment the process restarts. That's the
+ * point — they're for quick brainstorming/theory-crafting that doesn't
+ * deserve, or want, the weight of being remembered forever. Any session
+ * id outside this fixed set of five falls back to "chat" rather than
+ * silently creating an unbounded set of new sessions.
+ * ------------------------------------------------------------------ */
+
+const CHAT_SLOTS = ["chat", "2", "3", "4", "5"];
+const EPHEMERAL_SLOTS = new Set(["2", "3", "4", "5"]);
+const EPHEMERAL_MAX_MESSAGES = 40; // matches chat-store.js's cap on the persistent slot
+
+const ephemeralSessions = new Map();
+
+function resolveSlot(raw) {
+  return CHAT_SLOTS.includes(raw) ? raw : "chat";
 }
 
-function saveLeads(leads) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(leads, null, 2));
+function historyForSlot(slot) {
+  if (EPHEMERAL_SLOTS.has(slot)) {
+    if (!ephemeralSessions.has(slot)) ephemeralSessions.set(slot, []);
+    return ephemeralSessions.get(slot);
+  }
+  return getPersistentHistory("chat");
+}
+
+function saveHistoryForSlot(slot) {
+  if (EPHEMERAL_SLOTS.has(slot)) {
+    const h = ephemeralSessions.get(slot) || [];
+    if (h.length > EPHEMERAL_MAX_MESSAGES) h.splice(0, h.length - EPHEMERAL_MAX_MESSAGES);
+    return;
+  }
+  savePersistentHistory("chat");
+}
+
+function resetHistoryForSlot(slot) {
+  if (EPHEMERAL_SLOTS.has(slot)) {
+    ephemeralSessions.set(slot, []);
+    return;
+  }
+  resetPersistentHistory("chat");
+}
+
+// One-time, one-way move off the old $HOME/darkly-leads.json path (wiped
+// on every Railway restart/redeploy) onto the same durable /data-backed
+// store everything else in this codebase already uses. A no-op on every
+// run after the first real one — see leads-store.js.
+{
+  const migration = migrateLegacyLeadsIfNeeded();
+  if (migration.migrated) {
+    console.log(`[leads] migrated ${migration.count} lead(s) from ${migration.from} to the durable store (${migration.to}).`);
+  }
 }
 
 function upsertLead(lead) {
@@ -1357,13 +1404,23 @@ tbody tr:hover{background:#17171c}
   flex-direction:column;
 }
 #chat-header{
-  display:flex;justify-content:flex-end;
+  display:flex;justify-content:space-between;align-items:center;gap:8px;
   padding:8px 10px 0;
+}
+#chat-slot-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.slot-tab{
+  border:1px solid #33333b;border-radius:9px;
+  background:#18181c;color:#888;padding:6px 12px;
+  font-size:12px;
+}
+.slot-tab.active{
+  background:#203126;color:#68e59c;border-color:#2c4a3a;
 }
 #new-chat-btn{
   border:1px solid #33333b;border-radius:9px;
   background:#18181c;color:#999;padding:6px 12px;
   font-size:12px;
+  flex-shrink:0;
 }
 #chat{
   flex:1;
@@ -1720,7 +1777,8 @@ tbody tr:hover{background:#17171c}
 
   <section id="chat-view">
     <div id="chat-header">
-      <button id="new-chat-btn" title="Start a fresh conversation on this device">New chat</button>
+      <div id="chat-slot-tabs"></div>
+      <button id="new-chat-btn" title="Clear this chat's history">New chat</button>
     </div>
     <div id="chat"></div>
     <div id="inputbar">
@@ -1744,25 +1802,16 @@ tbody tr:hover{background:#17171c}
 <script>
 let passcode="";
 
-// The session id used to be regenerated on every page load, which meant
-// the server could persist chat history forever and it still wouldn't
-// matter — nothing pointed back at it after a refresh. Keeping it in
-// localStorage is what actually makes chat-store.js's durability useful:
-// reopening this page (even after a Railway restart) reconnects to the
-// same conversation instead of starting a fresh, unreachable one.
-// Wrapped in try/catch: localStorage can throw (private browsing, a
-// locked-down webview) and losing persistence is fine, losing the page
-// to an uncaught exception is not.
-let sid;
-try {
-  sid = localStorage.getItem("darkly-sid");
-  if (!sid) {
-    sid = Math.random().toString(36).slice(2);
-    localStorage.setItem("darkly-sid", sid);
-  }
-} catch (e) {
-  sid = Math.random().toString(36).slice(2);
-}
+// A fixed set of named chat slots rather than one-session-per-browser:
+// "chat" is the single persistent main thread (durable — see
+// chat-store.js), and "2"-"5" are disposable side threads for
+// brainstorming/theory-crafting that deliberately do NOT survive a
+// restart (see server.js's EPHEMERAL_SLOTS). All five are shared across
+// whatever device is talking to this console — there's no per-browser id
+// to keep in localStorage at all anymore, which is simpler and matches
+// what was actually wanted: one real "Chat", plus a few scratch ones.
+const CHAT_SLOTS=["chat","2","3","4","5"];
+let activeSlot="chat";
 
 let researchRows=[];
 let activeMarket=null;
@@ -1781,18 +1830,34 @@ async function unlock(){
   byId("login-overlay").style.display="none";
 
   loadResearch();
-  await restoreChatHistory();
+  await switchSlot("chat");
 }
 
-// Replay whatever this session id's conversation already holds on the
-// server (chat-store.js), so reopening the console shows the actual
-// prior conversation instead of an empty pane pretending nothing was
-// ever said. Falls back to the original one-line greeting only when
-// there's genuinely no history yet (first visit, or after "New chat").
-async function restoreChatHistory(){
+function renderSlotTabs(){
+  const wrap=byId("chat-slot-tabs");
+  wrap.innerHTML="";
+  for (const slot of CHAT_SLOTS){
+    const b=document.createElement("button");
+    b.className="slot-tab"+(slot===activeSlot?" active":"");
+    b.textContent=slot==="chat"?"Chat":slot;
+    b.onclick=()=>switchSlot(slot);
+    wrap.appendChild(b);
+  }
+}
+
+// Switch which slot is showing and replay whatever it already holds.
+// "chat" is durable (chat-store.js, survives a restart); "2"-"5" are
+// ephemeral (in-memory only on the server, gone on the next restart) —
+// see EPHEMERAL_SLOTS below. Either way the fetch/render logic is the
+// same from the browser's side.
+async function switchSlot(slot){
+  activeSlot=slot;
+  renderSlotTabs();
+  byId("chat").innerHTML="";
+
   try {
     const r = await fetch("/chat-history", {
-      headers: { "X-Agent-Passcode": passcode, "X-Session-Id": sid }
+      headers: { "X-Agent-Passcode": passcode, "X-Session-Id": activeSlot }
     });
 
     if (r.status===401) {
@@ -1806,19 +1871,20 @@ async function restoreChatHistory(){
 
     if (messages.length===0) {
       addMsg(
-        "Darkly Agent ready. Live market data is available in the Research view.",
+        slot==="chat"
+          ? "Darkly Agent ready. Live market data is available in the Research view."
+          : "Side chat "+slot+" — not saved, cleared on restart. Good for throwing around ideas.",
         "bot"
       );
       return;
     }
 
-    byId("chat").innerHTML="";
     for (const m of messages) {
       addMsg(m.content, m.role==="user" ? "me" : "bot");
     }
   } catch (e) {
     // A failed restore should not block using the console — fall back
-    // to the plain greeting and let the next real message try again.
+    // to a plain notice and let the next real message try again.
     addMsg(
       "Darkly Agent ready. (Could not load prior chat history: "+e.message+")",
       "bot"
@@ -1830,7 +1896,7 @@ async function newChat(){
   try {
     await fetch("/chat-reset", {
       method: "POST",
-      headers: { "X-Agent-Passcode": passcode, "X-Session-Id": sid }
+      headers: { "X-Agent-Passcode": passcode, "X-Session-Id": activeSlot }
     });
   } catch (e) {
     // Even if the server-side clear fails, still give a visibly fresh
@@ -2509,7 +2575,7 @@ async function sendMsg(){
       headers:{
         "Content-Type":"application/json",
         "X-Agent-Passcode":passcode,
-        "X-Session-Id":sid
+        "X-Session-Id":activeSlot
       },
       body:JSON.stringify({message:text})
     });
@@ -2709,8 +2775,8 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody();
     const message = String(body.message||"").trim();
     if (!message) return send(400,{error:"Message required"});
-    const sid = req.headers["x-session-id"]||"default";
-    const history = getHistory(sid);
+    const slot = resolveSlot(req.headers["x-session-id"]);
+    const history = historyForSlot(slot);
 
     if (message.toUpperCase()==="LIST LEADS") {
       const leads = loadLeads();
@@ -2721,7 +2787,7 @@ const server = http.createServer(async (req, res) => {
           ).join("\n");
       history.push({role:"user",content:message});
       history.push({role:"assistant",content:reply});
-      saveHistory(sid);
+      saveHistoryForSlot(slot);
       return send(200,{reply});
     }
 
@@ -2729,7 +2795,7 @@ const server = http.createServer(async (req, res) => {
       const { text: reply, provider } = await askClaude(history, message);
       history.push({role:"user",content:message});
       history.push({role:"assistant",content:reply});
-      saveHistory(sid);
+      saveHistoryForSlot(slot);
       const lead = await extractAndSaveLead(reply);
       return send(200,{reply:cleanReply(reply), leadSaved:!!lead, provider});
     } catch(e) {
@@ -2738,24 +2804,25 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // GET /chat-history — replay a session's persisted conversation so
-  // reopening the console (a new page load, a different device, or after
-  // a Railway restart) restores what was actually said instead of
-  // starting from an empty pane with a server that secretly still
-  // remembers a different, now-unreachable session.
+  // GET /chat-history — replay a slot's conversation so switching to it
+  // (or reopening the console, on a new page load, a different device,
+  // or after a Railway restart) restores what was actually said instead
+  // of starting from an empty pane pretending nothing was ever said.
+  // For the "chat" slot this is real persisted history; for a "2"-"5"
+  // side slot it's just whatever survived in this process's memory.
   if (req.method==="GET" && req.url==="/chat-history") {
     if (!auth()) return send(401,{error:"Unauthorized"});
-    const sid = req.headers["x-session-id"]||"default";
-    return send(200, { messages: getHistory(sid) });
+    const slot = resolveSlot(req.headers["x-session-id"]);
+    return send(200, { messages: historyForSlot(slot) });
   }
 
   // POST /chat-reset — an explicit "start a new conversation" action.
-  // Only clears the one session named by X-Session-Id; every other
-  // session (another device, an old id) is untouched.
+  // Only clears the one slot named by X-Session-Id; every other slot
+  // (the main "chat", or another side slot) is untouched.
   if (req.method==="POST" && req.url==="/chat-reset") {
     if (!auth()) return send(401,{error:"Unauthorized"});
-    const sid = req.headers["x-session-id"]||"default";
-    resetHistory(sid);
+    const slot = resolveSlot(req.headers["x-session-id"]);
+    resetHistoryForSlot(slot);
     return send(200, { ok: true });
   }
 
