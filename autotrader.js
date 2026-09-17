@@ -41,10 +41,11 @@ import {
   isLiveEndpoint
 } from "./trading.js";
 
-import { scoreSymbol } from "./strategy.js";
+import { scoreSymbol, AGGRESSIVENESS } from "./strategy.js";
 
 import { classifyRunForAlert, shouldSendAlert, schedulerHeartbeat } from "./alerts.js";
 import { alertingConfigured, sendAlertMail } from "./mailer.js";
+import { configFingerprint, deploymentInfo } from "./audit.js";
 
 import {
   positionSize,
@@ -243,6 +244,23 @@ export function getAlertStatus() {
   };
 }
 
+/**
+ * The human-readable settings behind the short `configFingerprint`
+ * stamped on every run — so "this run's fingerprint is a1b2c3..." can
+ * actually be resolved back into real numbers on demand, instead of the
+ * (much larger, endlessly repeated) full config having to be written into
+ * every single archived run just in case someone needs to look it up.
+ */
+export function getCurrentConfigDetails() {
+  return {
+    fingerprint: configFingerprint({ CONFIG, RISK_DEFAULTS, AGGRESSIVENESS }),
+    CONFIG,
+    RISK_DEFAULTS,
+    AGGRESSIVENESS,
+    deployment: deploymentInfo()
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * The run
  * ------------------------------------------------------------------ */
@@ -257,6 +275,13 @@ export async function runOnce(options = {}) {
     mode,
     forced: force,
     aggressiveness: CONFIG.aggressiveness,
+    // Which CODE (deployed commit, via Railway's own git env vars) and
+    // which CONFIG (a hash of the actual runtime settings) produced this
+    // run's decisions — see audit.js. Both travel with the run into the
+    // append-only archive, so a run from before a parameter change is
+    // never mistaken for one made under today's settings.
+    deployment: deploymentInfo(),
+    configFingerprint: configFingerprint({ CONFIG, RISK_DEFAULTS, AGGRESSIVENESS }),
     skipped: null,
     signals: [],
     decisions: [],

@@ -38,6 +38,7 @@ import {
   getHistoryInfo as autoTraderHistoryInfo,
   getHeartbeat as autoTraderHeartbeat,
   getAlertStatus as autoTraderAlertStatus,
+  getCurrentConfigDetails as autoTraderConfigDetails,
   setKillSwitch,
   CONFIG as AUTOTRADER_CONFIG
 } from "./autotrader.js";
@@ -2570,7 +2571,8 @@ const server = http.createServer(async (req, res) => {
         status: autoTraderStatus(),
         runs: autoTraderRuns(10),
         heartbeat: autoTraderHeartbeat(),
-        alerting: autoTraderAlertStatus()
+        alerting: autoTraderAlertStatus(),
+        configDetails: autoTraderConfigDetails()
       });
     } catch (e) {
       return send(500, { error: String(e.message || e) });
