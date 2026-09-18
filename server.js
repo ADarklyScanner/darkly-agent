@@ -56,6 +56,7 @@ import {
   keyByConfidenceBucket
 } from "./performance.js";
 import { backtest as runBacktest, runWindows as runBacktestWindows, BACKTEST_DEFAULTS } from "./backtest.js";
+import { scheduleReno, nextOperationalBoundary, ALGORITHM_VERSION as RENO_VERSION } from "./reno-engine.js";
 import { RISK_DEFAULTS } from "./risk.js";
 import { isQuotaOrRateLimitError, fallbackConfigured, callFallbackModel } from "./llm-provider.js";
 import { geminiConfigured, callGemini } from "./gemini.js";
@@ -187,6 +188,12 @@ Be accurate about what all this is. The risk controls are real and are the part 
 PERFORMANCE. Use get_performance for any question about how the LIVE trading is actually going. Never estimate from the trade log yourself. Every figure it returns carries a sample size and a reliability flag, and below 30 closed trades results are indistinguishable from luck — when you report a number from it, report that caveat in the same breath. If it returns zero closed trades, say exactly that: zero closed trades is not a zero result, it means nothing has completed a round-trip yet. Never annualize, extrapolate or project.
 
 BACKTESTING. Use run_backtest for any question about how the strategy WOULD HAVE done historically, or before recommending any change to the strategy or its parameters. It replays the exact same code (strategy.js + risk.js) against historical daily bars, filling decisions only at the next bar's open (no lookahead), and returns a scored report plus an 'honesty' field you must read and weigh in with — a backtest is a description of one historical sample, not a predictor, and a strategy that never beat simple buy-and-hold on its own benchmark is not a strategy worth trading. Always report the benchmark comparison ('beatBuyAndHold') alongside any return number — a strategy that made money but underperformed just holding the index has not demonstrated anything the market didn't hand out for free. Below the reliability floor, say so, same as get_performance. The report's 'sharpe' field is a risk-adjusted return computed ONLY from this backtest's own day-by-day equity — this is the one place annualizing is honest, because a backtest has an actual, complete daily calendar behind it, unlike the live trade log's sparse, irregular fills; still report it as a property of this one historical replay, never as a forecast, and lean on its own 'reliable'/'caveat' fields exactly as you would performance's. Use the 'windows' option when someone wants to know if a result holds up outside one period, and report a mixed or negative result exactly as plainly as a positive one — this tool exists to find out whether the strategy is worth running, not to justify running it.
+
+RENO DRIVER SCHEDULING. run_reno_schedule runs the user's own Reno Uber Opportunity-Ranking and Shift-Optimization Engine (RENO_UBER_V1_CANONICAL_2026_09_02), ported verbatim from their saved specification. Call it for "start the Uber schedule", "start Uber's schedule", "when should I drive", "best hours to drive this week", and close equivalents. What it does: ranks all 168 one-hour periods of the coming Reno operational week (days run 4AM->4AM Reno local) by DRIVER OPPORTUNITY — demand minus competing-driver supply, plus trip quality, throughput and destination continuity, minus traffic/queue/deadhead friction — then returns six jointly-optimized non-overlapping 8-hour blocks, two recommended days off, and any one-off hours scoring 81.6+.
+
+The engine is evidence-first but does NOT gather evidence itself, and this is the single most important thing to get right when using it. With no evidence it returns a pure baseline ranking from the frozen hour/day tables: a real, useful answer about normal Reno patterns, but one that knows nothing about this week's actual concerts, weather, flights, or road closures. If you have genuinely researched the forecast week, pass what you found as evidence records with real sources and time windows so it actually moves the numbers. NEVER invent evidence to make the output look better-informed — a fabricated event or weather value silently corrupts the entire ranking, and the engine is explicitly designed to treat missing evidence as neutral rather than to guess. Always tell the user which case they got: baseline-only, or evidence-backed and from what sources.
+
+Honesty rules for its output: the 0-100 score is a RELATIVE opportunity score for that specific week (50 is roughly the week's center) — it is not dollars per hour, not a probability of getting a ride, not a surge forecast, and not a guarantee. A top-ranked hour can still underperform. The engine deliberately does NOT treat rush hour as a commute bonus and does NOT treat big events as automatically good (driver oversupply, staging, shuttles, free parking and gridlocked pickups can make a busy-looking hour a bad one) — if the user is surprised by a ranking, explain the actual factor that moved it rather than softening the result. The driving-time and rest checks are a conservative scheduling guardrail approximating Nevada/Uber limits, NOT certified legal compliance: say so whenever compliance affects a block, and never tell the user a schedule is legal — tell them to verify against their real counters.
 
 Price sources, and the difference matters:
 - get_quote is Alpaca's LIVE price feed and covers any symbol. It is authoritative.
@@ -565,6 +572,94 @@ const CLAUDE_TOOLS = [
       required: ["prompt"],
       additionalProperties: false
     }
+  },
+  {
+    name: "run_reno_schedule",
+    description:
+      "Run the Reno Uber Opportunity-Ranking and Shift-Optimization Engine (algorithm version " +
+      "RENO_UBER_V1_CANONICAL_2026_09_02). Ranks all 168 one-hour periods of the coming Reno operational " +
+      "week (days run 4AM->4AM Reno local) by DRIVER OPPORTUNITY — not raw rider demand — then returns six " +
+      "jointly-optimized non-overlapping 8-hour driving blocks (extendable to 9-10h when an adjacent hour is " +
+      "independently strong), the two weakest days as recommended days off, and any exceptional one-off hours " +
+      "scoring 81.6+. Call this for 'start the Uber schedule', 'start Uber's schedule', 'when should I drive', " +
+      "'best hours to drive', and close equivalents. " +
+      "EVIDENCE: the engine is evidence-first but does NOT fetch evidence itself. With no evidence it returns a " +
+      "pure baseline ranking from the frozen hour/day demand and supply tables — still useful, but it knows " +
+      "nothing about this specific week's events, weather, flights, or road closures. If you have researched " +
+      "real, sourced facts about the forecast week, pass them as evidence records so they actually move the " +
+      "numbers. Never invent evidence: a fabricated event or weather value silently corrupts the ranking, and " +
+      "missing evidence is treated as neutral by design. " +
+      "HONESTY: the 0-100 score is a RELATIVE weekly opportunity score, not dollars/hour, not a probability, " +
+      "and not a guarantee. Say so rather than implying predicted earnings.",
+    input_schema: {
+      type: "object",
+      properties: {
+        evidence: {
+          type: "array",
+          description:
+            "Researched evidence records for specific hours. Each must be traceable to a real source. Omit entirely if you have not researched this week.",
+          items: {
+            type: "object",
+            properties: {
+              family: {
+                type: "string",
+                description:
+                  "Signal family. One of: calendar, event_demand, event_quality, driver_supply, driver_camping, staging, airport, flight_activity, airport_queue, tourism, hotel_pressure, tahoe, regional_spillover, weather, safety_suppression, traffic, transit, shuttle, parking_scarcity, free_parking, pickup_friction, access_friction, nightlife, casino, university, school_activity, fare_quality, trip_quality, tip_quality, wait_time, deadhead, short_trip_density, long_trip_risk, trip_throughput, geography, destination_continuity, interaction_demand, interaction_quality, interaction_friction."
+              },
+              label: { type: "string", description: "Short human label, e.g. 'Lawlor Events Center concert'." },
+              value: {
+                type: "number",
+                description:
+                  "Strength, -2 to +2, clamped. Positive means more of that thing (more demand, more supply, more friction). Use modest values (0.3-1.0) unless the evidence is strong and specific."
+              },
+              confidence: { type: "number", description: "0-1. Omit to derive it from sourceType instead." },
+              sourceType: {
+                type: "string",
+                description:
+                  "official (1.00) | organizer (0.95) | ticketing (0.88) | local_news (0.85) | secondary (0.75) | manual (0.80) | aggregator (0.55) | social (0.30) | unspecified (0.70)"
+              },
+              source: { type: "string", description: "Where this came from — a URL or publication name." },
+              note: { type: "string", description: "Very short reason text, surfaced in the hour's Primary Reasons." },
+              start: { type: "string", description: "ISO timestamp the evidence starts applying (inclusive)." },
+              end: { type: "string", description: "ISO timestamp the evidence stops applying (exclusive)." },
+              fullWeek: {
+                type: "boolean",
+                description:
+                  "Set true ONLY for genuinely week-wide evidence with no start/end. Without a window or this flag, the record is deliberately ignored so it cannot contaminate all 168 hours."
+              }
+            },
+            required: ["family", "label", "value"],
+            additionalProperties: false
+          }
+        },
+        weekStart: {
+          type: "string",
+          description:
+            "ISO timestamp of the operational week start. Omit to use the next upcoming Reno 4:00 AM boundary, which is the default behavior."
+        },
+        learnedUberTph: {
+          type: "number",
+          description: "The driver's learned actual trips/hour, if known. Defaults to 3.0."
+        },
+        quest: {
+          type: "object",
+          description: "Exact Uber quest details, if the user supplied them. Never infer a payout from weekly earnings.",
+          properties: {
+            target: { type: "number", description: "Trips required." },
+            current: { type: "number", description: "Trips completed so far." },
+            payout: { type: "number", description: "Dollar payout on completion." },
+            deadlineHourIndex: { type: "number", description: "Hour index 0-167 within the forecast week when the quest expires." }
+          },
+          required: ["target", "current", "payout", "deadlineHourIndex"],
+          additionalProperties: false
+        },
+        topHours: {
+          type: "number",
+          description: "How many of the 168 ranked hours to return in full detail. Defaults to 24. The full ranking is always available in the Driver tab of the console."
+        }
+      },
+      additionalProperties: false
+    }
   }
 ];
 
@@ -826,8 +921,92 @@ async function executeClaudeTool(name, input = {}) {
     }
   }
 
+  if (name === "run_reno_schedule") {
+    try {
+      const result = scheduleReno({
+        weekStart: input.weekStart ? new Date(input.weekStart) : undefined,
+        evidence: input.evidence || [],
+        learnedUberTph: input.learnedUberTph,
+        quest: input.quest || null
+      });
+      lastRenoSchedule = result;
+
+      const topHours = Math.max(1, Math.min(168, Number(input.topHours) || 24));
+      const fmt = (d) =>
+        new Intl.DateTimeFormat("en-US", {
+          timeZone: "America/Los_Angeles",
+          weekday: "short",
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          hour12: true
+        }).format(d);
+
+      // Trimmed for the model's context: the full 168 rows live in the
+      // Driver tab and in GET /reno-schedule, not in every tool result.
+      const unrecognized = result.hours.flatMap((h) => h.unrecognized.map((u) => u.family));
+
+      return {
+        ok: true,
+        algorithmVersion: result.algorithmVersion,
+        weekStart: fmt(result.weekStart),
+        scoreMeaning:
+          "0-100 is a RELATIVE opportunity score for this specific week (50 is roughly the week's center). It is not dollars/hour, not a probability, and not a guarantee.",
+        evidenceUsed: (input.evidence || []).length,
+        evidenceNote:
+          (input.evidence || []).length === 0
+            ? "No evidence supplied: this is the pure baseline ranking from the frozen hour/day tables. It knows nothing about this week's actual events, weather, flights, or road closures."
+            : "Evidence supplied by the caller was applied within its stated time windows.",
+        unrecognizedEvidenceFamilies: unrecognized.length ? [...new Set(unrecognized)] : undefined,
+        rankedHours: result.ranked.slice(0, topHours).map((h) => ({
+          rank: h.rank,
+          when: fmt(h.date),
+          score: Math.round(h.score * 10) / 10,
+          expectedTripsPerHour: Math.round(h.expectedTph * 100) / 100,
+          reasons: h.reasons
+        })),
+        totalHoursRanked: result.hours.length,
+        blocks: result.blocks.map((b) => ({
+          rank: b.rank,
+          core: `${fmt(b.coreStartDate)} - ${fmt(b.coreEndDate)}`,
+          recommended: `${fmt(b.startDate)} - ${fmt(b.endDate)}`,
+          hours: b.hoursCount,
+          coreTotalScore: b.coreTotalScore,
+          extendedTotalScore: b.extendedTotalScore,
+          extendedAvgScore: b.extendedAvgScore,
+          extended: b.hasExtension
+        })),
+        totalRecommendedHours: result.blocks.reduce((s, b) => s + b.hoursCount, 0),
+        complianceNotes: result.complianceNotes.length ? result.complianceNotes : undefined,
+        complianceCaveat:
+          "Driving-time/rest checks here are a conservative scheduling guardrail approximating Nevada/Uber limits, not certified legal compliance. Verify against real counters before driving.",
+        bestDaysOff: result.bestDaysOff.map((d, i) => ({
+          rank: i + 1,
+          day: new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/Los_Angeles",
+            weekday: "long",
+            month: "short",
+            day: "numeric"
+          }).format(d.date),
+          avgScore: Math.round(d.avgScore * 10) / 10
+        })),
+        oneOffHours: result.oneOffHours.length
+          ? result.oneOffHours.map((h) => ({ when: fmt(h.date), score: h.score, reasons: h.reasons }))
+          : [],
+        oneOffMessage: result.oneOffMessage
+      };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
   throw new Error(`Unknown Claude tool: ${name}`);
 }
+
+// The most recent schedule run, so the Driver tab can show the full 168-hour
+// ranking without recomputing it (and without the model having to relay all
+// 168 rows through the chat).
+let lastRenoSchedule = null;
 
 
 const CORE_ENGINE_CONFIG_KEYS = [
@@ -1494,12 +1673,63 @@ tbody tr:hover{background:#17171c}
 .dk{color:#777;font-size:10px;text-transform:uppercase}
 .dv{font-size:12px;white-space:pre-wrap;word-break:break-word}
 
-#stocks-view{
+#stocks-view,#driver-view{
   flex:1;
   overflow:hidden;
   display:none;
   flex-direction:column;
 }
+#driver-refresh{
+  border:0;border-radius:8px;
+  padding:7px 12px;
+  background:#243d31;color:#68e59c;
+}
+.evnote{
+  font-size:11px;
+  line-height:1.5;
+  padding:8px 10px;
+  border-bottom:1px solid #232329;
+}
+.ev-warn{background:#2b2617;color:#e0c97a}
+.ev-ok{background:#182a20;color:#7fd3a3}
+.subtle{color:#777;font-size:11px;line-height:1.5}
+.blk{
+  border:1px solid #24242a;
+  border-radius:10px;
+  padding:10px;
+  margin-bottom:8px;
+  background:#131316;
+}
+.blk-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.blk-rank{font-weight:700;color:#68e59c;font-size:13px}
+.blk-score{font-size:11px;color:#999;margin-left:auto}
+.blk-when{font-size:13px;color:#ddd}
+.blk-ext{font-size:11px;color:#e0c97a;margin-top:2px}
+.blk-hours{font-size:11px;color:#777;margin-top:3px}
+.blk-total{
+  font-size:12px;color:#68e59c;font-weight:600;
+  padding:8px 0 4px;
+}
+.compliance{
+  font-size:11px;color:#e0c97a;line-height:1.5;
+  background:#2b2617;border-radius:8px;padding:8px;margin:6px 0;
+}
+.dayoff{font-size:13px;color:#ddd;margin-bottom:6px}
+.dayoff-rank{color:#68e59c;font-weight:600;font-size:11px}
+.oneoff-head{
+  margin:14px 0 6px;font-size:11px;text-transform:uppercase;
+  letter-spacing:.5px;color:#777;font-weight:600;
+}
+.oneoff{margin-bottom:8px;font-size:12px;color:#ddd}
+.dtable{width:100%;border-collapse:collapse;font-size:11px}
+.dtable th{
+  text-align:left;padding:6px 8px;color:#777;font-weight:600;
+  border-bottom:1px solid #24242a;position:sticky;top:0;background:#0e0e11;
+  text-transform:uppercase;letter-spacing:.4px;font-size:10px;
+}
+.dtable td{padding:6px 8px;border-bottom:1px solid #1b1b20;color:#ccc;vertical-align:top}
+.dtable td.num{text-align:right;font-variant-numeric:tabular-nums}
+.dtable td.reasons{color:#888;min-width:200px}
 #stocks-bar{
   display:flex;
   align-items:center;
@@ -1642,6 +1872,7 @@ tbody tr:hover{background:#17171c}
     <div id="nav">
       <button id="research-tab" class="navbtn active">Research</button>
       <button id="stocks-tab" class="navbtn">Stocks</button>
+      <button id="driver-tab" class="navbtn">Driver</button>
       <button id="chat-tab" class="navbtn">Chat</button>
     </div>
   </div>
@@ -1770,6 +2001,34 @@ tbody tr:hover{background:#17171c}
       <div class="sblock">
         <h3>Guardrails</h3>
         <div id="guardrails-wrap"></div>
+      </div>
+    </div>
+
+  </section>
+
+  <section id="driver-view">
+
+    <div id="stocks-bar">
+      <span id="driver-version" class="mode-pill">—</span>
+      <span id="driver-status">Not loaded</span>
+      <div class="spacer"></div>
+      <button id="driver-refresh">Recalculate</button>
+    </div>
+
+    <div id="driver-evidence-note" class="evnote"></div>
+
+    <div id="stocks-body">
+      <div class="sblock">
+        <h3>Recommended driving blocks</h3>
+        <div id="driver-blocks"></div>
+      </div>
+      <div class="sblock">
+        <h3>Days off &amp; one-off hours</h3>
+        <div id="driver-daysoff"></div>
+      </div>
+      <div class="sblock">
+        <h3>Ranked hours <span class="subtle" id="driver-rank-count"></span></h3>
+        <div id="driver-hours" class="scroll-x"></div>
       </div>
     </div>
 
@@ -1909,7 +2168,9 @@ async function newChat(){
 
 byId("research-tab").onclick=()=>showView("research");
 byId("stocks-tab").onclick=()=>showView("stocks");
+byId("driver-tab").onclick=()=>showView("driver");
 byId("chat-tab").onclick=()=>showView("chat");
+byId("driver-refresh").onclick=()=>loadDriver(true);
 byId("stocks-refresh").onclick=()=>loadStocks();
 byId("new-chat-btn").onclick=newChat;
 
@@ -1918,14 +2179,96 @@ let stocksLoaded=false;
 function showView(which){
   byId("research-view").style.display=which==="research"?"flex":"none";
   byId("stocks-view").style.display=which==="stocks"?"flex":"none";
+  byId("driver-view").style.display=which==="driver"?"flex":"none";
   byId("chat-view").style.display=which==="chat"?"flex":"none";
 
   byId("research-tab").classList.toggle("active",which==="research");
   byId("stocks-tab").classList.toggle("active",which==="stocks");
+  byId("driver-tab").classList.toggle("active",which==="driver");
   byId("chat-tab").classList.toggle("active",which==="chat");
 
   if(which==="chat")byId("message").focus();
   if(which==="stocks"&&!stocksLoaded)loadStocks();
+  if(which==="driver"&&!driverLoaded)loadDriver();
+}
+
+let driverLoaded=false;
+
+function renoTime(iso,opts){
+  return new Intl.DateTimeFormat("en-US",Object.assign({timeZone:"America/Los_Angeles"},opts)).format(new Date(iso));
+}
+
+async function loadDriver(fresh){
+  byId("driver-status").textContent=fresh?"Recalculating...":"Loading schedule...";
+  try{
+    const res=await fetch("/reno-schedule"+(fresh?"?fresh=1":""),{headers:{"X-Agent-Passcode":passcode}});
+    if(!res.ok)throw new Error("HTTP "+res.status);
+    const d=await res.json();
+    renderDriver(d);
+    driverLoaded=true;
+    byId("driver-status").textContent="Week of "+renoTime(d.weekStart,{weekday:"short",month:"short",day:"numeric"})+" · 168 hours ranked";
+    byId("driver-version").textContent=d.algorithmVersion;
+  }catch(e){
+    byId("driver-status").textContent="Failed: "+e.message;
+  }
+}
+
+function renderDriver(d){
+  // Evidence honesty banner: a baseline-only ranking must never be presented
+  // as if it knew about this week's actual events.
+  const note=byId("driver-evidence-note");
+  note.className="evnote "+(d.evidenceApplied>0?"ev-ok":"ev-warn");
+  note.textContent=d.evidenceNote+" "+d.scoreMeaning;
+
+  const blocks=d.blocks.map(b=>{
+    const core=renoTime(b.coreStartIso,{weekday:"short",month:"short",day:"numeric",hour:"numeric",hour12:true})
+      +" – "+renoTime(b.coreEndIso,{hour:"numeric",hour12:true});
+    const ext=b.extended
+      ? "<div class='blk-ext'>extend to "+renoTime(b.startIso,{hour:"numeric",hour12:true})
+        +" – "+renoTime(b.endIso,{hour:"numeric",hour12:true})+"</div>"
+      : "";
+    return "<div class='blk'>"
+      +"<div class='blk-head'><span class='blk-rank'>#"+b.rank+"</span>"
+      +"<span class='blk-score'>"+b.coreTotalScore+" ("+b.extendedTotalScore+" / "+b.extendedAvgScore+" avg)</span></div>"
+      +"<div class='blk-when'>"+core+"</div>"+ext
+      +"<div class='blk-hours'>"+b.hours+" hours</div>"
+      +"</div>";
+  }).join("");
+
+  const compliance=d.complianceNotes&&d.complianceNotes.length
+    ? "<div class='compliance'>"+d.complianceNotes.map(n=>"⚠ "+n).join("<br>")+"</div>"
+    : "";
+
+  byId("driver-blocks").innerHTML=blocks
+    +"<div class='blk-total'>Total recommended: "+d.totalRecommendedHours+" hours across "+d.blocks.length+" blocks</div>"
+    +compliance
+    +"<div class='subtle'>Driving-time checks are a conservative scheduling guardrail approximating Nevada/Uber limits — not certified legal compliance.</div>";
+
+  const daysOff=d.bestDaysOff.map((x,i)=>
+    "<div class='dayoff'><span class='dayoff-rank'>Best day off #"+(i+1)+"</span> "
+    +renoTime(x.iso,{weekday:"long",month:"short",day:"numeric"})
+    +" <span class='subtle'>avg "+x.avgScore+"</span></div>").join("");
+
+  const oneOffs=d.oneOffHours.length
+    ? "<div class='oneoff-list'>"+d.oneOffHours.map(h=>
+        "<div class='oneoff'><b>"+renoTime(h.iso,{weekday:"short",month:"short",day:"numeric",hour:"numeric",hour12:true})
+        +"</b> · "+h.score+"<div class='subtle'>"+esc(h.reasons)+"</div></div>").join("")+"</div>"
+    : "<div class='subtle'>"+(d.oneOffMessage||"No exceptional one-off hours this week.")+"</div>";
+
+  byId("driver-daysoff").innerHTML=daysOff
+    +"<h4 class='oneoff-head'>Optional one-off hours (81.6+)</h4>"+oneOffs;
+
+  byId("driver-rank-count").textContent="(all "+d.hours.length+", best to worst)";
+  const rows=d.hours.map(h=>
+    "<tr><td>"+h.rank+"</td>"
+    +"<td>"+renoTime(h.iso,{weekday:"short",month:"short",day:"numeric"})+"</td>"
+    +"<td>"+renoTime(h.iso,{hour:"numeric",hour12:true})+"</td>"
+    +"<td class='num'>"+h.score.toFixed(1)+"</td>"
+    +"<td class='num'>"+h.expectedTph.toFixed(2)+"</td>"
+    +"<td class='reasons'>"+esc(h.reasons)+"</td></tr>").join("");
+  byId("driver-hours").innerHTML=
+    "<table class='dtable'><thead><tr><th>#</th><th>Date</th><th>Hour</th><th>Score</th><th>TPH</th><th>Primary reasons</th></tr></thead><tbody>"
+    +rows+"</tbody></table>";
 }
 
 function money(v){
@@ -2719,6 +3062,63 @@ const server = http.createServer(async (req, res) => {
         heartbeat: autoTraderHeartbeat(),
         alerting: autoTraderAlertStatus(),
         configDetails: autoTraderConfigDetails()
+      });
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
+  }
+
+  if (req.method==="GET" && req.url.startsWith("/reno-schedule")) {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      // If the chat has already run a schedule (with researched evidence),
+      // show that one. Otherwise compute the baseline ranking on demand, and
+      // say plainly that it carries no evidence — an evidence-free ranking
+      // presented as if it knew about this week's events would be a lie.
+      const fresh = new URL(req.url, "http://x").searchParams.get("fresh") === "1";
+      const result = !fresh && lastRenoSchedule ? lastRenoSchedule : scheduleReno({});
+      if (fresh || !lastRenoSchedule) lastRenoSchedule = result;
+
+      const evidenceCount = result.hours.reduce((s, h) => s + h.contributions.length, 0);
+
+      return send(200, {
+        algorithmVersion: result.algorithmVersion,
+        formulaFingerprint: result.formulaFingerprint,
+        weekStart: result.weekStart,
+        evidenceApplied: evidenceCount,
+        evidenceNote: evidenceCount === 0
+          ? "Baseline only — no researched evidence applied. This reflects normal Reno hour/day patterns, not this week's actual events, weather, flights, or closures."
+          : `${evidenceCount} evidence application(s) across the week.`,
+        scoreMeaning: "Relative weekly opportunity score (0-100), not dollars/hour and not a probability.",
+        hours: result.ranked.map((h) => ({
+          rank: h.rank,
+          iso: h.date.toISOString(),
+          weekday: h.weekday,
+          hour: h.hour,
+          score: Math.round(h.score * 10) / 10,
+          expectedTph: Math.round(h.expectedTph * 100) / 100,
+          reasons: h.reasons
+        })),
+        blocks: result.blocks.map((b) => ({
+          rank: b.rank,
+          startIso: b.startDate.toISOString(),
+          endIso: b.endDate.toISOString(),
+          coreStartIso: b.coreStartDate.toISOString(),
+          coreEndIso: b.coreEndDate.toISOString(),
+          hours: b.hoursCount,
+          coreTotalScore: b.coreTotalScore,
+          extendedTotalScore: b.extendedTotalScore,
+          extendedAvgScore: b.extendedAvgScore,
+          extended: b.hasExtension
+        })),
+        totalRecommendedHours: result.blocks.reduce((s, b) => s + b.hoursCount, 0),
+        complianceNotes: result.complianceNotes,
+        bestDaysOff: result.bestDaysOff.map((d) => ({
+          iso: d.date.toISOString(),
+          avgScore: Math.round(d.avgScore * 10) / 10
+        })),
+        oneOffHours: result.oneOffHours.map((h) => ({ iso: h.date.toISOString(), score: h.score, reasons: h.reasons })),
+        oneOffMessage: result.oneOffMessage
       });
     } catch (e) {
       return send(500, { error: String(e.message || e) });
