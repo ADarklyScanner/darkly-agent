@@ -60,6 +60,13 @@ import { scheduleReno, nextOperationalBoundary, ALGORITHM_VERSION as RENO_VERSIO
 import { fetchPage } from "./web-read.js";
 import { webSearch, searchStatus, availableProviders } from "./web-search.js";
 import { evaluate as calcEvaluate, describe as calcDescribe } from "./calc.js";
+import {
+  base64Encode, base64Decode, sha256 as tkSha256, chunk as tkChunk, deduplicate as tkDedupe,
+  parseDelimited, jsonPath as tkJsonPath, inferSchema as tkInferSchema, regexExtract as tkRegex,
+  normalizeText as tkNormalize, compareText as tkCompare, analyzeSource as tkAnalyzeSource,
+  analyzePrivacy as tkPrivacy, inspectOpenApi as tkOpenApi, readJsonApi as tkJsonApi,
+  inspectNpmPackage as tkNpm, inspectGithubRepo as tkGithub, checkJavaScript as tkCheckJs
+} from "./toolkit.js";
 import { RISK_DEFAULTS } from "./risk.js";
 import { isQuotaOrRateLimitError, fallbackConfigured, callFallbackModel } from "./llm-provider.js";
 import { geminiConfigured, callGemini } from "./gemini.js";
@@ -199,6 +206,10 @@ How to research well here: search to find candidate sources, then READ them. A s
 If web_search reports that no provider is configured, tell the user plainly and name the variable that would fix it, then carry on with read_web_page if you already know a relevant URL. Do not pretend to have searched.
 
 Use calculate for any arithmetic that matters. Doing it in your head is how a wrong number reaches the user looking exactly as confident as a right one.
+
+DATA AND CODE UTILITIES. parse_data turns messy input into structure (CSV/TSV with proper quoted-field handling, JSON path lookups, schema inference, regex extraction). transform_text normalizes, compares two versions, deduplicates, chunks, base64s and hashes. inspect_code checks JavaScript syntax without running it, scans source for risky constructs, scans text or objects for personal data and credentials, and reads OpenAPI documents. inspect_package looks up real npm and GitHub metadata. fetch_json_api calls JSON endpoints, with headers when an API needs a key.
+
+Use these instead of doing the work by eye. Reading a CSV by eye misparses any row with a comma inside a quoted field; eyeballing whether two configs differ misses the one line that changed. Two honesty rules: the risk scan is a pattern match, not a security audit, so never report "no findings" as "this code is safe"; and the privacy scan deliberately masks what it finds, so do not try to reconstruct or repeat a detected credential back to the user — tell them what kind of thing was found and where.
 
 RENO DRIVER SCHEDULING. run_reno_schedule runs the user's own Reno Uber Opportunity-Ranking and Shift-Optimization Engine (RENO_UBER_V1_CANONICAL_2026_09_02), ported verbatim from their saved specification. Call it for "start the Uber schedule", "start Uber's schedule", "when should I drive", "best hours to drive this week", and close equivalents. What it does: ranks all 168 one-hour periods of the coming Reno operational week (days run 4AM->4AM Reno local) by DRIVER OPPORTUNITY — demand minus competing-driver supply, plus trip quality, throughput and destination continuity, minus traffic/queue/deadhead friction — then returns six jointly-optimized non-overlapping 8-hour blocks, two recommended days off, and any one-off hours scoring 81.6+.
 
@@ -734,6 +745,104 @@ const CLAUDE_TOOLS = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: "parse_data",
+    description:
+      "Turn messy text into structured data. Handles CSV/TSV (quoted fields, embedded commas and newlines, doubled quotes), JSON path lookups, JSON schema inference, and regex extraction. " +
+      "Use `csv` for spreadsheet exports or pasted tables, `json_path` to pull one value out of a large API response, `json_schema` to understand the shape of an unfamiliar payload, and `regex` to pull repeated patterns out of prose or scraped page text.",
+    input_schema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", description: "One of: csv, json_path, json_schema, regex." },
+        text: { type: "string", description: "Input text for csv and regex modes." },
+        data: { description: "Input data (object or JSON string) for json_path and json_schema modes." },
+        path: { type: "string", description: "json_path mode: a dotted/bracket path like 'user.tags[0]' or '$.count'." },
+        pattern: { type: "string", description: "regex mode: the pattern. Nested quantifiers like (a+)+ are refused as unsafe." },
+        flags: { type: "string", description: "regex mode: flags; g is always applied." },
+        limit: { type: "number", description: "regex mode: max matches (default 100)." },
+        delimiter: { type: "string", description: "csv mode: force a delimiter. Omit to auto-detect." },
+        headers: { type: "boolean", description: "csv mode: treat the first row as headers (default true)." }
+      },
+      required: ["mode"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "transform_text",
+    description:
+      "Text utilities: normalize (unicode form, whitespace, case, punctuation), compare two versions to see what changed, deduplicate a list, split text or a list into chunks, base64 encode/decode, or SHA-256 hash. " +
+      "compare is useful for 'did this page or config change since last time', and dedupe for cleaning up lead or result lists.",
+    input_schema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", description: "One of: normalize, compare, dedupe, chunk, base64_encode, base64_decode, sha256." },
+        text: { type: "string", description: "Input text for normalize, chunk, base64_encode, sha256." },
+        before: { type: "string", description: "compare mode: the earlier version." },
+        after: { type: "string", description: "compare mode: the later version." },
+        items: { type: "array", description: "dedupe mode: the list to deduplicate." },
+        key: { type: "string", description: "dedupe mode: dedupe objects by this field instead of whole-value identity." },
+        data: { description: "chunk mode: a string or array. base64_decode mode: the base64 string." },
+        size: { type: "number", description: "chunk mode: chunk size." },
+        overlap: { type: "number", description: "chunk mode: overlap between chunks; must be smaller than size." },
+        lower: { type: "boolean", description: "normalize mode: lowercase the result." },
+        stripPunctuation: { type: "boolean", description: "normalize mode: replace punctuation with spaces." },
+        form: { type: "string", description: "normalize mode: unicode form NFC/NFD/NFKC/NFKD (default NFC)." }
+      },
+      required: ["mode"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "inspect_code",
+    description:
+      "Static inspection of code and payloads. `syntax` runs a parse-only check on JavaScript (it does NOT execute it). `risks` scans source for well-known dangerous constructs — eval, child_process, disabled TLS verification, hardcoded credentials, innerHTML, SQL string concatenation. `privacy` scans text or an object for things that look like personal data or credentials, reporting matches masked rather than echoing them. `openapi` enumerates an OpenAPI document's operations, parameters and security schemes. " +
+      "None of these execute anything, and `risks` is a pattern scan rather than a security audit — report it that way.",
+    input_schema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", description: "One of: syntax, risks, privacy, openapi." },
+        code: { type: "string", description: "Source code for syntax and risks modes." },
+        module: { type: "boolean", description: "syntax mode: treat as an ES module (default true) or CommonJS." },
+        language: { type: "string", description: "risks mode: language label, for the report." },
+        text: { type: "string", description: "privacy mode: text to scan." },
+        data: { description: "privacy mode: an object whose keys should be scanned. openapi mode: the document." }
+      },
+      required: ["mode"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "inspect_package",
+    description:
+      "Look up metadata about a software package or repository: `npm` reads the public npm registry (latest version, license, dependencies, last publish, deprecation), `github` reads a public GitHub repo (stars, language, license, default branch, last push, archived status). " +
+      "Use this before recommending or adopting a dependency, rather than relying on what you remember about it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        source: { type: "string", description: "Either 'npm' or 'github'." },
+        name: { type: "string", description: "npm: the package name, e.g. 'nodemailer' or '@scope/pkg'." },
+        repo: { type: "string", description: "github: 'owner/name', e.g. 'ADarklyScanner/darkly-agent'." }
+      },
+      required: ["source"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "fetch_json_api",
+    description:
+      "Fetch a URL and parse the response as JSON, with optional request headers (for APIs that need a key). Use this for machine-readable endpoints — a weather API, a flight feed, an events JSON endpoint — where read_web_page's text extraction would be the wrong shape. " +
+      "Only public internet addresses are reachable; private, internal and cloud-metadata addresses are refused by design, and that refusal still applies when headers are supplied.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Absolute http(s) URL returning JSON." },
+        headers: { type: "object", description: "Optional request headers, e.g. an API key header." },
+        timeoutMs: { type: "number", description: "Timeout in milliseconds (1000-60000, default 15000)." }
+      },
+      required: ["url"],
+      additionalProperties: false
+    }
   }
 ];
 
@@ -1156,6 +1265,87 @@ async function executeClaudeTool(name, input = {}) {
       return { ok: false, error: "Supply either `expression` (a string) or `values` (an array of numbers)." };
     } catch (e) {
       return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "parse_data") {
+    try {
+      switch (input.mode) {
+        case "csv":
+          return { ok: true, ...parseDelimited({ text: input.text, delimiter: input.delimiter, headers: input.headers !== false }) };
+        case "json_path":
+          return { ok: true, ...tkJsonPath({ data: input.data, path: input.path }) };
+        case "json_schema":
+          return { ok: true, schema: tkInferSchema({ data: input.data }) };
+        case "regex":
+          return { ok: true, ...tkRegex({ text: input.text, pattern: input.pattern, flags: input.flags, limit: input.limit }) };
+        default:
+          return { ok: false, error: `Unknown mode "${input.mode}". Use csv, json_path, json_schema, or regex.` };
+      }
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "transform_text") {
+    try {
+      switch (input.mode) {
+        case "normalize":
+          return { ok: true, ...tkNormalize({ text: input.text, lower: input.lower, stripPunctuation: input.stripPunctuation, form: input.form }) };
+        case "compare":
+          return { ok: true, ...tkCompare({ before: input.before, after: input.after }) };
+        case "dedupe":
+          return { ok: true, ...tkDedupe({ items: input.items, key: input.key }) };
+        case "chunk":
+          return { ok: true, ...tkChunk({ data: input.data !== undefined ? input.data : input.text, size: input.size, overlap: input.overlap }) };
+        case "base64_encode":
+          return { ok: true, ...base64Encode({ text: input.text }) };
+        case "base64_decode":
+          return { ok: true, ...base64Decode({ data: input.data }) };
+        case "sha256":
+          return { ok: true, ...tkSha256({ text: input.text }) };
+        default:
+          return { ok: false, error: `Unknown mode "${input.mode}".` };
+      }
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "inspect_code") {
+    try {
+      switch (input.mode) {
+        case "syntax":
+          return { ok: true, ...(await tkCheckJs({ code: input.code, module: input.module !== false })) };
+        case "risks":
+          return { ok: true, ...tkAnalyzeSource({ code: input.code, language: input.language }) };
+        case "privacy":
+          return { ok: true, ...tkPrivacy({ text: input.text, data: input.data }) };
+        case "openapi":
+          return { ok: true, ...tkOpenApi({ document: input.data }) };
+        default:
+          return { ok: false, error: `Unknown mode "${input.mode}". Use syntax, risks, privacy, or openapi.` };
+      }
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "inspect_package") {
+    try {
+      if (input.source === "npm") return await tkNpm({ name: input.name });
+      if (input.source === "github") return await tkGithub({ repo: input.repo, tokenEnv: "GITHUB_TOKEN" });
+      return { ok: false, error: `Unknown source "${input.source}". Use npm or github.` };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "fetch_json_api") {
+    try {
+      return { ok: true, ...(await tkJsonApi({ url: input.url, headers: input.headers, timeoutMs: input.timeoutMs })) };
+    } catch (e) {
+      return { ok: false, url: input.url, error: String(e.message || e) };
     }
   }
 
