@@ -109,6 +109,17 @@ export const SOURCES = [
     goodFor: ["winter storm warnings", "wind advisories", "flood and heat alerts", "dangerous-travel evidence"]
   },
   {
+    id: "gdacs",
+    name: "GDACS (Global Disaster Alert and Coordination System)",
+    category: "alerts",
+    coverage: "Global",
+    quality: "organizer",
+    needsKey: null,
+    baseUrl: "https://www.gdacs.org",
+    howTo: "A joint UN/EU-backed public feed (not an official government agency the way NWS is, so it's tagged organizer rather than official). Publishes a GeoRSS feed of current earthquakes, cyclones, floods, volcanoes and droughts worldwide, and a JSON API at /gdacsapi/api/events/geteventlist for the same data. No key.",
+    goodFor: ["a global disaster you can't get from NWS (which is US-only) or USGS (earthquakes only)", "a quick check on whether something reported as a major disaster is actually being tracked as one"]
+  },
+  {
     id: "open_meteo",
     name: "Open-Meteo",
     category: "weather",
@@ -118,6 +129,17 @@ export const SOURCES = [
     baseUrl: "https://api.open-meteo.com/v1/forecast",
     howTo: "GET with latitude, longitude and an `hourly` list. No key, no signup.",
     goodFor: ["non-US forecasts", "a second opinion against NWS", "longer hourly horizons"]
+  },
+  {
+    id: "rainviewer",
+    name: "RainViewer",
+    category: "weather",
+    coverage: "Global",
+    quality: "secondary",
+    needsKey: null,
+    baseUrl: "https://api.rainviewer.com/public/weather-maps.json",
+    howTo: "GET the base URL for the current list of radar frame timestamps and tile-URL templates (past 2 hours plus a short nowcast). This is imagery/tiles, not a numeric forecast — good for showing or reasoning about where precipitation actually is right now versus a forecast probability. No key.",
+    goodFor: ["where rain is actually falling right now, not just a percentage chance", "a quick visual gut-check against NWS/Open-Meteo's numeric forecast"]
   },
   {
     id: "openaq",
