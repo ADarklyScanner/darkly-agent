@@ -2779,8 +2779,9 @@ tbody tr:hover{background:#17171c}
     <h2>Darkly Agent</h2>
     <p>ReferralMarket research console</p>
     <input id="pass" type="password" placeholder="Passcode" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <button id="unlock-btn">Unlock</button>
+    <button id="unlock-btn" onclick="unlock()">Unlock</button>
     <p id="unlock-status" style="min-height:16px;font-size:12px;color:#f88;margin:10px 0 0"></p>
+    <p id="script-check" style="font-size:10px;color:#555;margin:14px 0 0">Loading&hellip;</p>
   </div>
 </div>
 
@@ -3053,6 +3054,13 @@ tbody tr:hover{background:#17171c}
 </div>
 
 <script>
+try {
+  var __sc = document.getElementById("script-check");
+  if (__sc) __sc.textContent = "Script check: OK (page JS is running). Build tag: LOGIN-DIAG-1";
+} catch (e) {
+  // if even this throws, there is nothing more client-side diagnostics can do
+}
+
 let passcode="";
 
 // A fixed set of named chat slots rather than one-session-per-browser:
