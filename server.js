@@ -2778,8 +2778,9 @@ tbody tr:hover{background:#17171c}
   <div id="login-box">
     <h2>Darkly Agent</h2>
     <p>ReferralMarket research console</p>
-    <input id="pass" type="password" placeholder="Passcode">
+    <input id="pass" type="password" placeholder="Passcode" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
     <button id="unlock-btn">Unlock</button>
+    <p id="unlock-status" style="min-height:16px;font-size:12px;color:#f88;margin:10px 0 0"></p>
   </div>
 </div>
 
@@ -3075,14 +3076,32 @@ byId("unlock-btn").onclick=unlock;
 byId("pass").onkeydown=e=>{if(e.key==="Enter")unlock()};
 
 async function unlock(){
-  const p=byId("pass").value.trim();
-  if(!p)return;
+  const statusEl=byId("unlock-status");
+  const raw=byId("pass").value;
+  const p=raw.trim();
+
+  if(!p){
+    statusEl.style.color="#f88";
+    statusEl.textContent="The passcode field looks empty to the page (read length "+raw.length+"). Tap directly inside the box, type it manually, then tap Unlock again.";
+    return;
+  }
+
+  statusEl.style.color="#8ab4f8";
+  statusEl.textContent="Checking…";
 
   passcode=p;
-  byId("login-overlay").style.display="none";
 
+  const ok = await switchSlot("chat");
+
+  if (!ok) {
+    statusEl.style.color="#f88";
+    statusEl.textContent="Wrong passcode.";
+    return;
+  }
+
+  statusEl.textContent="";
+  byId("login-overlay").style.display="none";
   loadResearch();
-  await switchSlot("chat");
 }
 
 function renderSlotTabs(){
@@ -3115,7 +3134,7 @@ async function switchSlot(slot){
     if (r.status===401) {
       addMsg("Wrong passcode.","bot");
       byId("login-overlay").style.display="flex";
-      return;
+      return false;
     }
 
     const data = await r.json();
@@ -3128,7 +3147,7 @@ async function switchSlot(slot){
           : "Side chat "+slot+" — not saved, cleared on restart. Good for throwing around ideas.",
         "bot"
       );
-      return;
+      return true;
     }
 
     for (const m of messages) {
@@ -3142,6 +3161,7 @@ async function switchSlot(slot){
       "bot"
     );
   }
+  return true;
 }
 
 async function newChat(){
