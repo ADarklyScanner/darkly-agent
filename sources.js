@@ -56,8 +56,13 @@
  * WorldTimeAPI has been sunset outright; CoinCap and RestCountries' old v3
  * free tier are both gone, replaced by paid/keyed products (RestCountries'
  * new free tier is small enough it's listed below anyway, keyed and rate
- * limited, since it's still genuinely useful). If one of these breaks
- * again later, that's a reason to re-check the source, not a reason to
+ * limited, since it's still genuinely useful). PatentsView (USPTO patent
+ * search) is mid-migration to a new host at data.uspto.gov with its
+ * endpoint shape not yet settled, and the FBI's Crime Data API's key
+ * process is a manual request to a team member rather than a normal
+ * self-service signup — both skipped rather than guessed at while
+ * unsettled. If one of these breaks again later, or one of the skipped
+ * ones stabilizes, that's a reason to re-check the source, not a reason to
  * guess at a replacement shape and hard-code it anyway.
  */
 
@@ -576,6 +581,89 @@ export const SOURCES = [
     baseUrl: "https://data.epa.gov/efservice",
     howTo: "REST path segments rather than query params, e.g. /PCS_PERMIT_FACT/STATE_CODE/NV/JSON. Covers water discharge permits, Superfund sites, toxic release inventory and more — check the specific table's documented column names before assuming one. No key.",
     goodFor: ["Superfund/contamination sites near a location", "permitted pollution discharge records", "a specific regulatory claim about a facility"]
+  },
+  {
+    id: "nasa_firms",
+    name: "NASA FIRMS (fire/hotspot detection)",
+    category: "wildfire",
+    coverage: "Global, satellite-derived",
+    quality: "official",
+    needsKey: "FIRMS_MAP_KEY",
+    baseUrl: "https://firms.modaps.eosdis.nasa.gov/api",
+    howTo: "GET /area/csv/{MAP_KEY}/VIIRS_SNPP_NRT/{west},{south},{east},{north}/{dayRange} for near-real-time active fire detections in a bounding box, from MODIS/VIIRS satellite passes. Free key by email signup at firms.modaps.eosdis.nasa.gov — its own separate signup, not the shared api.data.gov one. Rate limit is 5000 transactions per 10-minute window.",
+    goodFor: ["actual active wildfire detections near a route or region, not a news summary of one", "smoke-source location to pair with AirNow/OpenAQ's air-quality readings", "the exact kind of long-tail environmental signal worth checking before a driving or outdoor-activity recommendation"]
+  },
+
+  // ---------- legal & consumer protection ----------
+  {
+    id: "courtlistener",
+    name: "CourtListener",
+    category: "legal",
+    coverage: "United States federal and state courts",
+    quality: "secondary",
+    needsKey: null,
+    baseUrl: "https://www.courtlistener.com/api/rest/v4",
+    howTo: "GET /search/?q={terms}&type=o for case law and opinions; /dockets/ for federal docket data (aggregated from PACER). Open by default without a key at a modest rate limit; a free Free Law Project account raises it.",
+    goodFor: ["actual case law and court opinions, not a paraphrase of one", "whether a specific case or ruling is real and what it actually says", "docket status on a federal case"]
+  },
+  {
+    id: "cpsc_recalls",
+    name: "CPSC recalls (SaferProducts.gov)",
+    category: "consumer_safety",
+    coverage: "United States",
+    quality: "official",
+    needsKey: null,
+    baseUrl: "https://www.saferproducts.gov/RestWebServices/Recall",
+    howTo: "GET ?ProductName={terms}&format=json for consumer product recalls (not food/drug — those are openFDA's). No key.",
+    goodFor: ["whether a specific consumer product has an active recall", "checking a recall claim before repeating it"]
+  },
+  {
+    id: "cfpb_complaints",
+    name: "CFPB Consumer Complaint Database",
+    category: "consumer_safety",
+    coverage: "United States",
+    quality: "official",
+    needsKey: null,
+    baseUrl: "https://www.consumerfinance.gov/data-research/consumer-complaints/search/api/v1",
+    howTo: "GET /?company={name}&product={type} for real, individual consumer complaints against a financial company or product. No key; check the current Swagger docs at cfpb.github.io/api/ccdb for the exact field names, which have grown over time.",
+    goodFor: ["real complaint volume and patterns against a bank, lender or financial product", "a specific claim about a company's financial-service conduct"]
+  },
+
+  // ---------- education ----------
+  {
+    id: "urban_education_data",
+    name: "Urban Institute Education Data Portal",
+    category: "education",
+    coverage: "United States",
+    quality: "organizer",
+    needsKey: null,
+    baseUrl: "https://educationdata.urban.org/api/v1",
+    howTo: "GET /schools/ccd/enrollment/{year}/?fips={state_fips} and similar dataset-specific paths — the portal aggregates many federal education datasets (NCES, IPEDS, CCD) under one consistent API shape. No key.",
+    goodFor: ["real school enrollment, funding and outcome data", "comparing districts or states on an actual education metric rather than a reputation"]
+  },
+
+  // ---------- games & light reference ----------
+  {
+    id: "chess_com",
+    name: "Chess.com Published-Data API",
+    category: "games",
+    coverage: "Chess.com's player base",
+    quality: "official",
+    needsKey: null,
+    baseUrl: "https://api.chess.com/pub",
+    howTo: "GET /player/{username}/stats for a player's real ratings, or /player/{username}/games/{YYYY}/{MM} for a month's actual games in PGN. No key.",
+    goodFor: ["a real player's current rating and game history", "verifying a claim about a specific chess game or result"]
+  },
+  {
+    id: "hacker_news",
+    name: "Hacker News API",
+    category: "news",
+    coverage: "Hacker News' own content",
+    quality: "official",
+    needsKey: null,
+    baseUrl: "https://hacker-news.firebaseio.com/v0",
+    howTo: "GET /topstories.json for current top story IDs, then /item/{id}.json for each one's title, URL, score and comment tree. Official, run by Y Combinator. No key.",
+    goodFor: ["what the tech/startup community is actually discussing right now", "checking whether something was really posted/discussed on HN before assuming it was"]
   },
 
   // ---------- sports ----------

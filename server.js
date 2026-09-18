@@ -982,7 +982,7 @@ const CLAUDE_TOOLS = [
     input_schema: {
       type: "object",
       properties: {
-        category: { type: "string", description: "Filter by category, e.g. weather, traffic, transit, events, places, news, currency, crypto, economics, civic, space, health, nature, marine, environment, sports, reference." },
+        category: { type: "string", description: "Filter by category, e.g. weather, traffic, transit, events, places, news, currency, crypto, economics, civic, space, health, nature, marine, environment, wildfire, legal, consumer_safety, education, games, sports, reference. Omit to browse everything, or use `query` for a free-text search instead of guessing the exact category name." },
         query: { type: "string", description: "Free-text search across names, coverage and what each source is good for." },
         availableOnly: { type: "boolean", description: "Only return sources usable right now (no missing API key)." }
       },
