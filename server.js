@@ -2650,6 +2650,34 @@ tbody tr:hover{background:#17171c}
 #apk-upload-btn:disabled{
   background:#1a1a1e;color:#555;
 }
+#lottery-picker-bar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:10px;
+  border-bottom:1px solid #24242a;
+  flex-wrap:wrap;
+}
+#lottery-picker-bar select{
+  background:#16161a;color:#ddd;border:1px solid #2a2a30;border-radius:6px;
+  padding:6px 8px;font-size:12px;max-width:220px;
+}
+#lottery-analyze-btn{
+  border:0;border-radius:8px;
+  padding:7px 12px;
+  background:#243d31;color:#68e59c;
+  white-space:nowrap;
+}
+#lottery-analyze-btn:disabled{
+  background:#1a1a1e;color:#555;
+}
+.numchip{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:26px;height:26px;padding:0 6px;margin:2px;
+  border-radius:6px;background:#1d2a24;color:#68e59c;
+  font-size:12px;font-variant-numeric:tabular-nums;
+}
+.numchip.cold{background:#241d2a;color:#b79aff}
 #stocks-summary{
   display:flex;
   gap:7px;
@@ -2768,6 +2796,7 @@ tbody tr:hover{background:#17171c}
       <button id="research-tab" class="navbtn active">Research</button>
       <button id="stocks-tab" class="navbtn">Stocks</button>
       <button id="driver-tab" class="navbtn">Driver</button>
+      <button id="lottery-tab" class="navbtn">Lottery</button>
       <button id="apk-tab" class="navbtn">APK</button>
       <button id="chat-tab" class="navbtn">Chat</button>
     </div>
@@ -2925,6 +2954,43 @@ tbody tr:hover{background:#17171c}
       <div class="sblock">
         <h3>Ranked hours <span class="subtle" id="driver-rank-count"></span></h3>
         <div id="driver-hours" class="scroll-x"></div>
+      </div>
+    </div>
+
+  </section>
+
+  <section id="lottery-view">
+
+    <div id="lottery-picker-bar">
+      <select id="lottery-state-select"><option value="">Loading states…</option></select>
+      <select id="lottery-game-select" disabled><option value="">Pick a state first</option></select>
+      <button id="lottery-analyze-btn" disabled>Analyze</button>
+      <div class="spacer"></div>
+      <span id="lottery-status" class="mode-pill">—</span>
+    </div>
+
+    <div id="lottery-basis-note" class="evnote"></div>
+
+    <div id="stocks-body">
+      <div class="sblock">
+        <h3>Hot &amp; cold numbers</h3>
+        <div id="lottery-frequency" class="empty">Pick a state and game, then Analyze.</div>
+      </div>
+      <div class="sblock">
+        <h3>Longest gaps (overdue)</h3>
+        <div id="lottery-gaps"></div>
+      </div>
+      <div class="sblock">
+        <h3>Draw shape</h3>
+        <div id="lottery-shape"></div>
+      </div>
+      <div class="sblock">
+        <h3>Top co-occurring pairs</h3>
+        <div id="lottery-pairs" class="scroll-x"></div>
+      </div>
+      <div class="sblock">
+        <h3>Repeat-from-previous-draw</h3>
+        <div id="lottery-repeats"></div>
       </div>
     </div>
 
@@ -3096,11 +3162,15 @@ async function newChat(){
 byId("research-tab").onclick=()=>showView("research");
 byId("stocks-tab").onclick=()=>showView("stocks");
 byId("driver-tab").onclick=()=>showView("driver");
+byId("lottery-tab").onclick=()=>showView("lottery");
 byId("apk-tab").onclick=()=>showView("apk");
 byId("chat-tab").onclick=()=>showView("chat");
 byId("driver-refresh").onclick=()=>loadDriver(true);
 byId("stocks-refresh").onclick=()=>loadStocks();
 byId("apk-upload-btn").onclick=uploadApk;
+byId("lottery-state-select").onchange=onLotteryStateChange;
+byId("lottery-game-select").onchange=onLotteryGameChange;
+byId("lottery-analyze-btn").onclick=runLotteryAnalysis;
 byId("new-chat-btn").onclick=newChat;
 
 let stocksLoaded=false;
@@ -3109,18 +3179,21 @@ function showView(which){
   byId("research-view").style.display=which==="research"?"flex":"none";
   byId("stocks-view").style.display=which==="stocks"?"flex":"none";
   byId("driver-view").style.display=which==="driver"?"flex":"none";
+  byId("lottery-view").style.display=which==="lottery"?"flex":"none";
   byId("apk-view").style.display=which==="apk"?"flex":"none";
   byId("chat-view").style.display=which==="chat"?"flex":"none";
 
   byId("research-tab").classList.toggle("active",which==="research");
   byId("stocks-tab").classList.toggle("active",which==="stocks");
   byId("driver-tab").classList.toggle("active",which==="driver");
+  byId("lottery-tab").classList.toggle("active",which==="lottery");
   byId("apk-tab").classList.toggle("active",which==="apk");
   byId("chat-tab").classList.toggle("active",which==="chat");
 
   if(which==="chat")byId("message").focus();
   if(which==="stocks"&&!stocksLoaded)loadStocks();
   if(which==="driver"&&!driverLoaded)loadDriver();
+  if(which==="lottery"&&!lotteryStatesLoaded)loadLotteryStates();
 }
 
 let driverLoaded=false;
@@ -3207,6 +3280,138 @@ function renderDriver(d){
     +"<th>Platform</th><th>~$/hr</th><th>TPH</th><th>Primary reasons</th></tr></thead><tbody>"
     +rows+"</tbody></table>"
     +"<div class='subtle' style='padding:8px 0'>~$/hr is a downstream calibration of the relative score against a neutral-week level, not a prediction of actual earnings.</div>";
+}
+
+let lotteryStatesLoaded=false;
+
+// The backend's /states and /games rows aren't guaranteed to use one exact
+// field name (apps/lottery.js itself normalizes /results defensively for
+// the same reason), so this reads whichever of state/name/slug/game is
+// present, or falls back to the raw value if it's already a plain string.
+function lotteryLabel(entry){
+  if(entry==null)return "";
+  if(typeof entry==="string"||typeof entry==="number")return String(entry);
+  return String(entry.state||entry.name||entry.slug||entry.game||JSON.stringify(entry));
+}
+
+async function loadLotteryStates(){
+  byId("lottery-status").textContent="Loading states...";
+  try{
+    const res=await fetch("/lottery-states",{headers:{"X-Agent-Passcode":passcode}});
+    const d=await res.json();
+    if(!res.ok||d.ok===false)throw new Error(d.error||("HTTP "+res.status));
+    const sel=byId("lottery-state-select");
+    sel.innerHTML="<option value=''>Choose a state…</option>"+
+      d.states.map(s=>{const label=esc(lotteryLabel(s));return "<option value=\""+label+"\">"+label+"</option>";}).join("");
+    lotteryStatesLoaded=true;
+    byId("lottery-status").textContent=d.states.length+" states available";
+  }catch(e){
+    byId("lottery-status").textContent="Failed: "+e.message;
+  }
+}
+
+async function onLotteryStateChange(){
+  const state=byId("lottery-state-select").value;
+  const gameSel=byId("lottery-game-select");
+  const btn=byId("lottery-analyze-btn");
+  gameSel.disabled=true;
+  btn.disabled=true;
+  if(!state){
+    gameSel.innerHTML="<option value=''>Pick a state first</option>";
+    return;
+  }
+  gameSel.innerHTML="<option value=''>Loading games…</option>";
+  try{
+    const res=await fetch("/lottery-games?state="+encodeURIComponent(state),{headers:{"X-Agent-Passcode":passcode}});
+    const d=await res.json();
+    if(!res.ok||d.ok===false)throw new Error(d.error||("HTTP "+res.status));
+    gameSel.innerHTML="<option value=''>Choose a game…</option>"+
+      d.games.map(g=>{const label=esc(lotteryLabel(g));return "<option value=\""+label+"\">"+label+"</option>";}).join("");
+    gameSel.disabled=false;
+  }catch(e){
+    gameSel.innerHTML="<option value=''>Failed to load games</option>";
+    byId("lottery-status").textContent="Failed: "+e.message;
+  }
+}
+
+function onLotteryGameChange(){
+  byId("lottery-analyze-btn").disabled=!byId("lottery-game-select").value;
+}
+
+async function runLotteryAnalysis(){
+  const state=byId("lottery-state-select").value;
+  const game=byId("lottery-game-select").value;
+  if(!state||!game)return;
+  byId("lottery-status").textContent="Analyzing...";
+  byId("lottery-analyze-btn").disabled=true;
+  try{
+    const res=await fetch(
+      "/lottery-analyze?state="+encodeURIComponent(state)+"&game="+encodeURIComponent(game),
+      {headers:{"X-Agent-Passcode":passcode}}
+    );
+    const d=await res.json();
+    if(!res.ok||d.ok===false)throw new Error(d.error||("HTTP "+res.status));
+    renderLottery(d);
+    byId("lottery-status").textContent=d.drawsAnalyzed+" draws · "+(d.oldestDraw||"?")+" to "+(d.newestDraw||"?");
+  }catch(e){
+    byId("lottery-status").textContent="Failed: "+e.message;
+  }finally{
+    byId("lottery-analyze-btn").disabled=false;
+  }
+}
+
+function numChips(list,cls){
+  if(!list||!list.length)return "<div class='empty'>No data.</div>";
+  return list.map(x=>"<span class='numchip"+(cls?" "+cls:"")+"' title='"+x.count+" draws'>"+x.number+"</span>").join("");
+}
+
+// Every render leads with the basis/overdue-warning/note text the analysis
+// itself returns — this app's whole point is that hot/cold/overdue numbers
+// describe history and do not predict anything, and that has to be said
+// here, not just in the chat tool's own honesty framing.
+function renderLottery(d){
+  byId("lottery-basis-note").innerHTML="<b>Descriptive only, not predictive:</b> "+esc(d.basis||"");
+
+  byId("lottery-frequency").innerHTML=
+    "<div class='subtle' style='margin-bottom:4px'>Hottest (most frequent)</div>"
+    +numChips(d.frequency.hottest)
+    +"<div class='subtle' style='margin:8px 0 4px'>Coldest (least frequent)</div>"
+    +numChips(d.frequency.coldest,"cold")
+    +(d.frequency.bonus&&d.frequency.bonus.length
+      ?("<div class='subtle' style='margin:8px 0 4px'>Bonus ball frequency</div>"+numChips(d.frequency.bonus.slice(0,10)))
+      :"");
+
+  const gapRows=(d.gaps.longestGaps||[]).map(g=>
+    "<tr><td>"+g.number+"</td><td class='num'>"+g.drawsSince+" draws ago</td></tr>").join("");
+  byId("lottery-gaps").innerHTML=
+    "<table class='dtable'><thead><tr><th>Number</th><th>Last seen</th></tr></thead><tbody>"+(gapRows||"")+"</tbody></table>"
+    +(d.gaps.neverSeenInWindow&&d.gaps.neverSeenInWindow.length
+      ?("<div class='subtle' style='margin-top:6px'>Never seen in this window: "+esc(d.gaps.neverSeenInWindow.join(", "))+"</div>")
+      :"")
+    +"<div class='subtle' style='margin-top:6px'>"+esc(d.gaps.overdueWarning||"")+"</div>";
+
+  const oe=(d.shape.oddEven||[]).map(x=>"<div>"+esc(x.split)+": "+x.count+"</div>").join("");
+  const hl=(d.shape.highLow||[]).map(x=>"<div>"+esc(x.split)+": "+x.count+"</div>").join("");
+  byId("lottery-shape").innerHTML=
+    "<div style='display:flex;gap:24px;flex-wrap:wrap'>"
+    +"<div><div class='subtle'>Odd / even split</div>"+(oe||"<div class='empty'>—</div>")+"</div>"
+    +"<div><div class='subtle'>High / low split</div>"+(hl||"<div class='empty'>—</div>")+"</div>"
+    +"<div><div class='subtle'>Draw sum</div>min "+d.shape.sum.min+" · max "+d.shape.sum.max
+    +" · mean "+d.shape.sum.mean+" · median "+d.shape.sum.median+"</div>"
+    +"</div>"
+    +"<div class='subtle' style='margin-top:8px'>Consecutive-number pairs appear in "
+    +(d.shape.consecutive.shareOfDraws*100).toFixed(1)+"% of draws.</div>";
+
+  const pairRows=(d.pairs.topPairs||[]).map(p=>"<tr><td>"+esc(p.pair)+"</td><td class='num'>"+p.count+"</td></tr>").join("");
+  byId("lottery-pairs").innerHTML=
+    "<table class='dtable'><thead><tr><th>Pair</th><th>Times co-occurred</th></tr></thead><tbody>"+(pairRows||"")+"</tbody></table>"
+    +"<div class='subtle' style='margin-top:6px'>"+esc(d.pairs.note||"")+"</div>";
+
+  byId("lottery-repeats").innerHTML=d.repeats.comparisons
+    ?("<div>"+d.repeats.drawsWithAtLeastOneRepeat+" of "+d.repeats.comparisons+" draws ("
+      +(d.repeats.shareWithRepeat*100).toFixed(1)+"%) repeated at least one number from the previous draw.</div>"
+      +"<div class='subtle' style='margin-top:4px'>Average "+d.repeats.averageRepeatsPerDraw+" repeats per draw.</div>")
+    :("<div class='empty'>"+esc(d.repeats.note||"Not enough draws.")+"</div>");
 }
 
 function money(v){
@@ -4334,6 +4539,63 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (e) {
       return send(500, { error: String(e.message || e) });
+    }
+  }
+
+  // --- Lottery tab endpoints ---------------------------------------------
+  // Thin HTTP wrappers around the exact same apps/lottery.js functions the
+  // lottery_analysis chat tool calls (see executeClaudeTool above) — same
+  // logic, same honesty framing (every analyze response carries `basis`),
+  // just reachable from the console's own Lottery tab instead of chat.
+  if (req.method==="GET" && req.url.startsWith("/lottery-states")) {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      return send(200, { ok: true, states: await lotteryStates() });
+    } catch (e) {
+      return send(500, { ok: false, error: String(e.message || e) });
+    }
+  }
+
+  if (req.method==="GET" && req.url.startsWith("/lottery-games")) {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const params = new URL(req.url, "http://x").searchParams;
+      const state = params.get("state");
+      if (!state) return send(400, { ok: false, error: "`state` query parameter is required." });
+      return send(200, { ok: true, state, games: await lotteryGames(state) });
+    } catch (e) {
+      return send(500, { ok: false, error: String(e.message || e) });
+    }
+  }
+
+  if (req.method==="GET" && req.url.startsWith("/lottery-analyze")) {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const params = new URL(req.url, "http://x").searchParams;
+      const state = params.get("state");
+      const game = params.get("game");
+      if (!state || !game) return send(400, { ok: false, error: "`state` and `game` query parameters are both required." });
+      const maxDraws = Math.max(10, Math.min(2000, Number(params.get("maxDraws")) || 500));
+      const top = Math.max(3, Math.min(30, Number(params.get("top")) || 10));
+
+      const rows = await lotteryResults(state, game, { maxDraws });
+      const { draws, skipped } = normalizeDraws(rows);
+      if (draws.length === 0) {
+        return send(200, { ok: false, error: "No usable draw history came back for that state and game." });
+      }
+      const analysis = lotteryAnalyzeAll(draws, { top });
+      return send(200, {
+        ok: true,
+        state,
+        game,
+        drawsAnalyzed: draws.length,
+        unparseableRowsSkipped: skipped || undefined,
+        newestDraw: draws[0]?.date || null,
+        oldestDraw: draws[draws.length - 1]?.date || null,
+        ...analysis
+      });
+    } catch (e) {
+      return send(500, { ok: false, error: String(e.message || e) });
     }
   }
 
