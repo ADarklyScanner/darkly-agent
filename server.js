@@ -59,6 +59,7 @@ import {
 import { backtest as runBacktest, runWindows as runBacktestWindows, BACKTEST_DEFAULTS } from "./backtest.js";
 import { scheduleReno, nextOperationalBoundary, ALGORITHM_VERSION as RENO_VERSION } from "./reno-engine.js";
 import { fetchPage } from "./web-read.js";
+import { diagnoseApk } from "./apk-tools.js";
 import { webSearch, searchStatus, availableProviders } from "./web-search.js";
 import { evaluate as calcEvaluate, describe as calcDescribe } from "./calc.js";
 import { listApps, collectSignals, findCoincidences } from "./apps/registry.js";
@@ -94,6 +95,10 @@ import { getHistory as getPersistentHistory, saveHistory as savePersistentHistor
 import { loadLeads, saveLeads, migrateLegacyLeadsIfNeeded } from "./leads-store.js";
 
 const PORT = process.env.PORT || 3000;
+
+// A real APK can legitimately run past 100MB; this just bounds how much a
+// single upload can force the server to buffer in memory at once.
+const MAX_APK_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 /* ------------------------------------------------------------------ *
  * Process-level crash safety net.
@@ -277,6 +282,8 @@ Use calculate for any arithmetic that matters. Doing it in your head is how a wr
 DATA AND CODE UTILITIES. parse_data turns messy input into structure (CSV/TSV with proper quoted-field handling, JSON path lookups, schema inference, regex extraction). transform_text normalizes, compares two versions, deduplicates, chunks, base64s and hashes. inspect_code checks JavaScript syntax without running it, scans source for risky constructs, scans text or objects for personal data and credentials, and reads OpenAPI documents. inspect_package looks up real npm and GitHub metadata. fetch_json_api calls JSON endpoints, with headers when an API needs a key.
 
 Use these instead of doing the work by eye. Reading a CSV by eye misparses any row with a comma inside a quoted field; eyeballing whether two configs differ misses the one line that changed. Two honesty rules: the risk scan is a pattern match, not a security audit, so never report "no findings" as "this code is safe"; and the privacy scan deliberately masks what it finds, so do not try to reconstruct or repeat a detected credential back to the user — tell them what kind of thing was found and where.
+
+APK INSPECTION. inspect_apk reads the diagnosis of whatever APK the user most recently dropped into the APK tab — real ZIP structural integrity, zipalign, and a genuine cryptographic signature verification, not a guess from the filename. It reads the bytes as data only; nothing from an uploaded APK is ever executed. Same honesty limits as everything else here: a verified signature only proves internal consistency and genuine possession of the private key behind that specific certificate — it does not vouch for who that certificate belongs to (a self-signed debug cert is completely normal for a build the user made themselves, and verifies just as cleanly as a purchased release identity; say which one it is). And the tool deliberately does not recompute Android's full content-digest end to end, so do not claim a stronger tamper-proofing guarantee than that specific limit allows. If nothing has been uploaded, say so.
 
 RENO DRIVER SCHEDULING. run_reno_schedule runs the user's own Reno Uber Opportunity-Ranking and Shift-Optimization Engine (RENO_UBER_V1_CANONICAL_2026_09_02), ported verbatim from their saved specification. Call it for "start the Uber schedule", "start Uber's schedule", "when should I drive", "best hours to drive this week", and close equivalents. What it does: ranks all 168 one-hour periods of the coming Reno operational week (days run 4AM->4AM Reno local) by DRIVER OPPORTUNITY — demand minus competing-driver supply, plus trip quality, throughput and destination continuity, minus traffic/queue/deadhead friction — then returns six jointly-optimized non-overlapping 8-hour blocks, two recommended days off, and any one-off hours scoring 81.6+.
 
@@ -1070,6 +1077,14 @@ const CLAUDE_TOOLS = [
       required: ["commandId"],
       additionalProperties: false
     }
+  },
+  {
+    name: "inspect_apk",
+    description:
+      "Read the diagnosis of the most recently uploaded APK file (uploaded via the APK tab of the console, from the user's phone or computer). Reports ZIP structural integrity, zipalign status, and — if a v2/v3 APK Signing Block is present — a GENUINE cryptographic RSA/ECDSA/DSA signature verification against the embedded certificate, plus certificate details (subject, validity, self-signed vs. CA-issued, expiry). " +
+      "Two honesty limits, always: (1) this only proves the signing block is internally self-consistent and genuinely signed by whoever holds that certificate's private key — it does NOT independently re-verify that the certificate belongs to who it claims (a self-signed debug cert verifies just as cleanly as a real release key; report which one it is and let the user judge). (2) the module deliberately does NOT recompute Android's full chunked content-digest, so it cannot make an end-to-end claim that 'this exact APK content was what got signed' beyond what the embedded, signed digest record itself claims — say so if asked about tamper-proofing at that level. " +
+      "If nothing has been uploaded yet, say so and point the user at the APK tab rather than guessing.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false }
   }
 ];
 
@@ -1810,6 +1825,19 @@ async function executeClaudeTool(name, input = {}, slot = null) {
     }
   }
 
+  if (name === "inspect_apk") {
+    if (!lastApkDiagnosis) {
+      return { ok: false, error: "No APK has been uploaded yet. Drop one in on the APK tab of the console, then ask again." };
+    }
+    return {
+      ok: true,
+      filename: lastApkDiagnosis.filename,
+      uploadedAt: lastApkDiagnosis.uploadedAt,
+      sizeBytes: lastApkDiagnosis.sizeBytes,
+      report: lastApkDiagnosis.report
+    };
+  }
+
   throw new Error(`Unknown Claude tool: ${name}`);
 }
 
@@ -1817,6 +1845,13 @@ async function executeClaudeTool(name, input = {}, slot = null) {
 // ranking without recomputing it (and without the model having to relay all
 // 168 rows through the chat).
 let lastRenoSchedule = null;
+
+// The most recently uploaded APK's diagnosis, so the console's APK tab can
+// show the result the moment it's ready and so inspect_apk can let Claude
+// discuss it afterward without re-uploading or re-parsing the file through
+// chat. Single-slot by design (this is a one-user tool, not a per-session
+// history) — a new upload simply replaces it.
+let lastApkDiagnosis = null;
 
 /**
  * Whether this chat slot has consumed untrusted external content.
@@ -2592,6 +2627,27 @@ tbody tr:hover{background:#17171c}
   padding:7px 12px;
   background:#243d31;color:#68e59c;
 }
+#apk-upload-bar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:10px;
+  border-bottom:1px solid #24242a;
+}
+#apk-upload-bar input[type=file]{
+  flex:1;
+  color:#999;
+  font-size:12px;
+}
+#apk-upload-btn{
+  border:0;border-radius:8px;
+  padding:7px 12px;
+  background:#243d31;color:#68e59c;
+  white-space:nowrap;
+}
+#apk-upload-btn:disabled{
+  background:#1a1a1e;color:#555;
+}
 #stocks-summary{
   display:flex;
   gap:7px;
@@ -2710,6 +2766,7 @@ tbody tr:hover{background:#17171c}
       <button id="research-tab" class="navbtn active">Research</button>
       <button id="stocks-tab" class="navbtn">Stocks</button>
       <button id="driver-tab" class="navbtn">Driver</button>
+      <button id="apk-tab" class="navbtn">APK</button>
       <button id="chat-tab" class="navbtn">Chat</button>
     </div>
   </div>
@@ -2871,6 +2928,37 @@ tbody tr:hover{background:#17171c}
 
   </section>
 
+  <section id="apk-view">
+
+    <div id="stocks-bar">
+      <span id="apk-status" class="mode-pill">No APK uploaded yet</span>
+      <div class="spacer"></div>
+    </div>
+
+    <div id="apk-upload-bar">
+      <input type="file" id="apk-file-input" accept=".apk,application/vnd.android.package-archive">
+      <button id="apk-upload-btn">Diagnose APK</button>
+    </div>
+
+    <div id="apk-evidence-note" class="evnote">The file's bytes are read as data only — nothing in an uploaded APK is ever executed. A verified signature proves the file is genuinely signed by whoever holds that certificate's private key; it does NOT prove that certificate belongs to who it claims to be (a self-signed debug build verifies exactly as cleanly as a real release key). This also does not recompute Android's full content digest end to end.</div>
+
+    <div id="stocks-body">
+      <div class="sblock">
+        <h3>Classification</h3>
+        <div id="apk-classification"></div>
+      </div>
+      <div class="sblock">
+        <h3>Signing</h3>
+        <div id="apk-signing" class="scroll-x"></div>
+      </div>
+      <div class="sblock">
+        <h3>Findings &amp; integrity</h3>
+        <div id="apk-findings"></div>
+      </div>
+    </div>
+
+  </section>
+
   <section id="chat-view">
     <div id="chat-header">
       <div id="chat-slot-tabs"></div>
@@ -3006,9 +3094,11 @@ async function newChat(){
 byId("research-tab").onclick=()=>showView("research");
 byId("stocks-tab").onclick=()=>showView("stocks");
 byId("driver-tab").onclick=()=>showView("driver");
+byId("apk-tab").onclick=()=>showView("apk");
 byId("chat-tab").onclick=()=>showView("chat");
 byId("driver-refresh").onclick=()=>loadDriver(true);
 byId("stocks-refresh").onclick=()=>loadStocks();
+byId("apk-upload-btn").onclick=uploadApk;
 byId("new-chat-btn").onclick=newChat;
 
 let stocksLoaded=false;
@@ -3017,11 +3107,13 @@ function showView(which){
   byId("research-view").style.display=which==="research"?"flex":"none";
   byId("stocks-view").style.display=which==="stocks"?"flex":"none";
   byId("driver-view").style.display=which==="driver"?"flex":"none";
+  byId("apk-view").style.display=which==="apk"?"flex":"none";
   byId("chat-view").style.display=which==="chat"?"flex":"none";
 
   byId("research-tab").classList.toggle("active",which==="research");
   byId("stocks-tab").classList.toggle("active",which==="stocks");
   byId("driver-tab").classList.toggle("active",which==="driver");
+  byId("apk-tab").classList.toggle("active",which==="apk");
   byId("chat-tab").classList.toggle("active",which==="chat");
 
   if(which==="chat")byId("message").focus();
@@ -3240,6 +3332,111 @@ function esc(value){
 function num(v){
   const n=parseFloat(String(v??"").replace(/[^0-9.-]/g,""));
   return Number.isFinite(n)?n:0;
+}
+
+async function uploadApk(){
+  const input=byId("apk-file-input");
+  const file=input.files && input.files[0];
+  if(!file){
+    byId("apk-status").textContent="Choose an .apk file first.";
+    return;
+  }
+
+  byId("apk-status").textContent="Uploading and diagnosing "+file.name+"...";
+  byId("apk-upload-btn").disabled=true;
+  try{
+    // The file's raw bytes go straight in the request body — no base64,
+    // which would otherwise inflate a real (tens-of-MB) APK by a third for
+    // no reason. This is a plain binary upload, unlike every JSON endpoint
+    // elsewhere in this console.
+    const r=await fetch("/apk-upload",{
+      method:"POST",
+      headers:{
+        "X-Agent-Passcode":passcode,
+        "X-Apk-Filename":file.name,
+        "Content-Type":"application/octet-stream"
+      },
+      body:file
+    });
+
+    if(r.status===401){
+      byId("login-overlay").style.display="flex";
+      byId("apk-status").textContent="Wrong passcode";
+      return;
+    }
+
+    const data=await r.json();
+
+    if(!r.ok){
+      byId("apk-status").textContent=data.error||"Upload failed";
+      return;
+    }
+
+    renderApkReport(data);
+  }catch(e){
+    byId("apk-status").textContent="Error: "+e.message;
+  }finally{
+    byId("apk-upload-btn").disabled=false;
+  }
+}
+
+function fileSize(n){
+  if(!Number.isFinite(n))return"—";
+  if(n<1024)return n+" B";
+  if(n<1024*1024)return(n/1024).toFixed(1)+" KB";
+  return(n/(1024*1024)).toFixed(1)+" MB";
+}
+
+function renderApkReport(data){
+  const report=data.report||{};
+
+  byId("apk-status").innerHTML=
+    "<b>"+esc(data.filename||"upload.apk")+"</b> &middot; "+fileSize(data.sizeBytes)+" &middot; "
+    +(data.uploadedAt?new Date(data.uploadedAt).toLocaleString():"");
+
+  const classPill={
+    STRUCTURALLY_SOUND:"buy",
+    UNSIGNED_OR_V1_ONLY:"",
+    SIGNATURE_INVALID:"sell",
+    CORRUPT:"sell",
+    NOT_A_VALID_APK:"sell"
+  }[report.classification]||"";
+
+  byId("apk-classification").innerHTML=
+    '<div class="card">'
+    +'<div class="card-top"><span class="pill '+classPill+'">'+esc(report.classification||"UNKNOWN")+'</span></div>'
+    +'<div class="card-bot"><span>'+esc(report.summary||"")+'</span></div>'
+    +'</div>';
+
+  const signing=report.signing||{};
+  if(!signing.present){
+    byId("apk-signing").innerHTML='<div class="empty">'+esc(signing.reason||"No v2/v3 signing block found.")+'</div>';
+  }else{
+    byId("apk-signing").innerHTML=(signing.schemes||[]).map((scheme)=>{
+      if(!scheme.ok){
+        return '<div class="card"><div class="card-top"><span class="card-sym">Scheme '+esc(scheme.scheme)
+          +'</span><span class="pill sell">parse failed</span></div><div class="card-bot"><span>'+esc(scheme.error)+'</span></div></div>';
+      }
+      return (scheme.signers||[]).map((signer,i)=>{
+        const cert=(signer.certificates||[])[0]||{};
+        const certLine=cert.ok
+          ? esc(cert.subject)+(cert.isSelfSigned?" (self-signed)":" (CA-issued)")+(cert.isExpired?" — EXPIRED "+esc(cert.validTo):"")
+          : esc(cert.error||"no usable certificate");
+        return '<div class="card">'
+          +'<div class="card-top">'
+          +'<span class="card-sym">'+esc(scheme.scheme)+' signer '+(i+1)+'</span>'
+          +'<span class="pill '+(signer.allSignaturesVerified?"buy":"sell")+'">'+(signer.allSignaturesVerified?"signature verified":"NOT verified")+'</span>'
+          +'</div>'
+          +'<div class="card-bot"><span>'+certLine+'</span></div>'
+          +'</div>';
+      }).join("");
+    }).join("");
+  }
+
+  const findings=report.findings||[];
+  byId("apk-findings").innerHTML=findings.length===0
+    ? '<div class="empty">No findings — ZIP integrity and alignment both check out clean.</div>'
+    : findings.map((f)=>'<div class="card"><div class="card-bot"><span>'+esc(f)+'</span></div></div>').join("");
 }
 
 function str(v){return String(v??"").trim()}
@@ -3847,6 +4044,30 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // For binary uploads (an APK), readBody()'s string-concat-then-JSON.parse
+  // path is the wrong tool twice over: it would force the client to base64
+  // the file (a real APK is tens of MB; base64 inflates that by a third for
+  // no reason) and it would hold the whole thing as a JS string rather than
+  // bytes. This instead collects the raw request body straight into Buffer
+  // chunks and concats once, with a hard cap so a runaway or malicious
+  // upload can't exhaust memory — enforced as the bytes arrive, not after
+  // the fact, so an oversized upload is aborted rather than fully buffered
+  // first.
+  async function readRawBody(maxBytes) {
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of req) {
+      total += chunk.length;
+      if (total > maxBytes) {
+        const err = new Error(`Upload exceeds the ${Math.floor(maxBytes / (1024 * 1024))}MB limit.`);
+        err.statusCode = 413;
+        throw err;
+      }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  }
+
   // Everything below is one big try/catch. Individual endpoints still
   // catch their own expected failures (a failed Alpaca call, a bad lead
   // lookup) to give a specific error message, but plenty of call sites —
@@ -4357,6 +4578,34 @@ const server = http.createServer(async (req, res) => {
       return send(200,{ok:true});
     } catch(e) {
       return send(500,{error:"Log failed: "+e.message});
+    }
+  }
+
+  // POST /apk-upload — the phone or any browser drops an APK's raw bytes
+  // here for structural + signature diagnosis. Same passcode as every other
+  // endpoint: an open upload would let anyone make this server parse
+  // arbitrary files. The bytes are read as data only (apk-tools.js never
+  // executes anything from them, the same posture web-read.js takes toward
+  // a fetched page) and the result also becomes the "last uploaded APK"
+  // that the inspect_apk tool lets Claude discuss afterward without
+  // re-uploading or relaying the file through chat.
+  if (req.method==="POST" && req.url==="/apk-upload") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const bytes = await readRawBody(MAX_APK_UPLOAD_BYTES);
+      if (bytes.length === 0) return send(400,{error:"Empty upload."});
+      const filename = String(req.headers["x-apk-filename"] || "upload.apk").slice(0, 200);
+      const report = diagnoseApk(bytes);
+      lastApkDiagnosis = {
+        filename,
+        uploadedAt: new Date().toISOString(),
+        sizeBytes: bytes.length,
+        report
+      };
+      return send(200, lastApkDiagnosis);
+    } catch (e) {
+      const status = Number.isInteger(e && e.statusCode) ? e.statusCode : 500;
+      return send(status, { error: String((e && e.message) || e) });
     }
   }
 
