@@ -352,6 +352,39 @@ export const SOURCES = [
     howTo: "GET /simple/price?ids=bitcoin&vs_currencies=usd for spot prices; /coins/markets for a ranked list. Public tier is unauthenticated but rate-limited (roughly 10-30 calls/minute) — a key (COINGECKO_API_KEY, sent as x-cg-demo-api-key) raises that if it starts getting throttled.",
     goodFor: ["crypto spot prices", "market cap and volume rankings", "a quick cross-check, never a trading signal on its own"]
   },
+  {
+    id: "etherscan",
+    name: "Etherscan API (V2, multichain)",
+    category: "crypto",
+    coverage: "Ethereum + 60+ EVM chains",
+    quality: "official",
+    needsKey: "ETHERSCAN_API_KEY",
+    baseUrl: "https://api.etherscan.io/v2/api",
+    howTo: "GET with module/action/chainid/apikey query params, e.g. ?chainid=1&module=account&action=balance&address=0x...&tag=latest&apikey={key}. Verified against current docs (docs.etherscan.io, Sep 2026): one free key now covers all 60+ supported EVM chains via chainid, superseding the old separate per-chain domains (etherscan.io, bscscan.com, polygonscan.com, etc.).",
+    goodFor: ["on-chain wallet balances and transaction history", "contract ABI/source lookups", "gas price tracking on any EVM chain by chainid, not just Ethereum mainnet"]
+  },
+  {
+    id: "defillama",
+    name: "DefiLlama API",
+    category: "crypto",
+    coverage: "Global DeFi protocols",
+    quality: "secondary",
+    needsKey: null,
+    baseUrl: "https://api.llama.fi",
+    howTo: "GET /protocols for the full list with current TVL; /tvl/{protocol} for one protocol's total-value-locked history. No key on the free tier; a higher-limit pro tier exists separately at pro-api.llama.fi.",
+    goodFor: ["DeFi protocol TVL and rankings", "cross-checking a token's ecosystem footprint", "stablecoin and yield data"]
+  },
+  {
+    id: "mempool_space",
+    name: "mempool.space API",
+    category: "crypto",
+    coverage: "Bitcoin network",
+    quality: "official",
+    needsKey: null,
+    baseUrl: "https://mempool.space/api",
+    howTo: "GET /v1/fees/recommended for current fee estimates, /blocks for recent blocks, /address/{addr} for a wallet's on-chain activity. No key for standard use; rate-limited, with an enterprise sponsorship tier for heavier traffic.",
+    goodFor: ["Bitcoin mempool congestion and fee estimation", "block and transaction lookups", "address activity without running a node"]
+  },
 
   // ---------- economics & government finance ----------
   {
@@ -409,6 +442,39 @@ export const SOURCES = [
     howTo: "POST /search/spending_by_award/ with a filter object for contracts, grants and loans; GET /agency/{toptier_code}/ for an agency's budget. No key.",
     goodFor: ["how much the federal government actually spent on something", "which companies hold contracts with a given agency"]
   },
+  {
+    id: "bea",
+    name: "U.S. Bureau of Economic Analysis (BEA) API",
+    category: "economics",
+    coverage: "United States (national/regional economic accounts)",
+    quality: "official",
+    needsKey: "BEA_API_KEY",
+    baseUrl: "https://apps.bea.gov/api/data",
+    howTo: "Free key via a short self-service signup at apps.bea.gov/api/signup (name/org + email, key emailed). GET with UserID/method/DatasetName params — GDP by industry, regional personal income, international trade in goods and services.",
+    goodFor: ["GDP and its components", "state/regional personal income", "international trade balances"]
+  },
+  {
+    id: "bls",
+    name: "Bureau of Labor Statistics (BLS) Public Data API v2",
+    category: "economics",
+    coverage: "United States (labor market and prices)",
+    quality: "official",
+    needsKey: "BLS_API_KEY",
+    baseUrl: "https://api.bls.gov/publicAPI/v2/timeseries/data/",
+    howTo: "POST/GET a list of BLS series IDs (CPI, unemployment rate, employment by industry). Works unregistered with tighter limits (fewer years of history, no calculations/annual-average extras) — a free key from bls.gov/developers raises the ceiling to 50 series per call and unlocks those extras.",
+    goodFor: ["CPI and inflation series", "unemployment rate and labor-force data", "wages and employment by industry/occupation"]
+  },
+  {
+    id: "eia",
+    name: "U.S. Energy Information Administration (EIA) API v2",
+    category: "economics",
+    coverage: "United States (energy production, consumption, prices)",
+    quality: "official",
+    needsKey: "EIA_API_KEY",
+    baseUrl: "https://api.eia.gov/v2",
+    howTo: "Free key emailed instantly after registering with just an email address at eia.gov/opendata. GET e.g. /electricity/retail-sales/data with api_key as a query parameter — it must be in the URL, not a header.",
+    goodFor: ["gasoline and electricity prices", "energy production/consumption by state or fuel type", "crude oil and natural gas market data"]
+  },
 
   // ---------- civic & government data ----------
   {
@@ -465,6 +531,17 @@ export const SOURCES = [
     baseUrl: "https://data.usajobs.gov/api",
     howTo: "GET /search?Keyword={terms} with headers Authorization-Key: {key} and User-Agent: {the email used to register}. Its own separate signup at developer.usajobs.gov.",
     goodFor: ["current federal job openings", "typical federal pay grades for a role"]
+  },
+  {
+    id: "ny_quick_draw",
+    name: "NY Open Data — Lottery Quick Draw Winning Numbers",
+    category: "civic",
+    coverage: "New York State only",
+    quality: "official",
+    needsKey: null,
+    baseUrl: "https://data.ny.gov/resource/7sqk-ycpk.json",
+    howTo: "Standard Socrata SODA endpoint — GET it directly for JSON, no token needed for light use; add a free app token (data.ny.gov/developers) only if calling it often enough to get rate-limited. Quick Draw draws roughly every 4 minutes, so this is the one game apps/lottery.js's generic drawanalytics.com feed is most likely to have incomplete history for — use this to fill that specific gap, not as a replacement for it.",
+    goodFor: ["NY Quick Draw draw history specifically", "cross-checking drawanalytics.com's NY coverage", "any other data.ny.gov dataset via the same Socrata pattern — swap the resource ID"]
   },
 
   // ---------- space ----------
@@ -649,6 +726,30 @@ export const SOURCES = [
     baseUrl: "https://www.consumerfinance.gov/data-research/consumer-complaints/search/api/v1",
     howTo: "GET /?company={name}&product={type} for real, individual consumer complaints against a financial company or product. No key; check the current Swagger docs at cfpb.github.io/api/ccdb for the exact field names, which have grown over time.",
     goodFor: ["real complaint volume and patterns against a bank, lender or financial product", "a specific claim about a company's financial-service conduct"]
+  },
+  {
+    id: "federal_register",
+    name: "Federal Register API",
+    category: "legal",
+    coverage: "United States federal regulatory actions",
+    quality: "official",
+    needsKey: null,
+    baseUrl: "https://www.federalregister.gov/api/v1",
+    howTo: "GET /articles.json?conditions[term]={terms} to search; /articles/{document_number}.json for one document. No key at all, confirmed against current docs.",
+    goodFor: ["new and proposed federal rules/regulations, in full", "executive orders and presidential documents", "public-comment-period deadlines on a specific rule"]
+  },
+
+  // ---------- risk & compliance ----------
+  {
+    id: "ofac_sdn",
+    name: "OFAC Specially Designated Nationals (SDN) List",
+    category: "risk_compliance",
+    coverage: "United States (Treasury sanctions list)",
+    quality: "official",
+    needsKey: null,
+    baseUrl: "https://www.treasury.gov/ofac/downloads",
+    howTo: "GET /sdn.xml or /sdn.csv for the full current bulk list — this is a downloadable file, not a lookup-by-name JSON endpoint, so search it after fetching. Treasury's newer Sanctions List Service at sanctionslist.ofac.treas.gov has an interactive search UI over the same underlying data for one-off name checks.",
+    goodFor: ["screening a specific name/entity against the current US sanctions list", "a first-pass compliance check — never a substitute for a real KYC/AML vendor where that matters legally"]
   },
 
   // ---------- education ----------
