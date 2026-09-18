@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   readAllLeads,
@@ -93,6 +94,29 @@ import { getHistory as getPersistentHistory, saveHistory as savePersistentHistor
 import { loadLeads, saveLeads, migrateLegacyLeadsIfNeeded } from "./leads-store.js";
 
 const PORT = process.env.PORT || 3000;
+
+/* ------------------------------------------------------------------ *
+ * Process-level crash safety net.
+ *
+ * This process also runs the autotrader scheduler, so a crash here isn't
+ * just a dropped HTTP request — it's live trading logic silently going
+ * dark until Railway notices and restarts it, with no reason logged for
+ * why. Node's default for an unhandled promise rejection (and for any
+ * uncaught synchronous throw outside a try/catch) is to terminate the
+ * process. The HTTP dispatcher below now catches its own exceptions, but
+ * this is the backstop for anything outside it — a stray rejection in a
+ * timer callback, a bug in code added later that forgets a catch. It
+ * logs loudly and keeps running rather than pretending nothing happened,
+ * which is the same philosophy as everywhere else in this file: surface
+ * the failure, never paper over it, but don't let one bad case take the
+ * whole system down with it.
+ * ------------------------------------------------------------------ */
+process.on("unhandledRejection", (reason) => {
+  console.error("[server] unhandled promise rejection:", (reason && reason.stack) || reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[server] uncaught exception:", (err && err.stack) || err);
+});
 
 /* ------------------------------------------------------------------ *
  * Chat slots: one persistent main thread, four disposable side ones.
@@ -3773,20 +3797,66 @@ setInterval(loadResearch,180000);
 </html>`;
 }
 
+/**
+ * Constant-time string comparison for the passcode check below.
+ *
+ * `===` short-circuits on the first mismatched character, so how long a
+ * comparison takes leaks how many leading characters of a guess were
+ * right — a timing side channel against the single credential gating
+ * chat, trading data, lead data, and every device command. This process
+ * has no rate limiting or lockout in front of it, so a timing channel is
+ * the kind of thing that's cheap to close and not worth leaving open.
+ * crypto.timingSafeEqual requires equal-length buffers, so a length
+ * mismatch is handled first — that comparison is on a public constant
+ * (the passcode's length isn't secret data derived from the guess), and
+ * still fails closed either way.
+ */
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 const server = http.createServer(async (req, res) => {
   function send(status, body, type) {
     res.writeHead(status, {"Content-Type": type||"application/json","Cache-Control":"no-store"});
     res.end(type==="text/html" ? body : JSON.stringify(body));
   }
   function auth() {
-    return process.env.AGENT_PASSCODE &&
-      req.headers["x-agent-passcode"] === process.env.AGENT_PASSCODE;
+    return Boolean(process.env.AGENT_PASSCODE) &&
+      safeEqual(req.headers["x-agent-passcode"] || "", process.env.AGENT_PASSCODE);
   }
   async function readBody() {
     let raw="";
     for await (const chunk of req) raw+=chunk;
-    return JSON.parse(raw||"{}");
+    try {
+      return JSON.parse(raw||"{}");
+    } catch (e) {
+      // A malformed body is a client mistake, not a server fault — and it
+      // must never be allowed to propagate as an uncaught SyntaxError. This
+      // used to throw raw, and several endpoints called readBody() with no
+      // try/catch of their own, which turned one bad request body into an
+      // unhandled promise rejection and crashed the whole process (trading
+      // scheduler included). Tagging it with statusCode lets the top-level
+      // dispatcher below respond 400 instead of 500, but the real fix is
+      // that nothing here can escape uncaught anymore either way.
+      const err = new Error("Request body is not valid JSON.");
+      err.statusCode = 400;
+      throw err;
+    }
   }
+
+  // Everything below is one big try/catch. Individual endpoints still
+  // catch their own expected failures (a failed Alpaca call, a bad lead
+  // lookup) to give a specific error message, but plenty of call sites —
+  // readBody() among them — did not, and previously any exception they
+  // threw became an unhandled rejection on the promise this whole async
+  // callback returns, which Node treats as fatal and crashes the process.
+  // One malformed request should never be able to take down the trading
+  // scheduler along with everything else, so this is the backstop: a
+  // clean, unauthenticated-safe error response instead of a dead process.
+  try {
 
   if (req.method==="GET" && req.url==="/") return send(200, htmlPage(), "text/html");
 
@@ -4291,6 +4361,23 @@ const server = http.createServer(async (req, res) => {
   }
 
   return send(404,{error:"Not found"});
+
+  } catch (e) {
+    // Last resort. Anything that reaches here is a bug or a bad request
+    // that slipped past an endpoint's own handling — the goal is only to
+    // answer this one request and keep the process alive for every other
+    // one, never to pretend the error didn't happen.
+    const status = Number.isInteger(e && e.statusCode) ? e.statusCode : 500;
+    console.error("[server] unhandled request error:", (e && e.stack) || e);
+    try {
+      return send(status, { error: (e && e.message) || "Internal error" });
+    } catch (e2) {
+      // The response may already be partially written (a streamed body,
+      // headers already sent) — nothing more can be done for this request,
+      // but the process itself is still fine.
+      console.error("[server] could not send error response:", (e2 && e2.message) || e2);
+    }
+  }
 });
 
 server.listen(PORT,"0.0.0.0",()=>{

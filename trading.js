@@ -36,6 +36,34 @@ export function isLiveEndpoint() {
   return !/paper-api\.alpaca\.markets/.test(ALPACA_BASE);
 }
 
+/**
+ * fetch(), but bounded. Every call in this file used to be a bare
+ * fetch() with no timeout — fine as long as the network behaves, but a
+ * broker or market-data endpoint that stalls instead of erroring would
+ * hang the request forever. Since this process also runs the autotrader
+ * on a fixed schedule with no reentrancy protection against a run that
+ * never finishes, an indefinitely hanging fetch here was a direct path
+ * to that overlap. Same AbortController pattern already used in
+ * sources.js/web-read.js/toolkit.js — ported here rather than invented
+ * fresh.
+ */
+const DEFAULT_TIMEOUT_MS = 15000;
+
+export async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error(`Timed out after ${timeoutMs}ms fetching ${new URL(url).hostname}`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * Trade log (local, same pattern as darkly-leads.json)
  * ------------------------------------------------------------------ */
@@ -205,7 +233,7 @@ async function alpacaRequest(method, endpoint, body) {
     );
   }
 
-  const res = await fetch(`${ALPACA_BASE}${endpoint}`, {
+  const res = await fetchWithTimeout(`${ALPACA_BASE}${endpoint}`, {
     method,
     headers: {
       "APCA-API-KEY-ID": ALPACA_KEY_ID,
@@ -239,7 +267,7 @@ async function alpacaDataRequest(endpoint) {
     );
   }
 
-  const res = await fetch(`${ALPACA_DATA_BASE}${endpoint}`, {
+  const res = await fetchWithTimeout(`${ALPACA_DATA_BASE}${endpoint}`, {
     headers: {
       "APCA-API-KEY-ID": ALPACA_KEY_ID,
       "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
@@ -649,7 +677,7 @@ async function estimateOrderValue(order) {
  * Order placement
  * ------------------------------------------------------------------ */
 
-export async function placeOrder(input = {}) {
+async function placeOrderSerialized(input = {}) {
   const symbol = String(input.symbol || "").trim().toUpperCase();
   if (!symbol) throw new Error("symbol is required.");
 
@@ -750,6 +778,38 @@ export async function placeOrder(input = {}) {
   };
 }
 
+/**
+ * placeOrder() is reachable from more than one place at once: the
+ * autotrader's scheduled run, a manual "place a trade" chat tool call,
+ * and (independently of both) a manually triggered autotrader run — none
+ * of which know about each other. checkGuardrails() reads today's trade
+ * count and the time since the last trade, decides, and only much later
+ * (after a real network round-trip to Alpaca) does the order get logged
+ * — so two calls that both start before either has logged can both read
+ * the same "under the limit, cooldown clear" state and both go through,
+ * silently exceeding MAX_TRADES_PER_DAY or TRADE_COOLDOWN_MINUTES.
+ *
+ * This process is single-threaded, so the fix does not need a real lock
+ * — just making sure the check-through-log sequence for one call always
+ * finishes before the next one's check begins. Every call is chained
+ * onto the previous one's completion (success or failure), which
+ * serializes them without making a blocked caller wait more than one
+ * order's worth of time, and without touching checkGuardrails() or
+ * logTrade() themselves.
+ */
+let placeOrderChain = Promise.resolve();
+
+export function placeOrder(input = {}) {
+  const result = placeOrderChain.then(() => placeOrderSerialized(input));
+  // Chain onto the settled result regardless of outcome, so one rejected
+  // order never wedges every order after it — but swallow the rejection
+  // here so it doesn't become a *second*, spurious unhandled rejection;
+  // the real one is still delivered to this call's own caller via the
+  // returned (unswallowed) promise below.
+  placeOrderChain = result.catch(() => {});
+  return result;
+}
+
 /* ------------------------------------------------------------------ *
  * Market data (AutoTradeFlux Supabase backend)
  * ------------------------------------------------------------------ */
@@ -761,7 +821,7 @@ export async function getMarketData(input = {}) {
 
   const url = `${SUPABASE_URL}/functions/v1/api/market`;
 
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: SUPABASE_ANON_KEY
       ? {
           apikey: SUPABASE_ANON_KEY,

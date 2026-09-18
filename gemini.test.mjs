@@ -7,7 +7,7 @@
  * mistaken for "Gemini had nothing to add."
  */
 
-import { geminiConfigured, buildGeminiRequestBody, extractGeminiText, callGemini } from "./gemini.js";
+import { geminiConfigured, buildGeminiRequestBody, extractGeminiText, callGemini, fetchWithTimeout } from "./gemini.js";
 
 let pass = 0;
 let fail = 0;
@@ -152,6 +152,36 @@ if (savedKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.
 if (savedModel === undefined) delete process.env.GEMINI_MODEL; else process.env.GEMINI_MODEL = savedModel;
 
 /* ------------------------------------------------------------------ */
+
+console.log("\nfetchWithTimeout: a stalled Gemini call must not hang forever");
+
+{
+  globalThis.fetch = (url, options = {}) => new Promise((resolve, reject) => {
+    if (options.signal) {
+      options.signal.addEventListener("abort", () => {
+        const err = new Error("The operation was aborted.");
+        err.name = "AbortError";
+        reject(err);
+      });
+    }
+  });
+
+  const start = Date.now();
+  let threw = null;
+  try {
+    await fetchWithTimeout("https://example.invalid/stalls-forever", {}, 50);
+  } catch (e) {
+    threw = e;
+  }
+  const elapsed = Date.now() - start;
+
+  check("a stalled request eventually throws instead of hanging forever", threw !== null);
+  check("the error explains it was a timeout", /timed out/i.test(threw && threw.message), threw && threw.message);
+  check("it throws at roughly the requested timeout, not immediately or way past it",
+    elapsed >= 40 && elapsed < 2000, `${elapsed}ms`);
+
+  globalThis.fetch = realFetch;
+}
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);

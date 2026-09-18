@@ -28,6 +28,30 @@ export function geminiConfigured() {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
+/**
+ * fetch(), but bounded. This call used to be a bare fetch() with no
+ * timeout — a stalled Gemini response would hang whatever chat turn
+ * called this tool indefinitely instead of failing. Same
+ * AbortController pattern already used in sources.js/web-read.js/
+ * toolkit.js.
+ */
+const DEFAULT_TIMEOUT_MS = 20000;
+
+export async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error(`Gemini timed out after ${timeoutMs}ms.`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** The request body Google's generateContent endpoint expects. Pure, testable. */
 export function buildGeminiRequestBody(prompt, options = {}) {
   const body = {
@@ -77,7 +101,7 @@ export async function callGemini(prompt, options = {}) {
   const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
 
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(buildGeminiRequestBody(prompt, options))

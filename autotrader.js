@@ -265,6 +265,18 @@ export function getCurrentConfigDetails() {
  * The run
  * ------------------------------------------------------------------ */
 
+// Reentrancy guard. runOnce() is reachable from three places that can
+// genuinely overlap — the scheduler's setInterval (which does not wait
+// for a slow run before its next tick), the run_autotrader_now chat
+// tool, and POST /autotrader-run — and letting two runs execute at once
+// is not just wasteful, it is how a trade gets placed twice: the
+// daily-trade-count and cooldown guardrails in trading.js both read the
+// trade log and decide before either run has logged its own trade, so
+// two overlapping runs can each see "under the limit" and each submit.
+// A skipped-because-already-running run is a real, auditable outcome,
+// not a silent no-op — the same treatment as "mode is off" below.
+let runInProgress = false;
+
 export async function runOnce(options = {}) {
   const startedAt = new Date().toISOString();
   const force = Boolean(options.force);
@@ -287,6 +299,13 @@ export async function runOnce(options = {}) {
     decisions: [],
     errors: []
   };
+
+  if (runInProgress) {
+    run.skipped = "A run is already in progress; this one was skipped rather than allowed to overlap it.";
+    recordRun(run);
+    return run;
+  }
+  runInProgress = true;
 
   try {
     if (mode === "off" && !force) {
@@ -692,7 +711,18 @@ export async function runOnce(options = {}) {
     return run;
   } finally {
     run.finishedAt = new Date().toISOString();
+    runInProgress = false;
   }
+}
+
+/** Test seam: whether a run is currently in progress. */
+export function _isRunInProgressForTests() {
+  return runInProgress;
+}
+
+/** Test seam: forcibly clear the reentrancy flag between tests. */
+export function _resetRunInProgressForTests() {
+  runInProgress = false;
 }
 
 /* ------------------------------------------------------------------ *

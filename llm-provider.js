@@ -187,6 +187,33 @@ function fallbackUrl() {
 }
 
 /**
+ * fetch(), but bounded. This is the one network call in the file, used
+ * only when Anthropic itself is failing over (rate-limited or out of
+ * credits) — which makes an unbounded hang here worse than usual: it
+ * would mean the ONE path meant to keep the agent answering during an
+ * outage is itself the thing left hanging. A generous timeout, since a
+ * full chat completion with a large tool list can legitimately take a
+ * while. Same AbortController pattern already used in
+ * sources.js/web-read.js/toolkit.js.
+ */
+const DEFAULT_TIMEOUT_MS = 60000;
+
+export async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error(`Fallback model timed out after ${timeoutMs}ms.`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Call the configured fallback (a LiteLLM-proxied endpoint, or anything
  * else that speaks the OpenAI chat-completions + tools wire format) with
  * the SAME system prompt and SAME tools Anthropic would have received.
@@ -209,7 +236,7 @@ export async function callFallbackModel({ system, tools, messages }) {
     tools: toolsToOpenAI(tools)
   };
 
-  const res = await fetch(fallbackUrl(), {
+  const res = await fetchWithTimeout(fallbackUrl(), {
     method: "POST",
     headers: {
       "content-type": "application/json",
