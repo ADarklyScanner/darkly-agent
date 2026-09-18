@@ -57,6 +57,9 @@ import {
 } from "./performance.js";
 import { backtest as runBacktest, runWindows as runBacktestWindows, BACKTEST_DEFAULTS } from "./backtest.js";
 import { scheduleReno, nextOperationalBoundary, ALGORITHM_VERSION as RENO_VERSION } from "./reno-engine.js";
+import { fetchPage } from "./web-read.js";
+import { webSearch, searchStatus, availableProviders } from "./web-search.js";
+import { evaluate as calcEvaluate, describe as calcDescribe } from "./calc.js";
 import { RISK_DEFAULTS } from "./risk.js";
 import { isQuotaOrRateLimitError, fallbackConfigured, callFallbackModel } from "./llm-provider.js";
 import { geminiConfigured, callGemini } from "./gemini.js";
@@ -189,7 +192,17 @@ PERFORMANCE. Use get_performance for any question about how the LIVE trading is 
 
 BACKTESTING. Use run_backtest for any question about how the strategy WOULD HAVE done historically, or before recommending any change to the strategy or its parameters. It replays the exact same code (strategy.js + risk.js) against historical daily bars, filling decisions only at the next bar's open (no lookahead), and returns a scored report plus an 'honesty' field you must read and weigh in with — a backtest is a description of one historical sample, not a predictor, and a strategy that never beat simple buy-and-hold on its own benchmark is not a strategy worth trading. Always report the benchmark comparison ('beatBuyAndHold') alongside any return number — a strategy that made money but underperformed just holding the index has not demonstrated anything the market didn't hand out for free. Below the reliability floor, say so, same as get_performance. The report's 'sharpe' field is a risk-adjusted return computed ONLY from this backtest's own day-by-day equity — this is the one place annualizing is honest, because a backtest has an actual, complete daily calendar behind it, unlike the live trade log's sparse, irregular fills; still report it as a property of this one historical replay, never as a forecast, and lean on its own 'reliable'/'caveat' fields exactly as you would performance's. Use the 'windows' option when someone wants to know if a result holds up outside one period, and report a mixed or negative result exactly as plainly as a positive one — this tool exists to find out whether the strategy is worth running, not to justify running it.
 
+RESEARCH. You have three tools for finding things out: web_search (live search), read_web_page (fetch and read any public page, no API key needed), and calculate (exact arithmetic). Use them rather than answering from memory whenever the answer depends on the present — events, weather, closures, prices, whether something still exists, anything with a date on it. Your training data is old and this agent runs for months at a time; "I think X is happening" is not good enough when you can go and look.
+
+How to research well here: search to find candidate sources, then READ them. A search snippet is not a source — it is a claim that a page might contain something. Never state a specific date, time, number, or fact from a snippet alone; open the page first. Prefer official and primary sources over aggregators: a venue's own calendar beats a listings site, the National Weather Service beats a weather blog, a city or DOT page beats a news summary of it. When sources disagree, say so rather than silently picking one. When you cannot find something, say you could not find it — do not fill the gap with a plausible guess, and do not present an absence of evidence as evidence of absence.
+
+If web_search reports that no provider is configured, tell the user plainly and name the variable that would fix it, then carry on with read_web_page if you already know a relevant URL. Do not pretend to have searched.
+
+Use calculate for any arithmetic that matters. Doing it in your head is how a wrong number reaches the user looking exactly as confident as a right one.
+
 RENO DRIVER SCHEDULING. run_reno_schedule runs the user's own Reno Uber Opportunity-Ranking and Shift-Optimization Engine (RENO_UBER_V1_CANONICAL_2026_09_02), ported verbatim from their saved specification. Call it for "start the Uber schedule", "start Uber's schedule", "when should I drive", "best hours to drive this week", and close equivalents. What it does: ranks all 168 one-hour periods of the coming Reno operational week (days run 4AM->4AM Reno local) by DRIVER OPPORTUNITY — demand minus competing-driver supply, plus trip quality, throughput and destination continuity, minus traffic/queue/deadhead friction — then returns six jointly-optimized non-overlapping 8-hour blocks, two recommended days off, and any one-off hours scoring 81.6+.
+
+Researching a week for it: the engine's evidence records map directly onto what you can go and find. Check the venue and university calendars, the casino and events listings, and Visit Reno Tahoe for event_demand and event_quality; the National Weather Service for weather and safety_suppression; Nevada 511/NDOT for traffic and closures; RNO for airport and flight_activity; RTC and event pages for transit, shuttle, free_parking and parking_scarcity. Set each record's sourceType honestly — official (1.00) for a government, airport, DOT or venue's own page, organizer (0.95), ticketing (0.88), local_news (0.85), secondary (0.75), aggregator (0.55), social (0.30) — because that number becomes the record's weight, and inflating it is indistinguishable from making the evidence up. Give every record a real start/end window covering the hours it actually applies to; an event at 8 PM Saturday is evidence about Saturday evening, not about the week. And search deliberately for NEGATIVE evidence too — free parking, free shuttles, park-and-ride, weak ticket sales, a cancellation, obvious driver oversupply — because the engine is specifically built so those can overturn a demand-positive story, and a research pass that only looks for reasons an hour is good will systematically mislead it.
 
 The engine is evidence-first but does NOT gather evidence itself, and this is the single most important thing to get right when using it. With no evidence it returns a pure baseline ranking from the frozen hour/day tables: a real, useful answer about normal Reno patterns, but one that knows nothing about this week's actual concerts, weather, flights, or road closures. If you have genuinely researched the forecast week, pass what you found as evidence records with real sources and time windows so it actually moves the numbers. NEVER invent evidence to make the output look better-informed — a fabricated event or weather value silently corrupts the entire ranking, and the engine is explicitly designed to treat missing evidence as neutral rather than to guess. Always tell the user which case they got: baseline-only, or evidence-backed and from what sources.
 
@@ -662,6 +675,65 @@ const CLAUDE_TOOLS = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: "web_search",
+    description:
+      "Search the live web. Use this whenever a question depends on what is true right now rather than on what you already know: upcoming events, current weather, road closures, news, prices, whether a business still exists, or anything dated. " +
+      "Returns real ranked results with URLs. IMPORTANT: search results are snippets, not sources — read the actual page with read_web_page before relying on any specific fact, number, date or claim. " +
+      "If this deployment has no search provider configured the result says so plainly, including which environment variable would enable it; relay that to the user instead of guessing at an answer. " +
+      "One provider (Gemini grounding) returns a model-written summary rather than retrieved results; when that happens the result is clearly marked kind:'model_summarized' and carries a caveat — treat its summary as leads to verify, never as a source to cite.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The search query. Be specific; include place names and dates where they matter." },
+        count: { type: "number", description: "How many results to return (1-20, default 8)." },
+        provider: {
+          type: "string",
+          description: "Force a specific provider: brave, tavily, serper, google_cse, or gemini. Omit to use the best configured one."
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "read_web_page",
+    description:
+      "Fetch a public web page and read its actual contents as text. This needs no API key and works even when web_search is unavailable, as long as you know the URL. " +
+      "Use it to verify anything a search snippet claimed, to read an events calendar, a weather forecast page, an official announcement, or a docs page. " +
+      "Automatically extracts schema.org event data when a page publishes it (venues, universities and tourism sites usually do), which is far more reliable than reading event times out of prose. " +
+      "Only public internet addresses can be fetched: private networks, localhost and cloud-metadata addresses are refused by design, and that refusal is not a bug to work around.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Absolute http(s) URL of the page to read." },
+        maxChars: { type: "number", description: "Cap on returned characters (default and maximum 60000)." },
+        includeLinks: { type: "boolean", description: "Also return the page's outbound links — useful for finding an events subpage." }
+      },
+      required: ["url"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "calculate",
+    description:
+      "Evaluate arithmetic exactly, or summarize a list of numbers. Use this for ANY non-trivial number work — earnings per hour, percentage changes, position sizing, averaging a series — rather than computing in your head, where small errors are easy and invisible. " +
+      "Supports + - * / % ^, parentheses, and functions like sqrt, ln, log, min, max, sum, avg, round, abs, pow, hypot. " +
+      "Supply `values` instead of `expression` to get count, sum, mean, median, min, max, quartiles and both sample and population standard deviation. " +
+      "This is a calculator, not a code sandbox: it evaluates mathematical expressions only and cannot run code, read files, or reach the network.",
+    input_schema: {
+      type: "object",
+      properties: {
+        expression: { type: "string", description: "A mathematical expression, e.g. '(1143.93 - 259) / 22.75'." },
+        values: {
+          type: "array",
+          items: { type: "number" },
+          description: "A list of numbers to summarize statistically. Use instead of `expression`."
+        }
+      },
+      additionalProperties: false
+    }
   }
 ];
 
@@ -1007,6 +1079,81 @@ async function executeClaudeTool(name, input = {}) {
           : [],
         oneOffMessage: result.oneOffMessage
       };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "web_search") {
+    try {
+      const result = await webSearch(input.query, { count: input.count, provider: input.provider });
+      if (!result.ok) {
+        return {
+          ok: false,
+          error: result.error || result.note,
+          note: result.note,
+          searchConfigured: result.configured === true
+        };
+      }
+      return {
+        ok: true,
+        provider: result.providerLabel,
+        kind: result.kind,
+        query: result.query,
+        results: result.results,
+        summary: result.summary,
+        caveat: result.caveat,
+        reminder:
+          "These are search results, not verified facts. Open the relevant URL with read_web_page before stating any specific date, number, or claim as true.",
+        providerFailures: result.attempts && result.attempts.length ? result.attempts : undefined
+      };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "read_web_page") {
+    try {
+      const page = await fetchPage(input.url, {
+        maxChars: input.maxChars,
+        includeLinks: Boolean(input.includeLinks)
+      });
+      if (!page.ok) return { ok: false, url: input.url, status: page.status, error: page.error };
+      return {
+        ok: true,
+        url: page.url,
+        finalUrl: page.finalUrl !== page.url ? page.finalUrl : undefined,
+        title: page.title,
+        kind: page.kind,
+        text: page.text,
+        truncated: page.truncated || undefined,
+        charsAvailable: page.truncated ? page.charsAvailable : undefined,
+        events: page.events && page.events.length ? page.events : undefined,
+        eventsNote:
+          page.events && page.events.length
+            ? "These came from the page's own schema.org markup, so their times and names are the publisher's structured data rather than something parsed out of prose."
+            : undefined,
+        links: page.links,
+        redirects: page.redirects && page.redirects.length ? page.redirects : undefined
+      };
+    } catch (e) {
+      // Destination-guard refusals land here and should be reported as-is:
+      // they are a deliberate safety boundary, not a transient failure to
+      // retry or route around.
+      return { ok: false, url: input.url, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "calculate") {
+    try {
+      if (Array.isArray(input.values)) {
+        return { ok: true, kind: "series", ...calcDescribe(input.values) };
+      }
+      if (typeof input.expression === "string") {
+        const value = calcEvaluate(input.expression);
+        return { ok: true, kind: "expression", expression: input.expression, result: value };
+      }
+      return { ok: false, error: "Supply either `expression` (a string) or `values` (an array of numbers)." };
     } catch (e) {
       return { ok: false, error: String(e.message || e) };
     }
