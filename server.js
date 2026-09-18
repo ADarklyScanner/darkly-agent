@@ -60,6 +60,12 @@ import { scheduleReno, nextOperationalBoundary, ALGORITHM_VERSION as RENO_VERSIO
 import { fetchPage } from "./web-read.js";
 import { webSearch, searchStatus, availableProviders } from "./web-search.js";
 import { evaluate as calcEvaluate, describe as calcDescribe } from "./calc.js";
+import { listApps, collectSignals, findCoincidences } from "./apps/registry.js";
+import {
+  listStates as lotteryStates, listGames as lotteryGames, fetchResults as lotteryResults,
+  normalizeDraws, analyzeAll as lotteryAnalyzeAll, registerLotteryApp
+} from "./apps/lottery.js";
+import { registerDrivingApp } from "./apps/driving.js";
 import {
   base64Encode, base64Decode, sha256 as tkSha256, chunk as tkChunk, deduplicate as tkDedupe,
   parseDelimited, jsonPath as tkJsonPath, inferSchema as tkInferSchema, regexExtract as tkRegex,
@@ -126,6 +132,12 @@ function resetHistoryForSlot(slot) {
 // on every Railway restart/redeploy) onto the same durable /data-backed
 // store everything else in this codebase already uses. A no-op on every
 // run after the first real one — see leads-store.js.
+// Side apps register themselves once at startup. They stay independent:
+// each owns its own logic and only contributes dated signals to the
+// cross-app view (see apps/registry.js for why they are not merged).
+registerDrivingApp();
+registerLotteryApp();
+
 {
   const migration = migrateLegacyLeadsIfNeeded();
   if (migration.migrated) {
@@ -198,6 +210,12 @@ Be accurate about what all this is. The risk controls are real and are the part 
 PERFORMANCE. Use get_performance for any question about how the LIVE trading is actually going. Never estimate from the trade log yourself. Every figure it returns carries a sample size and a reliability flag, and below 30 closed trades results are indistinguishable from luck — when you report a number from it, report that caveat in the same breath. If it returns zero closed trades, say exactly that: zero closed trades is not a zero result, it means nothing has completed a round-trip yet. Never annualize, extrapolate or project.
 
 BACKTESTING. Use run_backtest for any question about how the strategy WOULD HAVE done historically, or before recommending any change to the strategy or its parameters. It replays the exact same code (strategy.js + risk.js) against historical daily bars, filling decisions only at the next bar's open (no lookahead), and returns a scored report plus an 'honesty' field you must read and weigh in with — a backtest is a description of one historical sample, not a predictor, and a strategy that never beat simple buy-and-hold on its own benchmark is not a strategy worth trading. Always report the benchmark comparison ('beatBuyAndHold') alongside any return number — a strategy that made money but underperformed just holding the index has not demonstrated anything the market didn't hand out for free. Below the reliability floor, say so, same as get_performance. The report's 'sharpe' field is a risk-adjusted return computed ONLY from this backtest's own day-by-day equity — this is the one place annualizing is honest, because a backtest has an actual, complete daily calendar behind it, unlike the live trade log's sparse, irregular fills; still report it as a property of this one historical replay, never as a forecast, and lean on its own 'reliable'/'caveat' fields exactly as you would performance's. Use the 'windows' option when someone wants to know if a result holds up outside one period, and report a mixed or negative result exactly as plainly as a positive one — this tool exists to find out whether the strategy is worth running, not to justify running it.
+
+SIDE APPS. This agent hosts several standalone apps that have nothing to do with each other — currently the Reno driver scheduler and the lottery analyzer, with more to come. They are deliberately kept separate: each owns its own logic and vocabulary, and none of them feeds into another's model. Never blend them. A lottery statistic has no place in a driving-opportunity score, and reasoning across domains that share no mechanism is how a system starts producing confident nonsense. list_apps says what is currently plugged in.
+
+The one thing they share is the calendar, and cross_app_days is the only place that is allowed to matter. It reports days where two different apps each had something dated to them — nothing more. Treat those as co-occurrence, which is not causation, correlation, or advice. Report what overlapped and stop there; the user decides whether it means anything to them.
+
+One case deserves explicit care. The driving scheduler will sometimes rate a day as weak at the same time the lottery app has a draw on it. That is two facts on one date. It is NOT a reason to play, and a low-earning day must never be presented as a justification for spending money — that inference is unsupported and harmful, and you should not make it, hint at it, or agree with it if it is suggested to you. The same applies to the lottery analysis itself: hot, cold and overdue numbers are real descriptions of past draws and genuinely interesting, but draws are independent with fixed odds, so none of it improves anyone's chances. Say that plainly whenever you present it, rather than letting a detailed statistical readout imply an edge it does not have.
 
 RESEARCH. You have three tools for finding things out: web_search (live search), read_web_page (fetch and read any public page, no API key needed), and calculate (exact arithmetic). Use them rather than answering from memory whenever the answer depends on the present — events, weather, closures, prices, whether something still exists, anything with a date on it. Your training data is old and this agent runs for months at a time; "I think X is happening" is not good enough when you can go and look.
 
@@ -843,6 +861,59 @@ const CLAUDE_TOOLS = [
       required: ["url"],
       additionalProperties: false
     }
+  },
+  {
+    name: "lottery_analysis",
+    description:
+      "The user's lottery analysis app, reading real draw history from drawanalytics.com. `states` lists available states, `games` lists that state's games, and `analyze` pulls draw history and computes frequency (hot/cold), gaps/overdue, odd-even and high-low splits, sum distribution, consecutive numbers, top co-occurring pairs, and repeat-from-previous-draw rates. " +
+      "CRITICAL HONESTY RULE: every result carries a `basis` field saying this is descriptive statistics of past draws only. Relay that. Lottery draws are independent with fixed odds — a 'cold' number is not due, a 'hot' one is not running, and no frequency weighting improves anyone's chances. Present these as interesting facts about the historical record, never as an edge, a system, or a reason to expect a particular outcome. If the user asks which numbers to play, you can run the analysis and show what history looks like, but do not claim it improves their odds, because it does not.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "One of: states, games, analyze." },
+        state: { type: "string", description: "State name, e.g. 'California' or 'Nevada'." },
+        game: { type: "string", description: "Game slug as returned by the games action." },
+        maxDraws: { type: "number", description: "How much history to pull for analyze (default 500)." },
+        top: { type: "number", description: "How many entries to return in each top/bottom list (default 10)." }
+      },
+      required: ["action"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "list_apps",
+    description:
+      "List the side apps plugged into this agent — what each one covers and whether it contributes dated signals to the cross-app view. Use this when the user asks what this agent can do, or what apps are connected.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false }
+  },
+  {
+    name: "cross_app_days",
+    description:
+      "Find days where two or more unrelated side apps each have something dated to them — for example a day the driving scheduler rates weakest that also happens to be a draw day for a game the user follows. " +
+      "This exists because unrelated apps can still land on the same calendar day. It reports CO-OCCURRENCE ONLY. Nothing here means one thing caused, predicts, or justifies the other, and it is never a recommendation. Specifically: a low-earning driving day is a fact about driving, not a reason to spend money on anything, and you must not present it as one. Report what overlapped and let the user decide what, if anything, it means to them. " +
+      "Supply `lotteryWatch` if the user has told you which draws they follow and when — including a jackpot figure only if you actually researched it. Never invent a jackpot amount.",
+    input_schema: {
+      type: "object",
+      properties: {
+        lotteryWatch: {
+          type: "array",
+          description: "Draws the user follows. Only include a jackpot if you looked it up.",
+          items: {
+            type: "object",
+            properties: {
+              date: { type: "string", description: "ISO date/time of the draw." },
+              game: { type: "string" },
+              state: { type: "string" },
+              jackpot: { type: "string", description: "Advertised jackpot, e.g. '$800M'. Omit unless researched." }
+            },
+            required: ["date"],
+            additionalProperties: false
+          }
+        },
+        weekStart: { type: "string", description: "ISO timestamp for the driving week start. Omit for the next Reno 4 AM boundary." }
+      },
+      additionalProperties: false
+    }
   }
 ];
 
@@ -1346,6 +1417,66 @@ async function executeClaudeTool(name, input = {}) {
       return { ok: true, ...(await tkJsonApi({ url: input.url, headers: input.headers, timeoutMs: input.timeoutMs })) };
     } catch (e) {
       return { ok: false, url: input.url, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "lottery_analysis") {
+    try {
+      if (input.action === "states") {
+        return { ok: true, states: await lotteryStates() };
+      }
+      if (input.action === "games") {
+        if (!input.state) return { ok: false, error: "`state` is required for the games action." };
+        return { ok: true, state: input.state, games: await lotteryGames(input.state) };
+      }
+      if (input.action === "analyze") {
+        if (!input.state || !input.game) {
+          return { ok: false, error: "`state` and `game` are both required for the analyze action." };
+        }
+        const rows = await lotteryResults(input.state, input.game, {
+          maxDraws: Math.max(10, Math.min(2000, Number(input.maxDraws) || 500))
+        });
+        const { draws, skipped } = normalizeDraws(rows);
+        if (draws.length === 0) {
+          return { ok: false, error: "No usable draw history came back for that state and game." };
+        }
+        const analysis = lotteryAnalyzeAll(draws, { top: Math.max(3, Math.min(30, Number(input.top) || 10)) });
+        return {
+          ok: true,
+          state: input.state,
+          game: input.game,
+          drawsAnalyzed: draws.length,
+          unparseableRowsSkipped: skipped || undefined,
+          newestDraw: draws[0]?.date || null,
+          oldestDraw: draws[draws.length - 1]?.date || null,
+          ...analysis
+        };
+      }
+      return { ok: false, error: `Unknown action "${input.action}". Use states, games, or analyze.` };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "list_apps") {
+    return { ok: true, apps: listApps() };
+  }
+
+  if (name === "cross_app_days") {
+    try {
+      const { signals, failures } = await collectSignals({
+        lotteryWatch: input.lotteryWatch || [],
+        scheduleOptions: input.weekStart ? { weekStart: new Date(input.weekStart) } : {}
+      });
+      const coincidences = findCoincidences(signals);
+      return {
+        ok: true,
+        signalCount: signals.length,
+        appFailures: failures.length ? failures : undefined,
+        ...coincidences
+      };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
     }
   }
 
