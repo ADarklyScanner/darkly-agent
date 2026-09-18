@@ -62,6 +62,14 @@ import { webSearch, searchStatus, availableProviders } from "./web-search.js";
 import { evaluate as calcEvaluate, describe as calcDescribe } from "./calc.js";
 import { listApps, collectSignals, findCoincidences } from "./apps/registry.js";
 import {
+  findSources, getWeather, getAlerts, getOpenMeteo, geocode as geoLookup,
+  nearbyPlaces, weatherToEvidence
+} from "./sources.js";
+import {
+  recordReading, latest as latestSensor, summary as sensorSummary,
+  history as sensorHistory, interpretSound
+} from "./sensors.js";
+import {
   listStates as lotteryStates, listGames as lotteryGames, fetchResults as lotteryResults,
   normalizeDraws, analyzeAll as lotteryAnalyzeAll, registerLotteryApp
 } from "./apps/lottery.js";
@@ -216,6 +224,12 @@ SIDE APPS. This agent hosts several standalone apps that have nothing to do with
 The one thing they share is the calendar, and cross_app_days is the only place that is allowed to matter. It reports days where two different apps each had something dated to them — nothing more. Treat those as co-occurrence, which is not causation, correlation, or advice. Report what overlapped and stop there; the user decides whether it means anything to them.
 
 One case deserves explicit care. The driving scheduler will sometimes rate a day as weak at the same time the lottery app has a draw on it. That is two facts on one date. It is NOT a reason to play, and a low-earning day must never be presented as a justification for spending money — that inference is unsupported and harmful, and you should not make it, hint at it, or agree with it if it is suggested to you. The same applies to the lottery analysis itself: hot, cold and overdue numbers are real descriptions of past draws and genuinely interesting, but draws are independent with fixed odds, so none of it improves anyone's chances. Say that plainly whenever you present it, rather than letting a detailed statistical readout imply an edge it does not have.
+
+SENSES. This agent runs on a server and has no direct perception, so everything it knows about the physical world arrives through a tool. find_data_source says WHERE a kind of fact lives — prefer an authoritative source over a search when one exists, because the National Weather Service beats a weather blog and a DOT page beats a news summary of a closure. get_conditions calls the no-key sources directly (NWS forecast and alerts, Open-Meteo, geocoding, nearby places). weather_evidence does the whole loop for driving: fetch the forecast and alerts, convert them into properly windowed evidence, and run the schedule with it applied.
+
+phone_sensors reads what the user's phone has pushed — sound level, location, light, motion, battery. Two rules here. Every reading carries an age and a freshness flag: a sound level from hours ago describes somewhere the phone has probably left, so report it as last-known with its timestamp and never as the situation now. And if nothing has been sent, say so — "the phone hasn't reported any sound readings" is the honest answer to "is it loud here", not a guess from the time of day or the venue.
+
+The catalog and these clients cover what someone thought to list, which will never be everything. When a question needs a fact nobody anticipated, that is what web_search, read_web_page and fetch_json_api are for — go and look rather than reasoning from what you remember.
 
 RESEARCH. You have three tools for finding things out: web_search (live search), read_web_page (fetch and read any public page, no API key needed), and calculate (exact arithmetic). Use them rather than answering from memory whenever the answer depends on the present — events, weather, closures, prices, whether something still exists, anything with a date on it. Your training data is old and this agent runs for months at a time; "I think X is happening" is not good enough when you can go and look.
 
@@ -914,6 +928,74 @@ const CLAUDE_TOOLS = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: "find_data_source",
+    description:
+      "Look up WHERE to get a kind of fact. Returns real endpoints by category — weather, alerts, traffic, transit, events, places, geocoding, news, air quality, aviation, seismic, reference — with coverage, how to call them, whether a key is needed and which variable, and a source-quality tier matching the evidence scale the driving engine uses. " +
+      "Use this before searching the open web for something that has an authoritative source: the National Weather Service beats a weather blog, Nevada 511 beats a news summary of a closure. " +
+      "The catalog is a starting point, not a boundary. Anything not listed is still reachable with web_search and read_web_page.",
+    input_schema: {
+      type: "object",
+      properties: {
+        category: { type: "string", description: "Filter by category, e.g. weather, traffic, transit, events, places, news." },
+        query: { type: "string", description: "Free-text search across names, coverage and what each source is good for." },
+        availableOnly: { type: "boolean", description: "Only return sources usable right now (no missing API key)." }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_conditions",
+    description:
+      "Real conditions for a place, from sources that need no API key. `weather` returns the National Weather Service hourly forecast (US) — the authoritative source, not a scrape. `alerts` returns active watches, warnings and advisories. `open_meteo` is a global fallback and useful as a second opinion. `geocode` turns a place name or address into coordinates. `places` finds amenities near a point (bars, casinos, theatres) via OpenStreetMap. " +
+      "For the driving engine specifically, use `weather` plus `alerts` and then pass the result through weather_evidence — that converts a forecast into properly time-windowed evidence records automatically, which is far better than describing the weather in prose.",
+    input_schema: {
+      type: "object",
+      properties: {
+        what: { type: "string", description: "One of: weather, alerts, open_meteo, geocode, places." },
+        lat: { type: "number", description: "Latitude. Reno is about 39.5296." },
+        lon: { type: "number", description: "Longitude. Reno is about -119.8138." },
+        query: { type: "string", description: "geocode: the place name or address to look up." },
+        amenity: { type: "string", description: "places: an OSM amenity name such as bar, restaurant, casino, theatre, nightclub." },
+        radiusMeters: { type: "number", description: "places: search radius, 50-5000 (default 800)." },
+        hours: { type: "number", description: "weather: how many hourly periods to return (default 48)." }
+      },
+      required: ["what"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "weather_evidence",
+    description:
+      "Fetch the forecast and active alerts for a point and convert them into evidence records for the Reno driving engine, then optionally run the schedule with them applied. " +
+      "This is the automated path for something nobody wants to type by hand: it produces correctly time-windowed records with official source confidence, with direction taken from the forecast (rain raises demand; snow, ice and severe alerts raise suppression and friction; strong wind lowers demand). A benign forecast correctly produces NO records, because the engine treats missing evidence as neutral and inventing one would corrupt the ranking.",
+    input_schema: {
+      type: "object",
+      properties: {
+        lat: { type: "number", description: "Latitude (Reno: 39.5296)." },
+        lon: { type: "number", description: "Longitude (Reno: -119.8138)." },
+        runSchedule: { type: "boolean", description: "Also run the 168-hour schedule with this evidence applied (default true)." },
+        extraEvidence: { type: "array", description: "Additional researched evidence records to merge in, same shape as run_reno_schedule's evidence." }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "phone_sensors",
+    description:
+      "Read sensor data the user's phone has pushed to this agent — ambient sound level, location, light, motion, battery and anything else the phone sends. `summary` lists every sensor and its latest value, `latest` reads one, `history` returns recent readings. " +
+      "CRITICAL: every reading reports its AGE and a freshness flag. A sound level from hours ago describes a place the phone has probably left — report stale readings as last-known, never as the situation now, and say when they were taken. If no readings exist, say the phone has not sent any rather than guessing at conditions.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "One of: summary, latest, history." },
+        sensor: { type: "string", description: "Sensor name for latest/history, e.g. sound, location, light, motion, battery." },
+        limit: { type: "number", description: "history: how many readings to return (default 50)." }
+      },
+      required: ["action"],
+      additionalProperties: false
+    }
   }
 ];
 
@@ -1475,6 +1557,134 @@ async function executeClaudeTool(name, input = {}) {
         appFailures: failures.length ? failures : undefined,
         ...coincidences
       };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "find_data_source") {
+    return { ok: true, ...findSources({ category: input.category, query: input.query, availableOnly: input.availableOnly }) };
+  }
+
+  if (name === "get_conditions") {
+    try {
+      switch (input.what) {
+        case "weather":
+          return { ok: true, ...(await getWeather({ lat: input.lat, lon: input.lon, hours: input.hours })) };
+        case "alerts":
+          return { ok: true, ...(await getAlerts({ lat: input.lat, lon: input.lon })) };
+        case "open_meteo":
+          return { ok: true, ...(await getOpenMeteo({ lat: input.lat, lon: input.lon })) };
+        case "geocode":
+          return { ok: true, ...(await geoLookup({ query: input.query })) };
+        case "places":
+          return {
+            ok: true,
+            ...(await nearbyPlaces({
+              lat: input.lat,
+              lon: input.lon,
+              amenity: input.amenity,
+              radiusMeters: input.radiusMeters
+            }))
+          };
+        default:
+          return { ok: false, error: `Unknown value "${input.what}". Use weather, alerts, open_meteo, geocode, or places.` };
+      }
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "weather_evidence") {
+    try {
+      const lat = Number.isFinite(input.lat) ? input.lat : 39.5296;
+      const lon = Number.isFinite(input.lon) ? input.lon : -119.8138;
+
+      // Alerts are best-effort: a forecast is still worth having if the
+      // alerts endpoint is down, and losing both because one failed would
+      // be worse than reporting the gap.
+      const forecast = await getWeather({ lat, lon });
+      let alerts = null;
+      let alertError = null;
+      try {
+        alerts = await getAlerts({ lat, lon });
+      } catch (e) {
+        alertError = String(e.message || e);
+      }
+
+      const converted = weatherToEvidence(forecast, alerts);
+      const evidence = [...converted.evidence, ...(Array.isArray(input.extraEvidence) ? input.extraEvidence : [])];
+
+      const result = {
+        ok: true,
+        location: forecast.location,
+        forecastPeriods: forecast.periods.length,
+        activeAlerts: alerts ? alerts.count : undefined,
+        alertsUnavailable: alertError || undefined,
+        evidenceGenerated: converted.count,
+        evidence,
+        note: converted.note
+      };
+
+      if (input.runSchedule !== false) {
+        const schedule = scheduleReno({ evidence });
+        lastRenoSchedule = schedule;
+        const fmt = (d) =>
+          new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/Los_Angeles",
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            hour12: true
+          }).format(d);
+
+        result.schedule = {
+          coverage: schedule.coverage,
+          weekStart: fmt(schedule.weekStart),
+          topHours: schedule.ranked.slice(0, 10).map((h) => ({
+            rank: h.rank,
+            when: fmt(h.date),
+            score: Math.round(h.score * 10) / 10,
+            confidence: h.confidenceLabel,
+            reasons: h.reasons
+          })),
+          blocks: schedule.blocks.map((b) => ({
+            rank: b.rank,
+            recommended: `${fmt(b.startDate)} - ${fmt(b.endDate)}`,
+            hours: b.hoursCount,
+            avgScore: b.extendedAvgScore
+          })),
+          bestDaysOff: schedule.bestDaysOff.map((d) =>
+            new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", weekday: "long", month: "short", day: "numeric" }).format(d.date)
+          ),
+          complianceNotes: schedule.complianceNotes.length ? schedule.complianceNotes : undefined
+        };
+      }
+
+      return result;
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  }
+
+  if (name === "phone_sensors") {
+    try {
+      if (input.action === "summary") return { ok: true, ...sensorSummary() };
+      if (input.action === "latest") {
+        if (!input.sensor) return { ok: false, error: "`sensor` is required for the latest action." };
+        const reading = latestSensor(input.sensor);
+        const enriched =
+          reading.found && input.sensor.toLowerCase() === "sound"
+            ? { ...reading, interpretation: interpretSound(reading.value) }
+            : reading;
+        return { ok: true, ...enriched };
+      }
+      if (input.action === "history") {
+        if (!input.sensor) return { ok: false, error: "`sensor` is required for the history action." };
+        return { ok: true, ...sensorHistory(input.sensor, input.limit) };
+      }
+      return { ok: false, error: `Unknown action "${input.action}". Use summary, latest, or history.` };
     } catch (e) {
       return { ok: false, error: String(e.message || e) };
     }
@@ -3555,6 +3765,46 @@ const server = http.createServer(async (req, res) => {
         alerting: autoTraderAlertStatus(),
         configDetails: autoTraderConfigDetails()
       });
+    } catch (e) {
+      return send(500, { error: String(e.message || e) });
+    }
+  }
+
+  // The phone pushes sensor readings here. Authenticated with the same
+  // passcode as everything else: an open endpoint would let anyone feed
+  // this agent a location trace, and the agent acts on what it is told.
+  if (req.method==="POST" && req.url==="/sensor-reading") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const body = await readBody();
+      const readings = Array.isArray(body.readings) ? body.readings : [body];
+      const results = [];
+      for (const r of readings.slice(0, 100)) {
+        try {
+          results.push(recordReading(r));
+        } catch (e) {
+          results.push({ ok: false, error: String(e.message || e), sensor: r?.sensor });
+        }
+      }
+      const stored = results.filter((r) => r.ok).length;
+      return send(200, { ok: true, received: readings.length, stored, results });
+    } catch (e) {
+      return send(400, { error: String(e.message || e) });
+    }
+  }
+
+  if (req.method==="GET" && req.url.startsWith("/sensors")) {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const params = new URL(req.url, "http://x").searchParams;
+      const sensor = params.get("sensor");
+      if (sensor) {
+        return send(200, {
+          latest: latestSensor(sensor),
+          history: sensorHistory(sensor, Number(params.get("limit")) || 50)
+        });
+      }
+      return send(200, sensorSummary());
     } catch (e) {
       return send(500, { error: String(e.message || e) });
     }
