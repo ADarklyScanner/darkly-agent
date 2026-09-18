@@ -4286,7 +4286,12 @@ const server = http.createServer(async (req, res) => {
   // clean, unauthenticated-safe error response instead of a dead process.
   try {
 
-  if (req.method==="GET" && req.url==="/") return send(200, htmlPage(), "text/html");
+  // A plain equality check against req.url would 404 on a harmless
+  // "/?v=2"-style cache-buster, since that's a different string than "/"
+  // even though it's the same page — found for real when exactly that
+  // happened after a deploy. Comparing pathname only tolerates any query
+  // string on the root URL, the one page a human actually types by hand.
+  if (req.method==="GET" && new URL(req.url, "http://x").pathname === "/") return send(200, htmlPage(), "text/html");
 
   // GET /health — deliberately unauthenticated: a monitor pinging this
   // has to work even when it doesn't carry AGENT_PASSCODE. Kept to the
