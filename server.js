@@ -2225,21 +2225,13 @@ async function createGmailDraft(lead) {
   }
 }
 
-function htmlPage() {
-  return `<!doctype html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Darkly Research Console</title>
-<link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#0d0d0f">
-<link rel="icon" href="/icon-192.png">
-<link rel="apple-touch-icon" href="/icon-192.png">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Darkly">
-<style>
+// Served separately (see /style.css and /app.js below) rather than inlined
+// in the page, specifically so the initial HTML response is small - a
+// carrier-side network optimizer appears to be interfering with this
+// console once the combined single-response page grew past roughly 51KB
+// (see the Lottery tab commit), and splitting it into several smaller
+// responses is the fix being tried for that.
+const APP_CSS = `
 *{box-sizing:border-box}
 body{
   font-family:system-ui,-apple-system,sans-serif;
@@ -2790,291 +2782,9 @@ tbody tr:hover{background:#17171c}
   th,td{padding:6px}
   #detail-grid{grid-template-columns:105px 1fr}
 }
-</style>
-</head>
+`;
 
-<body>
-
-<div id="login-overlay">
-  <div id="login-box">
-    <h2>Darkly Agent</h2>
-    <p>ReferralMarket research console</p>
-    <input id="pass" type="password" placeholder="Passcode" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <button id="unlock-btn" onclick="unlock()">Unlock</button>
-    <p id="unlock-status" style="min-height:16px;font-size:12px;color:#f88;margin:10px 0 0"></p>
-    <p id="script-check" style="font-size:10px;color:#555;margin:14px 0 0">Loading&hellip;</p>
-  </div>
-</div>
-
-<div id="app">
-
-  <div id="topbar">
-    <div id="topbar-main">
-      <div id="title">Darkly</div>
-      <div class="mode-badge">PRE-LAUNCH CALIBRATION</div>
-      <div id="row-count">0 rows</div>
-      <div class="spacer"></div>
-    </div>
-    <div id="nav">
-      <button id="research-tab" class="navbtn active">Research</button>
-      <button id="stocks-tab" class="navbtn">Stocks</button>
-      <button id="driver-tab" class="navbtn">Driver</button>
-      <button id="lottery-tab" class="navbtn">Lottery</button>
-      <button id="apk-tab" class="navbtn">APK</button>
-      <button id="chat-tab" class="navbtn">Chat</button>
-    </div>
-  </div>
-
-  <section id="research-view">
-
-    <div id="summary">
-      <div class="stat"><div class="n" id="s-total">0</div><div class="l">All records</div></div>
-      <div class="stat"><div class="n" id="s-channels">0</div><div class="l">Channels</div></div>
-      <div class="stat"><div class="n" id="s-prospects">0</div><div class="l">Prospects</div></div>
-      <div class="stat"><div class="n" id="s-raw">0</div><div class="l">Raw candidates</div></div>
-      <div class="stat"><div class="n" id="s-top">0</div><div class="l">Top tier</div></div>
-      <div class="stat"><div class="n" id="s-ready">0</div><div class="l">Ready</div></div>
-      <div class="stat"><div class="n" id="s-review">0</div><div class="l">Policy review</div></div>
-      <div class="stat"><div class="n" id="s-market">—</div><div class="l">Active market</div></div>
-    </div>
-
-    <div id="filters">
-
-      <input id="search" placeholder="Search name, ID, type, source, market...">
-
-      <select id="kind-filter" class="filter-small">
-        <option value="">All datasets</option>
-        <option value="channel">Channels</option>
-        <option value="prospect">Business prospects</option>
-        <option value="connectorCandidate">Connector candidates</option>
-        <option value="businessCandidate">Business candidates</option>
-      </select>
-
-      <select id="market-filter" class="filter-small">
-        <option value="">All markets</option>
-      </select>
-
-      <select id="state-filter" class="filter-small">
-        <option value="">All states</option>
-        <option value="READY">READY</option>
-        <option value="APPROVAL REQUIRED">APPROVAL REQUIRED</option>
-        <option value="POLICY REVIEW">POLICY REVIEW</option>
-        <option value="INSTITUTIONAL ONLY">INSTITUTIONAL ONLY</option>
-        <option value="BLOCKED">BLOCKED</option>
-        <option value="ELIGIBLE">ELIGIBLE</option>
-        <option value="REVIEW">REVIEW</option>
-      </select>
-
-      <select id="special-filter" class="filter-small">
-        <option value="">All records</option>
-        <option value="top">TOP TIER only</option>
-        <option value="actionable">Actionable only</option>
-        <option value="referral">Referral-system matches</option>
-        <option value="policy">Policy review/intelligence</option>
-      </select>
-
-      <select id="sort-select" class="filter-small">
-        <option value="rank">Research rank</option>
-        <option value="market">Market</option>
-        <option value="quality">Quality score</option>
-        <option value="scalability">Scalability</option>
-        <option value="latest">Newest evidence</option>
-        <option value="name">Name</option>
-      </select>
-
-      <select id="limit-select" class="filter-small">
-        <option value="50">50 rows</option>
-        <option value="100">100 rows</option>
-        <option value="250" selected>250 rows</option>
-        <option value="500">500 rows</option>
-        <option value="all">All rows</option>
-      </select>
-
-      <button id="refresh-btn">Refresh Live Data</button>
-    </div>
-
-    <div id="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th data-sort="rank">#</th>
-            <th>Dataset</th>
-            <th data-sort="market">Market</th>
-            <th>ID</th>
-            <th data-sort="name">Name</th>
-            <th>Type / Family</th>
-            <th>Connector / Category</th>
-            <th>Priority</th>
-            <th>Actionability / State</th>
-            <th>Policy</th>
-            <th>Referral Match</th>
-            <th>Top Tier</th>
-            <th data-sort="quality">Quality</th>
-            <th data-sort="scalability">Scale</th>
-            <th>Recommendation</th>
-            <th data-sort="latest">Last Evidence</th>
-          </tr>
-        </thead>
-        <tbody id="results-body"></tbody>
-      </table>
-    </div>
-
-    <div id="footer">
-      <div id="visible-info">Loading...</div>
-      <div id="load-status"></div>
-    </div>
-
-  </section>
-
-  <section id="stocks-view">
-
-    <div id="stocks-bar">
-      <span id="stocks-mode" class="mode-pill">—</span>
-      <span id="stocks-status">Not loaded</span>
-      <div class="spacer"></div>
-      <button id="stocks-refresh">Refresh</button>
-    </div>
-
-    <div id="stocks-summary"></div>
-
-    <div id="stocks-body">
-      <div class="sblock">
-        <h3>Open positions</h3>
-        <div id="positions-wrap" class="scroll-x"></div>
-      </div>
-      <div class="sblock">
-        <h3>Recent orders</h3>
-        <div id="orders-wrap" class="scroll-x"></div>
-      </div>
-      <div class="sblock">
-        <h3>Guardrails</h3>
-        <div id="guardrails-wrap"></div>
-      </div>
-    </div>
-
-  </section>
-
-  <section id="driver-view">
-
-    <div id="stocks-bar">
-      <span id="driver-version" class="mode-pill">—</span>
-      <span id="driver-status">Not loaded</span>
-      <div class="spacer"></div>
-      <button id="driver-refresh">Recalculate</button>
-    </div>
-
-    <div id="driver-evidence-note" class="evnote"></div>
-
-    <div id="stocks-body">
-      <div class="sblock">
-        <h3>Recommended driving blocks</h3>
-        <div id="driver-blocks"></div>
-      </div>
-      <div class="sblock">
-        <h3>Days off &amp; one-off hours</h3>
-        <div id="driver-daysoff"></div>
-      </div>
-      <div class="sblock">
-        <h3>Ranked hours <span class="subtle" id="driver-rank-count"></span></h3>
-        <div id="driver-hours" class="scroll-x"></div>
-      </div>
-    </div>
-
-  </section>
-
-  <section id="lottery-view">
-
-    <div id="lottery-picker-bar">
-      <select id="lottery-state-select"><option value="">Loading states…</option></select>
-      <select id="lottery-game-select" disabled><option value="">Pick a state first</option></select>
-      <button id="lottery-analyze-btn" disabled>Analyze</button>
-      <div class="spacer"></div>
-      <span id="lottery-status" class="mode-pill">—</span>
-    </div>
-
-    <div id="lottery-basis-note" class="evnote"></div>
-
-    <div id="stocks-body">
-      <div class="sblock">
-        <h3>Hot &amp; cold numbers</h3>
-        <div id="lottery-frequency" class="empty">Pick a state and game, then Analyze.</div>
-      </div>
-      <div class="sblock">
-        <h3>Longest gaps (overdue)</h3>
-        <div id="lottery-gaps"></div>
-      </div>
-      <div class="sblock">
-        <h3>Draw shape</h3>
-        <div id="lottery-shape"></div>
-      </div>
-      <div class="sblock">
-        <h3>Top co-occurring pairs</h3>
-        <div id="lottery-pairs" class="scroll-x"></div>
-      </div>
-      <div class="sblock">
-        <h3>Repeat-from-previous-draw</h3>
-        <div id="lottery-repeats"></div>
-      </div>
-    </div>
-
-  </section>
-
-  <section id="apk-view">
-
-    <div id="stocks-bar">
-      <span id="apk-status" class="mode-pill">No APK uploaded yet</span>
-      <div class="spacer"></div>
-    </div>
-
-    <div id="apk-upload-bar">
-      <input type="file" id="apk-file-input" accept=".apk,application/vnd.android.package-archive">
-      <button id="apk-upload-btn">Diagnose APK</button>
-    </div>
-
-    <div id="apk-evidence-note" class="evnote">The file's bytes are read as data only — nothing in an uploaded APK is ever executed. A verified signature proves the file is genuinely signed by whoever holds that certificate's private key; it does NOT prove that certificate belongs to who it claims to be (a self-signed debug build verifies exactly as cleanly as a real release key). This also does not recompute Android's full content digest end to end.</div>
-
-    <div id="stocks-body">
-      <div class="sblock">
-        <h3>Classification</h3>
-        <div id="apk-classification"></div>
-      </div>
-      <div class="sblock">
-        <h3>Signing</h3>
-        <div id="apk-signing" class="scroll-x"></div>
-      </div>
-      <div class="sblock">
-        <h3>Findings &amp; integrity</h3>
-        <div id="apk-findings"></div>
-      </div>
-    </div>
-
-  </section>
-
-  <section id="chat-view">
-    <div id="chat-header">
-      <div id="chat-slot-tabs"></div>
-      <button id="new-chat-btn" title="Clear this chat's history">New chat</button>
-    </div>
-    <div id="chat"></div>
-    <div id="inputbar">
-      <textarea id="message" placeholder="Ask Darkly about the live ReferralMarket data..."></textarea>
-      <button id="send-btn">Send</button>
-    </div>
-  </section>
-
-</div>
-
-<div id="modal">
-  <div id="modal-box">
-    <div id="modal-head">
-      <div id="modal-name">Record</div>
-      <button id="close-modal">Close</button>
-    </div>
-    <div id="detail-grid"></div>
-  </div>
-</div>
-
-<script>
+const APP_JS = `
 try {
   var __sc = document.getElementById("script-check");
   if (__sc) __sc.textContent = "Script check: OK (page JS is running). Build tag: LOGIN-DIAG-1";
@@ -4252,7 +3962,307 @@ async function sendMsg(){
 }
 
 setInterval(loadResearch,180000);
-</script>
+`;
+
+function htmlPage() {
+  return `<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Darkly Research Console</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0d0d0f">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Darkly">
+<link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+
+<div id="login-overlay">
+  <div id="login-box">
+    <h2>Darkly Agent</h2>
+    <p>ReferralMarket research console</p>
+    <input id="pass" type="password" placeholder="Passcode" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button id="unlock-btn" onclick="unlock()">Unlock</button>
+    <p id="unlock-status" style="min-height:16px;font-size:12px;color:#f88;margin:10px 0 0"></p>
+    <p id="script-check" style="font-size:10px;color:#555;margin:14px 0 0">Loading&hellip;</p>
+  </div>
+</div>
+
+<div id="app">
+
+  <div id="topbar">
+    <div id="topbar-main">
+      <div id="title">Darkly</div>
+      <div class="mode-badge">PRE-LAUNCH CALIBRATION</div>
+      <div id="row-count">0 rows</div>
+      <div class="spacer"></div>
+    </div>
+    <div id="nav">
+      <button id="research-tab" class="navbtn active">Research</button>
+      <button id="stocks-tab" class="navbtn">Stocks</button>
+      <button id="driver-tab" class="navbtn">Driver</button>
+      <button id="lottery-tab" class="navbtn">Lottery</button>
+      <button id="apk-tab" class="navbtn">APK</button>
+      <button id="chat-tab" class="navbtn">Chat</button>
+    </div>
+  </div>
+
+  <section id="research-view">
+
+    <div id="summary">
+      <div class="stat"><div class="n" id="s-total">0</div><div class="l">All records</div></div>
+      <div class="stat"><div class="n" id="s-channels">0</div><div class="l">Channels</div></div>
+      <div class="stat"><div class="n" id="s-prospects">0</div><div class="l">Prospects</div></div>
+      <div class="stat"><div class="n" id="s-raw">0</div><div class="l">Raw candidates</div></div>
+      <div class="stat"><div class="n" id="s-top">0</div><div class="l">Top tier</div></div>
+      <div class="stat"><div class="n" id="s-ready">0</div><div class="l">Ready</div></div>
+      <div class="stat"><div class="n" id="s-review">0</div><div class="l">Policy review</div></div>
+      <div class="stat"><div class="n" id="s-market">—</div><div class="l">Active market</div></div>
+    </div>
+
+    <div id="filters">
+
+      <input id="search" placeholder="Search name, ID, type, source, market...">
+
+      <select id="kind-filter" class="filter-small">
+        <option value="">All datasets</option>
+        <option value="channel">Channels</option>
+        <option value="prospect">Business prospects</option>
+        <option value="connectorCandidate">Connector candidates</option>
+        <option value="businessCandidate">Business candidates</option>
+      </select>
+
+      <select id="market-filter" class="filter-small">
+        <option value="">All markets</option>
+      </select>
+
+      <select id="state-filter" class="filter-small">
+        <option value="">All states</option>
+        <option value="READY">READY</option>
+        <option value="APPROVAL REQUIRED">APPROVAL REQUIRED</option>
+        <option value="POLICY REVIEW">POLICY REVIEW</option>
+        <option value="INSTITUTIONAL ONLY">INSTITUTIONAL ONLY</option>
+        <option value="BLOCKED">BLOCKED</option>
+        <option value="ELIGIBLE">ELIGIBLE</option>
+        <option value="REVIEW">REVIEW</option>
+      </select>
+
+      <select id="special-filter" class="filter-small">
+        <option value="">All records</option>
+        <option value="top">TOP TIER only</option>
+        <option value="actionable">Actionable only</option>
+        <option value="referral">Referral-system matches</option>
+        <option value="policy">Policy review/intelligence</option>
+      </select>
+
+      <select id="sort-select" class="filter-small">
+        <option value="rank">Research rank</option>
+        <option value="market">Market</option>
+        <option value="quality">Quality score</option>
+        <option value="scalability">Scalability</option>
+        <option value="latest">Newest evidence</option>
+        <option value="name">Name</option>
+      </select>
+
+      <select id="limit-select" class="filter-small">
+        <option value="50">50 rows</option>
+        <option value="100">100 rows</option>
+        <option value="250" selected>250 rows</option>
+        <option value="500">500 rows</option>
+        <option value="all">All rows</option>
+      </select>
+
+      <button id="refresh-btn">Refresh Live Data</button>
+    </div>
+
+    <div id="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th data-sort="rank">#</th>
+            <th>Dataset</th>
+            <th data-sort="market">Market</th>
+            <th>ID</th>
+            <th data-sort="name">Name</th>
+            <th>Type / Family</th>
+            <th>Connector / Category</th>
+            <th>Priority</th>
+            <th>Actionability / State</th>
+            <th>Policy</th>
+            <th>Referral Match</th>
+            <th>Top Tier</th>
+            <th data-sort="quality">Quality</th>
+            <th data-sort="scalability">Scale</th>
+            <th>Recommendation</th>
+            <th data-sort="latest">Last Evidence</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+
+    <div id="footer">
+      <div id="visible-info">Loading...</div>
+      <div id="load-status"></div>
+    </div>
+
+  </section>
+
+  <section id="stocks-view">
+
+    <div id="stocks-bar">
+      <span id="stocks-mode" class="mode-pill">—</span>
+      <span id="stocks-status">Not loaded</span>
+      <div class="spacer"></div>
+      <button id="stocks-refresh">Refresh</button>
+    </div>
+
+    <div id="stocks-summary"></div>
+
+    <div id="stocks-body">
+      <div class="sblock">
+        <h3>Open positions</h3>
+        <div id="positions-wrap" class="scroll-x"></div>
+      </div>
+      <div class="sblock">
+        <h3>Recent orders</h3>
+        <div id="orders-wrap" class="scroll-x"></div>
+      </div>
+      <div class="sblock">
+        <h3>Guardrails</h3>
+        <div id="guardrails-wrap"></div>
+      </div>
+    </div>
+
+  </section>
+
+  <section id="driver-view">
+
+    <div id="stocks-bar">
+      <span id="driver-version" class="mode-pill">—</span>
+      <span id="driver-status">Not loaded</span>
+      <div class="spacer"></div>
+      <button id="driver-refresh">Recalculate</button>
+    </div>
+
+    <div id="driver-evidence-note" class="evnote"></div>
+
+    <div id="stocks-body">
+      <div class="sblock">
+        <h3>Recommended driving blocks</h3>
+        <div id="driver-blocks"></div>
+      </div>
+      <div class="sblock">
+        <h3>Days off &amp; one-off hours</h3>
+        <div id="driver-daysoff"></div>
+      </div>
+      <div class="sblock">
+        <h3>Ranked hours <span class="subtle" id="driver-rank-count"></span></h3>
+        <div id="driver-hours" class="scroll-x"></div>
+      </div>
+    </div>
+
+  </section>
+
+  <section id="lottery-view">
+
+    <div id="lottery-picker-bar">
+      <select id="lottery-state-select"><option value="">Loading states…</option></select>
+      <select id="lottery-game-select" disabled><option value="">Pick a state first</option></select>
+      <button id="lottery-analyze-btn" disabled>Analyze</button>
+      <div class="spacer"></div>
+      <span id="lottery-status" class="mode-pill">—</span>
+    </div>
+
+    <div id="lottery-basis-note" class="evnote"></div>
+
+    <div id="stocks-body">
+      <div class="sblock">
+        <h3>Hot &amp; cold numbers</h3>
+        <div id="lottery-frequency" class="empty">Pick a state and game, then Analyze.</div>
+      </div>
+      <div class="sblock">
+        <h3>Longest gaps (overdue)</h3>
+        <div id="lottery-gaps"></div>
+      </div>
+      <div class="sblock">
+        <h3>Draw shape</h3>
+        <div id="lottery-shape"></div>
+      </div>
+      <div class="sblock">
+        <h3>Top co-occurring pairs</h3>
+        <div id="lottery-pairs" class="scroll-x"></div>
+      </div>
+      <div class="sblock">
+        <h3>Repeat-from-previous-draw</h3>
+        <div id="lottery-repeats"></div>
+      </div>
+    </div>
+
+  </section>
+
+  <section id="apk-view">
+
+    <div id="stocks-bar">
+      <span id="apk-status" class="mode-pill">No APK uploaded yet</span>
+      <div class="spacer"></div>
+    </div>
+
+    <div id="apk-upload-bar">
+      <input type="file" id="apk-file-input" accept=".apk,application/vnd.android.package-archive">
+      <button id="apk-upload-btn">Diagnose APK</button>
+    </div>
+
+    <div id="apk-evidence-note" class="evnote">The file's bytes are read as data only — nothing in an uploaded APK is ever executed. A verified signature proves the file is genuinely signed by whoever holds that certificate's private key; it does NOT prove that certificate belongs to who it claims to be (a self-signed debug build verifies exactly as cleanly as a real release key). This also does not recompute Android's full content digest end to end.</div>
+
+    <div id="stocks-body">
+      <div class="sblock">
+        <h3>Classification</h3>
+        <div id="apk-classification"></div>
+      </div>
+      <div class="sblock">
+        <h3>Signing</h3>
+        <div id="apk-signing" class="scroll-x"></div>
+      </div>
+      <div class="sblock">
+        <h3>Findings &amp; integrity</h3>
+        <div id="apk-findings"></div>
+      </div>
+    </div>
+
+  </section>
+
+  <section id="chat-view">
+    <div id="chat-header">
+      <div id="chat-slot-tabs"></div>
+      <button id="new-chat-btn" title="Clear this chat's history">New chat</button>
+    </div>
+    <div id="chat"></div>
+    <div id="inputbar">
+      <textarea id="message" placeholder="Ask Darkly about the live ReferralMarket data..."></textarea>
+      <button id="send-btn">Send</button>
+    </div>
+  </section>
+
+</div>
+
+<div id="modal">
+  <div id="modal-box">
+    <div id="modal-head">
+      <div id="modal-name">Record</div>
+      <button id="close-modal">Close</button>
+    </div>
+    <div id="detail-grid"></div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
 
 </body>
 </html>`;
@@ -4387,6 +4397,16 @@ const server = http.createServer(async (req, res) => {
   if (req.method==="GET" && new URL(req.url, "http://x").pathname === "/icon-512.png") {
     if (!ICON_512) return send(404, { ok:false, error:"icon not found" });
     return sendRaw(200, ICON_512, "image/png");
+  }
+  // The page's CSS and JS, split out of the "/" response into their own
+  // requests (see the APP_CSS/APP_JS comment above htmlPage() for why).
+  // Unauthenticated like the root page itself - the browser has to be
+  // able to load these before a passcode is ever entered.
+  if (req.method==="GET" && new URL(req.url, "http://x").pathname === "/style.css") {
+    return sendRaw(200, APP_CSS, "text/css");
+  }
+  if (req.method==="GET" && new URL(req.url, "http://x").pathname === "/app.js") {
+    return sendRaw(200, APP_JS, "application/javascript");
   }
   // A minimal pass-through service worker. Chrome's fuller "install app"
   // flow (vs. a plain bookmark) has historically wanted a registered
