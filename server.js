@@ -100,6 +100,19 @@ const PORT = process.env.PORT || 3000;
 // single upload can force the server to buffer in memory at once.
 const MAX_APK_UPLOAD_BYTES = 200 * 1024 * 1024;
 
+// PWA icons, read once at startup rather than per-request. Missing files
+// should never crash the whole server - they just mean /icon-*.png 404s
+// and "Add to Home Screen" falls back to a plain bookmark, same as today.
+function loadIcon(filename) {
+  try {
+    return fs.readFileSync(path.join(process.cwd(), "assets", filename));
+  } catch (e) {
+    return null;
+  }
+}
+const ICON_192 = loadIcon("icon-192.png");
+const ICON_512 = loadIcon("icon-512.png");
+
 /* ------------------------------------------------------------------ *
  * Process-level crash safety net.
  *
@@ -2218,6 +2231,14 @@ function htmlPage() {
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Darkly Research Console</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0d0d0f">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Darkly">
 <style>
 *{box-sizing:border-box}
 body{
@@ -3060,6 +3081,14 @@ try {
 } catch (e) {
   // if even this throws, there is nothing more client-side diagnostics can do
 }
+
+// Registering this is what lets Android's "Add to Home Screen" install a
+// real standalone app (its own icon, no address bar) instead of a plain
+// bookmark shortcut. It's a no-op if it fails - the site still works
+// exactly the same in a regular browser tab either way.
+try {
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
+} catch (e) {}
 
 let passcode="";
 
@@ -4255,6 +4284,13 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(status, {"Content-Type": type||"application/json","Cache-Control":"no-store"});
     res.end(type==="text/html" ? body : JSON.stringify(body));
   }
+  // For anything that isn't JSON or HTML text - a binary icon, or a raw
+  // JS/text file that must NOT be run through JSON.stringify (send()
+  // above always stringifies unless the type is exactly "text/html").
+  function sendRaw(status, body, type) {
+    res.writeHead(status, {"Content-Type": type,"Cache-Control":"no-store"});
+    res.end(body);
+  }
   function auth() {
     return Boolean(process.env.AGENT_PASSCODE) &&
       safeEqual(req.headers["x-agent-passcode"] || "", process.env.AGENT_PASSCODE);
@@ -4320,6 +4356,52 @@ const server = http.createServer(async (req, res) => {
   // happened after a deploy. Comparing pathname only tolerates any query
   // string on the root URL, the one page a human actually types by hand.
   if (req.method==="GET" && new URL(req.url, "http://x").pathname === "/") return send(200, htmlPage(), "text/html");
+
+  // PWA install support — a Web App Manifest plus real icons is what turns
+  // Android Chrome's "Add to Home Screen" from a plain bookmark shortcut
+  // into a proper installable app (its own icon, standalone window, no
+  // address bar). Unauthenticated like the root page itself: the browser
+  // has to be able to fetch these before the passcode is ever entered.
+  if (req.method==="GET" && new URL(req.url, "http://x").pathname === "/manifest.json") {
+    return send(200, {
+      name: "Darkly Agent",
+      short_name: "Darkly",
+      description: "ReferralMarket research console",
+      start_url: "/",
+      scope: "/",
+      display: "standalone",
+      background_color: "#0d0d0f",
+      theme_color: "#0d0d0f",
+      icons: [
+        { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+        { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+        { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "maskable" },
+        { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" }
+      ]
+    }, "application/manifest+json");
+  }
+  if (req.method==="GET" && new URL(req.url, "http://x").pathname === "/icon-192.png") {
+    if (!ICON_192) return send(404, { ok:false, error:"icon not found" });
+    return sendRaw(200, ICON_192, "image/png");
+  }
+  if (req.method==="GET" && new URL(req.url, "http://x").pathname === "/icon-512.png") {
+    if (!ICON_512) return send(404, { ok:false, error:"icon not found" });
+    return sendRaw(200, ICON_512, "image/png");
+  }
+  // A minimal pass-through service worker. Chrome's fuller "install app"
+  // flow (vs. a plain bookmark) has historically wanted a registered
+  // service worker before it will offer to install. This one does no
+  // caching at all on purpose — every fetch just goes straight to the
+  // network — because this console lives and dies on live data, and this
+  // session already found and fixed one real bug caused by stale cached
+  // content; adding a caching layer here would risk exactly that again.
+  if (req.method==="GET" && new URL(req.url, "http://x").pathname === "/sw.js") {
+    return sendRaw(
+      200,
+      "self.addEventListener('fetch', (e) => { e.respondWith(fetch(e.request)); });\n",
+      "application/javascript"
+    );
+  }
 
   // GET /health — deliberately unauthenticated: a monitor pinging this
   // has to work even when it doesn't carry AGENT_PASSCODE. Kept to the
