@@ -24,6 +24,7 @@ const SUPABASE_URL =
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 
 const TRADE_LOG_FILE = "darkly-trades.json";
+const GUARDRAILS_FILE = "darkly-guardrails.json";
 
 export const LIMITS = {
   maxTradesPerDay: Number(process.env.MAX_TRADES_PER_DAY || 10),
@@ -31,6 +32,78 @@ export const LIMITS = {
   maxDailyLossUsd: Number(process.env.MAX_DAILY_LOSS_USD || 500),
   cooldownMinutes: Number(process.env.TRADE_COOLDOWN_MINUTES || 5)
 };
+
+// Sane bounds for a hand-typed edit from the console's Guardrails panel —
+// wide enough to never second-guess a deliberate choice, tight enough to
+// catch a stray keystroke (a missing digit, a pasted negative sign) before
+// it reaches the autotrader's risk checks.
+const GUARDRAIL_BOUNDS = {
+  maxTradesPerDay: { min: 0, max: 500 },
+  maxPositionUsd: { min: 1, max: 1000000 },
+  maxDailyLossUsd: { min: 1, max: 1000000 },
+  cooldownMinutes: { min: 0, max: 1440 }
+};
+
+// A previously-saved edit from the Guardrails panel overrides the env-var
+// defaults above, so a change made in the console (rather than in Railway's
+// env vars) survives a process restart — but only for as long as the state
+// directory is durable (see state.js / stateInfo()); on an ephemeral
+// filesystem this file, and therefore the override, is lost on every
+// deploy and LIMITS silently falls back to the env-var defaults.
+(function applySavedGuardrails() {
+  const saved = readState(GUARDRAILS_FILE, null);
+  if (!saved || typeof saved !== "object") return;
+  for (const key of Object.keys(LIMITS)) {
+    const bounds = GUARDRAIL_BOUNDS[key];
+    const n = Number(saved[key]);
+    if (Number.isFinite(n) && n >= bounds.min && n <= bounds.max) {
+      LIMITS[key] = n;
+    }
+  }
+})();
+
+/**
+ * Validates and applies an in-place edit to LIMITS from the console's
+ * Guardrails panel, persists it via state.js, and returns the resulting
+ * limits. Mutates LIMITS' properties rather than reassigning the export,
+ * so every module that already imported LIMITS (the autotrader's risk
+ * checks included) sees the new values immediately — same live-binding
+ * mechanism relied on everywhere else this object is used.
+ */
+export function updateGuardrails(patch) {
+  if (!patch || typeof patch !== "object") {
+    const err = new Error("Expected an object of guardrail values.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const next = {};
+  const problems = [];
+  for (const key of Object.keys(LIMITS)) {
+    if (!(key in patch)) continue;
+    const bounds = GUARDRAIL_BOUNDS[key];
+    const n = Number(patch[key]);
+    if (!Number.isFinite(n)) {
+      problems.push(`${key} must be a number.`);
+    } else if (n < bounds.min || n > bounds.max) {
+      problems.push(`${key} must be between ${bounds.min} and ${bounds.max}.`);
+    } else {
+      next[key] = n;
+    }
+  }
+  if (problems.length > 0) {
+    const err = new Error(problems.join(" "));
+    err.statusCode = 400;
+    throw err;
+  }
+  if (Object.keys(next).length === 0) {
+    const err = new Error("No recognized guardrail fields in the request.");
+    err.statusCode = 400;
+    throw err;
+  }
+  Object.assign(LIMITS, next);
+  writeState(GUARDRAILS_FILE, { ...LIMITS });
+  return { ...LIMITS };
+}
 
 export function isLiveEndpoint() {
   return !/paper-api\.alpaca\.markets/.test(ALPACA_BASE);

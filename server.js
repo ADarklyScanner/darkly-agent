@@ -28,7 +28,8 @@ import {
   reconcileFills,
   tradeLogInfo,
   isLiveEndpoint,
-  LIMITS as TRADING_LIMITS
+  LIMITS as TRADING_LIMITS,
+  updateGuardrails
 } from "./trading.js";
 import {
   runOnce as autoTradeRunOnce,
@@ -2234,12 +2235,56 @@ async function createGmailDraft(lead) {
 // (see the Lottery tab commit), and splitting it into several smaller
 // responses is the fix being tried for that.
 const APP_CSS = `
+:root{
+  /* --- Brand palette (exact values) --- */
+  --midnight:#280137;       /* base surface color for panels/cards */
+  --bright-purple:#bf40bf;  /* accents & controls */
+  --mid-purple:#74207b;     /* accents & controls */
+  --silver:#c0c0c0;         /* secondary text / details */
+  --gold:#ffd700;           /* highlights / premium / important */
+
+  /* --- Surface ramp, derived from Midnight Purple --- */
+  --bg-0:#16011e;      /* page canvas, darkest */
+  --bg-1:#22012f;      /* bars / toolbars / headers */
+  --bg-2:#280137;      /* panels & cards (= literal Midnight Purple) */
+  --bg-3:#480e54;      /* raised / hover surface */
+  --bg-4:#5c1665;      /* active / pressed surface */
+  --bg-recessed:#0f0015; /* sunken wells: text inputs, disabled controls */
+
+  /* --- Borders --- */
+  --border:#52125c;
+  --border-soft:#3f0a4b;
+  --border-bright:#9d32a0;
+
+  /* --- Text --- */
+  --text:#e3e3e3;          /* primary text */
+  --text-dim:#c0c0c0;      /* secondary text/details = Silver */
+  --text-faint:#7c6a82;    /* tertiary/muted, purple-gray */
+
+  /* --- Accent (brand controls: buttons, active tabs, chips) --- */
+  --accent-bg:#4e1059;
+  --accent-text:#d581d5;
+  --accent-text-strong:#de9cde;
+  --accent-border:#922d96;
+
+  /* --- Gold highlight family (premium / important) --- */
+  --gold-bg:#292200;
+
+  /* --- Semantic signal colors: red/green mean ONLY "look closer" --- */
+  --positive:#68e59c;
+  --positive-bg:#112519;
+  --positive-border:#1f452f;
+  --negative:#ff6e6e;
+  --negative-bg:#2e1414;
+  --negative-border:#522323;
+}
+
 *{box-sizing:border-box}
 body{
   font-family:system-ui,-apple-system,sans-serif;
   margin:0;
-  background:#0d0d0f;
-  color:#e8e8eb;
+  background:var(--bg-0);
+  color:var(--text);
   height:100vh;
   height:100dvh;
   overflow:hidden;
@@ -2248,27 +2293,27 @@ button,input,select,textarea{font:inherit}
 button{cursor:pointer}
 
 #login-overlay{
-  position:fixed;inset:0;background:#0d0d0f;
+  position:fixed;inset:0;background:var(--bg-0);
   display:flex;align-items:center;justify-content:center;
   z-index:1000;
 }
 #login-box{
   width:min(340px,88vw);
-  background:#151519;
-  border:1px solid #303038;
+  background:var(--bg-2);
+  border:1px solid var(--border);
   border-radius:18px;
   padding:28px;
 }
 #login-box h2{margin:0 0 8px}
-#login-box p{color:#888;margin:0 0 18px;font-size:13px}
+#login-box p{color:var(--text-dim);margin:0 0 18px;font-size:13px}
 #pass{
   width:100%;padding:12px;
-  border-radius:10px;border:1px solid #34343d;
-  background:#1b1b20;color:#fff;margin-bottom:10px;
+  border-radius:10px;border:1px solid var(--border-soft);
+  background:var(--bg-recessed);color:var(--text);margin-bottom:10px;
 }
 #unlock-btn{
   width:100%;padding:12px;border:0;border-radius:10px;
-  background:#243d31;color:#68e59c;
+  background:var(--accent-bg);color:var(--accent-text);
 }
 
 #app{
@@ -2285,8 +2330,8 @@ button{cursor:pointer}
   flex-direction:column;
   gap:8px;
   padding:8px 12px;
-  border-bottom:1px solid #26262d;
-  background:#141417;
+  border-bottom:1px solid var(--border-soft);
+  background:var(--bg-1);
 }
 #topbar-main{
   display:flex;
@@ -2311,11 +2356,11 @@ button{cursor:pointer}
 }
 .navselect{
   flex:0 0 auto;
-  border:1px solid #33333a;
+  border:1px solid var(--border);
   border-radius:9px;
   padding:7px 10px;
-  background:#243d31;
-  color:#6ce5a0;
+  background:var(--accent-bg);
+  color:var(--accent-text);
   font-size:13px;
   font-weight:600;
   max-width:46vw;
@@ -2332,26 +2377,26 @@ button{cursor:pointer}
   font-size:10px;
   padding:4px 7px;
   border-radius:999px;
-  background:#2a1c34;
-  color:#dc8cff;
+  background:var(--accent-bg);
+  color:var(--accent-text-strong);
   white-space:nowrap;
 }
 #row-count{
-  font-size:11px;color:#999;
+  font-size:11px;color:var(--text-dim);
   white-space:nowrap;
 }
 .spacer{flex:1}
 .navbtn{
-  border:1px solid #33333a;
+  border:1px solid var(--border-soft);
   border-radius:9px;
   padding:7px 10px;
-  background:#1b1b1f;
-  color:#aaa;
+  background:var(--bg-recessed);
+  color:var(--text-dim);
 }
 .navbtn.active{
-  background:#243d31;
-  color:#6ce5a0;
-  border-color:#315743;
+  background:var(--accent-bg);
+  color:var(--accent-text);
+  border-color:var(--accent-border);
 }
 
 #research-view{
@@ -2366,32 +2411,32 @@ button{cursor:pointer}
   gap:7px;
   overflow-x:auto;
   padding:8px 10px;
-  border-bottom:1px solid #232329;
+  border-bottom:1px solid var(--border-soft);
   scrollbar-width:none;
 }
 .stat{
   flex:0 0 auto;
   padding:7px 10px;
   border-radius:10px;
-  background:#17171b;
-  border:1px solid #292930;
+  background:var(--bg-2);
+  border:1px solid var(--border-soft);
   min-width:90px;
 }
 .stat .n{font-weight:700;font-size:16px}
-.stat .l{color:#777;font-size:9px;text-transform:uppercase;letter-spacing:.5px}
+.stat .l{color:var(--text-dim);font-size:9px;text-transform:uppercase;letter-spacing:.5px}
 
 #filters{
   display:flex;
   gap:7px;
   flex-wrap:wrap;
   padding:8px 10px;
-  border-bottom:1px solid #24242a;
-  background:#111114;
+  border-bottom:1px solid var(--border-soft);
+  background:var(--bg-1);
 }
 #filters input,#filters select{
-  background:#19191e;
-  border:1px solid #303038;
-  color:#ddd;
+  background:var(--bg-recessed);
+  border:1px solid var(--border-soft);
+  color:var(--text);
   border-radius:8px;
   padding:8px;
   min-height:38px;
@@ -2401,7 +2446,7 @@ button{cursor:pointer}
 #refresh-btn{
   border:0;border-radius:8px;
   padding:8px 12px;
-  background:#243d31;color:#68e59c;
+  background:var(--accent-bg);color:var(--accent-text);
 }
 
 #table-wrap{
@@ -2420,39 +2465,39 @@ th{
   position:sticky;
   top:0;
   z-index:4;
-  background:#17171b;
-  color:#8b8b96;
+  background:var(--bg-1);
+  color:var(--text-dim);
   text-align:left;
   padding:8px 7px;
-  border-bottom:1px solid #33333a;
+  border-bottom:1px solid var(--border);
   white-space:nowrap;
   cursor:pointer;
 }
 td{
   padding:7px;
-  border-bottom:1px solid #202026;
+  border-bottom:1px solid var(--border-soft);
   vertical-align:top;
 }
 tbody tr{cursor:pointer}
-tbody tr:hover{background:#17171c}
+tbody tr:hover{background:var(--bg-3)}
 .rank{
-  color:#777;
+  color:var(--text-dim);
   text-align:right;
   width:45px;
 }
 .name{
   font-weight:650;
-  color:#eee;
+  color:var(--text);
   max-width:250px;
 }
-.id{color:#777;white-space:nowrap}
+.id{color:var(--text-dim);white-space:nowrap}
 .market{white-space:nowrap}
-.muted{color:#777}
-.good{color:#69df9d}
-.warn{color:#f0c35a}
-.bad{color:#ff7878}
+.muted{color:var(--text-dim)}
+.good{color:var(--positive)}
+.warn{color:var(--gold)}
+.bad{color:var(--negative)}
 .top-tier{
-  color:#e999ff;
+  color:var(--accent-text-strong);
   font-weight:700;
 }
 .kind-pill{
@@ -2461,19 +2506,19 @@ tbody tr:hover{background:#17171c}
   font-size:9px;
   white-space:nowrap;
 }
-.kind-channel{background:#20382d;color:#65df98}
-.kind-prospect{background:#253247;color:#83b7ff}
-.kind-connectorCandidate{background:#403421;color:#efc56d}
-.kind-businessCandidate{background:#382444;color:#db91f0}
+.kind-channel{background:var(--bg-3);color:var(--text-dim)}
+.kind-prospect{background:var(--accent-bg);color:var(--accent-text)}
+.kind-connectorCandidate{background:var(--gold-bg);color:var(--gold)}
+.kind-businessCandidate{background:var(--bg-4);color:var(--accent-text-strong)}
 
 #footer{
   display:flex;
   align-items:center;
   gap:10px;
   padding:7px 10px;
-  border-top:1px solid #292930;
+  border-top:1px solid var(--border-soft);
   font-size:11px;
-  color:#777;
+  color:var(--text-dim);
 }
 #visible-info{flex:1}
 
@@ -2489,16 +2534,16 @@ tbody tr:hover{background:#17171c}
 }
 #chat-slot-tabs{display:flex;gap:6px;flex-wrap:wrap}
 .slot-tab{
-  border:1px solid #33333b;border-radius:9px;
-  background:#18181c;color:#888;padding:6px 12px;
+  border:1px solid var(--border-soft);border-radius:9px;
+  background:var(--bg-2);color:var(--text-dim);padding:6px 12px;
   font-size:12px;
 }
 .slot-tab.active{
-  background:#203126;color:#68e59c;border-color:#2c4a3a;
+  background:var(--accent-bg);color:var(--accent-text);border-color:var(--accent-border);
 }
 #new-chat-btn{
-  border:1px solid #33333b;border-radius:9px;
-  background:#18181c;color:#999;padding:6px 12px;
+  border:1px solid var(--border-soft);border-radius:9px;
+  background:var(--bg-2);color:var(--text-dim);padding:6px 12px;
   font-size:12px;
   flex-shrink:0;
 }
@@ -2522,34 +2567,34 @@ tbody tr:hover{background:#17171c}
   line-height:1.45;
   font-size:14px;
 }
-.me{align-self:flex-end;background:#203126;max-width:88%}
+.me{align-self:flex-end;background:var(--accent-bg);max-width:88%}
 .bot{
-  align-self:flex-start;background:#18181c;
-  border:1px solid #292930;max-width:96%
+  align-self:flex-start;background:var(--bg-2);
+  border:1px solid var(--border-soft);max-width:96%
 }
 .copy-btn{
   align-self:flex-end;
-  border:1px solid #33333b;
+  border:1px solid var(--border-soft);
   border-radius:7px;
-  background:#1b1b1f;
-  color:#888;
+  background:var(--bg-recessed);
+  color:var(--text-dim);
   font-size:10px;
   padding:3px 9px;
 }
-.copy-btn:disabled{color:#68e59c;border-color:#2c4a3a}
+.copy-btn:disabled{color:var(--positive);border-color:var(--positive-border)}
 #inputbar{
   display:flex;gap:8px;padding:10px;
-  border-top:1px solid #292930;
+  border-top:1px solid var(--border-soft);
 }
 #message{
   flex:1;min-height:52px;max-height:150px;
-  border-radius:11px;border:1px solid #33333b;
-  background:#19191e;color:#eee;padding:10px;
+  border-radius:11px;border:1px solid var(--border-soft);
+  background:var(--bg-recessed);color:var(--text);padding:10px;
   resize:vertical;
 }
 #send-btn{
   border:0;border-radius:11px;
-  background:#243d31;color:#68e59c;padding:10px 16px;
+  background:var(--accent-bg);color:var(--accent-text);padding:10px 16px;
 }
 
 #modal{
@@ -2564,8 +2609,8 @@ tbody tr:hover{background:#17171c}
   width:min(760px,94vw);
   max-height:88vh;
   overflow:auto;
-  background:#151519;
-  border:1px solid #323239;
+  background:var(--bg-2);
+  border:1px solid var(--border);
   border-radius:15px;
   padding:18px;
 }
@@ -2575,18 +2620,18 @@ tbody tr:hover{background:#17171c}
 }
 #modal-name{font-size:18px;font-weight:700;flex:1}
 #close-modal{
-  border:1px solid #33333a;background:#202025;color:#aaa;
+  border:1px solid var(--border-soft);background:var(--bg-1);color:var(--text-dim);
   border-radius:8px;padding:6px 10px;
 }
 #detail-grid{
   display:grid;
   grid-template-columns:150px 1fr;
   gap:1px;
-  background:#25252b;
-  border:1px solid #292930;
+  background:var(--border);
+  border:1px solid var(--border-soft);
 }
-.dk,.dv{padding:7px;background:#151519}
-.dk{color:#777;font-size:10px;text-transform:uppercase}
+.dk,.dv{padding:7px;background:var(--bg-2)}
+.dk{color:var(--text-dim);font-size:10px;text-transform:uppercase}
 .dv{font-size:12px;white-space:pre-wrap;word-break:break-word}
 
 /* Lottery and APK were added after this rule was written and were never
@@ -2606,158 +2651,158 @@ tbody tr:hover{background:#17171c}
 #driver-refresh{
   border:0;border-radius:8px;
   padding:7px 12px;
-  background:#243d31;color:#68e59c;
+  background:var(--accent-bg);color:var(--accent-text);
 }
 .evnote{
   font-size:11px;
   line-height:1.5;
   padding:8px 10px;
-  border-bottom:1px solid #232329;
+  border-bottom:1px solid var(--border-soft);
 }
-.ev-warn{background:#2b2617;color:#e0c97a}
-.ev-ok{background:#182a20;color:#7fd3a3}
-.subtle{color:#777;font-size:11px;line-height:1.5}
+.ev-warn{background:var(--gold-bg);color:var(--gold)}
+.ev-ok{background:var(--positive-bg);color:var(--positive)}
+.subtle{color:var(--text-dim);font-size:11px;line-height:1.5}
 .blk{
-  border:1px solid #24242a;
+  border:1px solid var(--border-soft);
   border-radius:10px;
   padding:10px;
   margin-bottom:8px;
-  background:#131316;
+  background:var(--bg-2);
 }
 .blk-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
-.blk-rank{font-weight:700;color:#68e59c;font-size:13px}
-.blk-score{font-size:11px;color:#999;margin-left:auto}
-.blk-when{font-size:13px;color:#ddd}
-.blk-ext{font-size:11px;color:#e0c97a;margin-top:2px}
-.blk-hours{font-size:11px;color:#777;margin-top:3px}
+.blk-rank{font-weight:700;color:var(--gold);font-size:13px}
+.blk-score{font-size:11px;color:var(--text-dim);margin-left:auto}
+.blk-when{font-size:13px;color:var(--text)}
+.blk-ext{font-size:11px;color:var(--gold);margin-top:2px}
+.blk-hours{font-size:11px;color:var(--text-dim);margin-top:3px}
 .blk-total{
-  font-size:12px;color:#68e59c;font-weight:600;
+  font-size:12px;color:var(--gold);font-weight:600;
   padding:8px 0 4px;
 }
 .compliance{
-  font-size:11px;color:#e0c97a;line-height:1.5;
-  background:#2b2617;border-radius:8px;padding:8px;margin:6px 0;
+  font-size:11px;color:var(--gold);line-height:1.5;
+  background:var(--gold-bg);border-radius:8px;padding:8px;margin:6px 0;
 }
-.dayoff{font-size:13px;color:#ddd;margin-bottom:6px}
-.dayoff-rank{color:#68e59c;font-weight:600;font-size:11px}
+.dayoff{font-size:13px;color:var(--text);margin-bottom:6px}
+.dayoff-rank{color:var(--gold);font-weight:600;font-size:11px}
 .oneoff-head{
   margin:14px 0 6px;font-size:11px;text-transform:uppercase;
-  letter-spacing:.5px;color:#777;font-weight:600;
+  letter-spacing:.5px;color:var(--text-dim);font-weight:600;
 }
-.oneoff{margin-bottom:8px;font-size:12px;color:#ddd}
+.oneoff{margin-bottom:8px;font-size:12px;color:var(--text)}
 .dtable{width:100%;border-collapse:collapse;font-size:11px}
 .dtable th{
-  text-align:left;padding:6px 8px;color:#777;font-weight:600;
-  border-bottom:1px solid #24242a;position:sticky;top:0;background:#0e0e11;
+  text-align:left;padding:6px 8px;color:var(--text-dim);font-weight:600;
+  border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-1);
   text-transform:uppercase;letter-spacing:.4px;font-size:10px;
 }
-.dtable td{padding:6px 8px;border-bottom:1px solid #1b1b20;color:#ccc;vertical-align:top}
+.dtable td{padding:6px 8px;border-bottom:1px solid var(--border-soft);color:var(--text);vertical-align:top}
 .dtable td.num{text-align:right;font-variant-numeric:tabular-nums}
-.dtable td.reasons{color:#888;min-width:200px;font-variant-numeric:tabular-nums}
+.dtable td.reasons{color:var(--text-dim);min-width:200px;font-variant-numeric:tabular-nums}
 .dtable td.conf{font-size:10px;text-transform:uppercase;letter-spacing:.3px}
-.dtable td.conf-high{color:#68e59c}
-.dtable td.conf-medium{color:#e0c97a}
-.dtable td.conf-low{color:#777}
-.dtable td.plat{color:#9aa;font-size:10px;white-space:nowrap}
+.dtable td.conf-high{color:var(--positive)}
+.dtable td.conf-medium{color:var(--gold)}
+.dtable td.conf-low{color:var(--text-faint)}
+.dtable td.plat{color:var(--text-dim);font-size:10px;white-space:nowrap}
 #stocks-bar{
   display:flex;
   align-items:center;
   gap:8px;
   padding:8px 10px;
-  border-bottom:1px solid #24242a;
-  background:#111114;
+  border-bottom:1px solid var(--border-soft);
+  background:var(--bg-1);
   font-size:12px;
-  color:#999;
+  color:var(--text-dim);
 }
 .mode-pill{
   font-size:10px;
   font-weight:700;
   padding:4px 8px;
   border-radius:999px;
-  background:#243d31;
-  color:#68e59c;
+  background:var(--positive-bg);
+  color:var(--positive);
   white-space:nowrap;
 }
-.mode-pill.live{background:#3d2424;color:#ff8c8c}
+.mode-pill.live{background:var(--negative-bg);color:var(--negative)}
 #stocks-refresh{
   border:0;border-radius:8px;
   padding:7px 12px;
-  background:#243d31;color:#68e59c;
+  background:var(--accent-bg);color:var(--accent-text);
 }
 #apk-upload-bar{
   display:flex;
   align-items:center;
   gap:8px;
   padding:10px;
-  border-bottom:1px solid #24242a;
+  border-bottom:1px solid var(--border-soft);
 }
 #apk-upload-bar input[type=file]{
   flex:1;
-  color:#999;
+  color:var(--text-dim);
   font-size:12px;
 }
 #apk-upload-btn{
   border:0;border-radius:8px;
   padding:7px 12px;
-  background:#243d31;color:#68e59c;
+  background:var(--accent-bg);color:var(--accent-text);
   white-space:nowrap;
 }
 #apk-upload-btn:disabled{
-  background:#1a1a1e;color:#555;
+  background:var(--bg-recessed);color:var(--text-faint);
 }
 #lottery-picker-bar{
   display:flex;
   align-items:center;
   gap:8px;
   padding:10px;
-  border-bottom:1px solid #24242a;
+  border-bottom:1px solid var(--border-soft);
   flex-wrap:wrap;
 }
 #lottery-picker-bar select{
-  background:#16161a;color:#ddd;border:1px solid #2a2a30;border-radius:6px;
+  background:var(--bg-recessed);color:var(--text);border:1px solid var(--border-soft);border-radius:6px;
   padding:6px 8px;font-size:12px;max-width:220px;
 }
 #lottery-analyze-btn{
   border:0;border-radius:8px;
   padding:7px 12px;
-  background:#243d31;color:#68e59c;
+  background:var(--accent-bg);color:var(--accent-text);
   white-space:nowrap;
 }
 #lottery-analyze-btn:disabled{
-  background:#1a1a1e;color:#555;
+  background:var(--bg-recessed);color:var(--text-faint);
 }
 .numchip{
   display:inline-flex;align-items:center;justify-content:center;
   min-width:26px;height:26px;padding:0 6px;margin:2px;
-  border-radius:6px;background:#1d2a24;color:#68e59c;
+  border-radius:6px;background:var(--gold-bg);color:var(--gold);
   font-size:12px;font-variant-numeric:tabular-nums;
 }
-.numchip.cold{background:#241d2a;color:#b79aff}
+.numchip.cold{background:var(--accent-bg);color:var(--accent-text)}
 .pickset{
-  background:#15151a;
-  border:1px solid #26262d;
+  background:var(--bg-2);
+  border:1px solid var(--border-soft);
   border-radius:12px;
   padding:12px;
   margin-bottom:10px;
 }
-.pickset-name{font-weight:700;font-size:13px;color:#eee}
-.pickset-desc{font-size:11px;color:#888;margin-top:2px;margin-bottom:10px}
+.pickset-name{font-weight:700;font-size:13px;color:var(--text)}
+.pickset-desc{font-size:11px;color:var(--text-dim);margin-top:2px;margin-bottom:10px}
 .balls{display:flex;flex-wrap:wrap;gap:8px}
 .ball{
   width:36px;height:36px;flex:0 0 auto;
   border-radius:50%;
   display:flex;align-items:center;justify-content:center;
-  background:#243d31;color:#6ce5a0;
+  background:var(--gold-bg);color:var(--gold);
   font-weight:700;font-size:14px;
   font-variant-numeric:tabular-nums;
 }
-.ball.bonus{background:#3d2424;color:#ff8c8c}
+.ball.bonus{background:var(--accent-bg);color:var(--accent-text)}
 #stocks-summary{
   display:flex;
   gap:7px;
   overflow-x:auto;
   padding:8px 10px;
-  border-bottom:1px solid #232329;
+  border-bottom:1px solid var(--border-soft);
   scrollbar-width:none;
 }
 #stocks-body{
@@ -2771,12 +2816,12 @@ tbody tr:hover{background:#17171c}
   font-size:11px;
   text-transform:uppercase;
   letter-spacing:.5px;
-  color:#777;
+  color:var(--text-dim);
   font-weight:600;
 }
 .card{
-  background:#15151a;
-  border:1px solid #26262d;
+  background:var(--bg-2);
+  border:1px solid var(--border-soft);
   border-radius:11px;
   padding:10px 12px;
   margin-bottom:7px;
@@ -2787,7 +2832,7 @@ tbody tr:hover{background:#17171c}
   gap:8px;
 }
 .card-sym{font-weight:700;font-size:15px}
-.card-qty{color:#777;font-size:11px}
+.card-qty{color:var(--text-dim);font-size:11px}
 .card-val{margin-left:auto;font-weight:600;font-size:14px;white-space:nowrap}
 .card-bot{
   display:flex;
@@ -2795,7 +2840,7 @@ tbody tr:hover{background:#17171c}
   gap:8px;
   margin-top:5px;
   font-size:11px;
-  color:#888;
+  color:var(--text-dim);
 }
 .card-pnl{margin-left:auto;font-weight:600;font-size:12px;white-space:nowrap}
 .pill{
@@ -2805,27 +2850,69 @@ tbody tr:hover{background:#17171c}
   letter-spacing:.4px;
   padding:3px 7px;
   border-radius:999px;
-  background:#22222a;
-  color:#999;
+  background:var(--bg-3);
+  color:var(--text-dim);
 }
-.pill.buy{background:#1d3328;color:#68e59c}
-.pill.sell{background:#33201f;color:#ff9a9a}
-.pos{color:#68e59c}
-.neg{color:#ff8c8c}
-.empty{color:#666;font-size:12px;padding:6px 0}
+.pill.buy{background:var(--positive-bg);color:var(--positive)}
+.pill.sell{background:var(--negative-bg);color:var(--negative)}
+.pos{color:var(--positive)}
+.neg{color:var(--negative)}
+.empty{
+  color:var(--text-dim);
+  font-size:12px;
+  padding:14px 12px;
+  text-align:center;
+  font-style:italic;
+  border:1px dashed var(--border);
+  border-radius:10px;
+}
 #guardrails-wrap{
   display:grid;
   grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
   gap:7px;
 }
 .guard{
-  background:#17171b;
-  border:1px solid #292930;
+  background:var(--bg-2);
+  border:1px solid var(--border-soft);
   border-radius:10px;
   padding:8px 10px;
 }
 .guard .n{font-weight:700;font-size:15px}
-.guard .l{color:#777;font-size:9px;text-transform:uppercase;letter-spacing:.5px}
+.guard .l{color:var(--text-dim);font-size:9px;text-transform:uppercase;letter-spacing:.5px}
+.guard.editable{border-color:var(--accent-border)}
+.guard .n input{
+  width:100%;
+  background:var(--bg-recessed);
+  border:1px solid var(--border-soft);
+  border-radius:6px;
+  color:var(--text);
+  font:inherit;
+  font-weight:700;
+  font-size:14px;
+  padding:4px 6px;
+  margin-bottom:2px;
+}
+.guard .n input:focus{border-color:var(--accent-border);outline:none}
+.guard-save-row{
+  grid-column:1/-1;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-top:2px;
+}
+#guardrails-save{
+  border:0;border-radius:8px;
+  padding:7px 14px;
+  background:var(--accent-bg);color:var(--accent-text);
+  font-size:12px;font-weight:600;
+}
+#guardrails-save:disabled{background:var(--bg-recessed);color:var(--text-faint)}
+#guardrails-status{font-size:11px;color:var(--text-dim)}
+#guardrails-status.ok{color:var(--positive)}
+#guardrails-status.err{color:var(--negative)}
+.guardrails-note{
+  font-size:10px;color:var(--text-faint);margin-top:6px;line-height:1.5;
+}
 
 @media(min-width:700px){
   #topbar{flex-direction:row;align-items:center}
@@ -2946,12 +3033,12 @@ async function unlock(){
   const p=raw.trim();
 
   if(!p){
-    statusEl.style.color="#f88";
+    statusEl.style.color="var(--negative)";
     statusEl.textContent="The passcode field looks empty to the page (read length "+raw.length+"). Tap directly inside the box, type it manually, then tap Unlock again.";
     return;
   }
 
-  statusEl.style.color="#8ab4f8";
+  statusEl.style.color="var(--accent-text-strong)";
   statusEl.textContent="Checking…";
 
   passcode=p;
@@ -2959,7 +3046,7 @@ async function unlock(){
   const ok = await switchSlot("chat");
 
   if (!ok) {
-    statusEl.style.color="#f88";
+    statusEl.style.color="var(--negative)";
     statusEl.textContent="Wrong passcode.";
     return;
   }
@@ -3430,7 +3517,7 @@ function renderStocks(data){
         +'<div class="card-bot">'
         +'<span>'+esc(o.status)
         +(o.filledAvgPrice?' @ '+money(o.filledAvgPrice):"")+'</span>'
-        +'<span class="card-pnl" style="color:#777;font-weight:400">'
+        +'<span class="card-pnl" style="color:var(--text-dim);font-weight:400">'
         +(o.submittedAt?new Date(o.submittedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):"—")
         +'</span>'
         +'</div>'
@@ -3438,14 +3525,78 @@ function renderStocks(data){
       ).join("");
 
   const g=data.guardrails||{};
-  byId("guardrails-wrap").innerHTML=[
-    ["Max trades/day",g.maxTradesPerDay],
-    ["Max position",money(g.maxPositionUsd)],
-    ["Max daily loss",money(g.maxDailyLossUsd)],
-    ["Cooldown",(g.cooldownMinutes??"—")+" min"]
-  ].map(([label,value])=>
-    '<div class="guard"><div class="n">'+value+'</div><div class="l">'+label+'</div></div>'
-  ).join("");
+  byId("guardrails-wrap").innerHTML=GUARD_FIELDS.map(([key,label,attrs])=>
+    '<div class="guard editable">'
+    +'<div class="n"><input type="number" data-key="'+key+'" value="'+esc(g[key]??"")+'" '
+    +'step="'+attrs.step+'" min="'+attrs.min+'" max="'+attrs.max+'"></div>'
+    +'<div class="l">'+label+'</div>'
+    +'</div>'
+  ).join("")
+  +'<div class="guard-save-row"><button id="guardrails-save">Save changes</button><span id="guardrails-status"></span></div>';
+  byId("guardrails-save").onclick=saveGuardrails;
+
+  const storage=data.guardrailsStorage;
+  const noteEl=byId("guardrails-note");
+  if(storage){
+    if(storage.durable===false){
+      noteEl.textContent="This deployment's storage is ephemeral — saved changes here will be lost on the next deploy or restart.";
+      noteEl.style.color="var(--gold)";
+    }else{
+      noteEl.textContent="Saved changes are stored durably and survive a deploy or restart.";
+      noteEl.style.color="";
+    }
+  }else{
+    noteEl.textContent="";
+  }
+}
+
+// One row per key in trading.js's LIMITS, in the order the tiles render.
+// {step,min,max} mirror trading.js's GUARDRAIL_BOUNDS so a bad value is
+// rejected by the browser's own number input before it ever reaches the
+// server's validation (which remains the real, authoritative check).
+const GUARD_FIELDS=[
+  ["maxTradesPerDay","Max trades/day",{step:"1",min:"0",max:"500"}],
+  ["maxPositionUsd","Max position ($)",{step:"1",min:"1",max:"1000000"}],
+  ["maxDailyLossUsd","Max daily loss ($)",{step:"1",min:"1",max:"1000000"}],
+  ["cooldownMinutes","Cooldown (min)",{step:"1",min:"0",max:"1440"}]
+];
+
+async function saveGuardrails(){
+  const btn=byId("guardrails-save");
+  const statusEl=byId("guardrails-status");
+  const payload={};
+  for(const [key] of GUARD_FIELDS){
+    const input=document.querySelector('#guardrails-wrap input[data-key="'+key+'"]');
+    if(input) payload[key]=Number(input.value);
+  }
+
+  btn.disabled=true;
+  statusEl.className="";
+  statusEl.textContent="Saving…";
+
+  try{
+    const r=await fetch("/guardrails-update",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","X-Agent-Passcode":passcode},
+      body:JSON.stringify(payload)
+    });
+    const json=await r.json();
+    if(r.status===401){
+      byId("login-overlay").style.display="flex";
+      statusEl.textContent="";
+      return;
+    }
+    if(!r.ok||!json.ok) throw new Error(json.error||"Save failed.");
+
+    statusEl.className="ok";
+    statusEl.textContent="Saved.";
+    setTimeout(()=>{ if(statusEl.textContent==="Saved.") statusEl.textContent=""; },3000);
+  }catch(e){
+    statusEl.className="err";
+    statusEl.textContent=String(e.message||e);
+  }finally{
+    btn.disabled=false;
+  }
 }
 
 function esc(value){
@@ -4178,7 +4329,7 @@ function htmlPage() {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Darkly Research Console</title>
 <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#0d0d0f">
+<meta name="theme-color" content="#16011e">
 <link rel="icon" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <meta name="mobile-web-app-capable" content="yes">
@@ -4196,8 +4347,8 @@ function htmlPage() {
     <p>ReferralMarket research console</p>
     <input id="pass" type="password" placeholder="Passcode" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
     <button id="unlock-btn" onclick="unlock()">Unlock</button>
-    <p id="unlock-status" style="min-height:16px;font-size:12px;color:#f88;margin:10px 0 0"></p>
-    <p id="script-check" style="font-size:10px;color:#555;margin:14px 0 0">Loading&hellip;</p>
+    <p id="unlock-status" style="min-height:16px;font-size:12px;color:var(--negative);margin:10px 0 0"></p>
+    <p id="script-check" style="font-size:10px;color:var(--text-faint);margin:14px 0 0">Loading&hellip;</p>
   </div>
 </div>
 
@@ -4346,6 +4497,7 @@ function htmlPage() {
       <div class="sblock">
         <h3>Guardrails</h3>
         <div id="guardrails-wrap"></div>
+        <div id="guardrails-note" class="guardrails-note"></div>
       </div>
     </div>
 
@@ -4603,8 +4755,8 @@ const server = http.createServer(async (req, res) => {
       start_url: "/",
       scope: "/",
       display: "standalone",
-      background_color: "#0d0d0f",
-      theme_color: "#0d0d0f",
+      background_color: "#16011e",
+      theme_color: "#16011e",
       icons: [
         { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
         { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
@@ -5029,6 +5181,7 @@ const server = http.createServer(async (req, res) => {
       return send(200, {
         mode: isLiveEndpoint() ? "LIVE" : "PAPER",
         guardrails: TRADING_LIMITS,
+        guardrailsStorage: stateInfo(),
         account,
         positions,
         orders,
@@ -5036,6 +5189,17 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (e) {
       return send(500, { error: String(e.message || e) });
+    }
+  }
+
+  if (req.method==="POST" && req.url==="/guardrails-update") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const body = await readBody();
+      const guardrails = updateGuardrails(body);
+      return send(200, { ok: true, guardrails, storage: stateInfo() });
+    } catch (e) {
+      return send(e.statusCode || 500, { ok: false, error: String(e.message || e) });
     }
   }
 
