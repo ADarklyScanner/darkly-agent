@@ -2690,7 +2690,15 @@ tbody tr:hover{background:var(--bg-3)}
   letter-spacing:.5px;color:var(--text-dim);font-weight:600;
 }
 .oneoff{margin-bottom:8px;font-size:12px;color:var(--text)}
-.dtable{width:100%;border-collapse:collapse;font-size:11px}
+/* .scroll-x wraps every .dtable (driver hours, lottery pairs, market scan,
+   apk signing) so a table wider than its column can scroll in place instead
+   of pushing the page wide. It was applied in markup but never actually
+   given overflow behavior, and the generic table{} rule below sets a
+   min-width:1500px meant only for the Research tab's own wide table — with
+   no override, that min-width leaks into every .dtable too, so on a narrow
+   screen these tables were forced to 1500px and had nowhere to scroll. */
+.scroll-x{overflow-x:auto}
+.dtable{width:100%;min-width:0;border-collapse:collapse;font-size:11px}
 .dtable th{
   text-align:left;padding:6px 8px;color:var(--text-dim);font-weight:600;
   border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-1);
@@ -2704,6 +2712,14 @@ tbody tr:hover{background:var(--bg-3)}
 .dtable td.conf-medium{color:var(--gold)}
 .dtable td.conf-low{color:var(--text-faint)}
 .dtable td.plat{color:var(--text-dim);font-size:10px;white-space:nowrap}
+.dtable td.action-buy{color:var(--positive);font-weight:600}
+.dtable td.action-sell{color:var(--negative);font-weight:600}
+.dtable td.action-hold{color:var(--text-faint)}
+.held-tag{
+  display:inline-block;margin-left:5px;padding:1px 5px;border-radius:5px;
+  background:var(--accent-bg);color:var(--accent-text);font-size:9px;
+  text-transform:uppercase;letter-spacing:.3px;vertical-align:middle;
+}
 #stocks-bar{
   display:flex;
   align-items:center;
@@ -3503,6 +3519,8 @@ function renderStocks(data){
         +'</div>'
       ).join("");
 
+  renderMarketScan(data.lastRun, positions);
+
   const orders=data.orders||[];
   byId("orders-wrap").innerHTML=orders.length===0
     ? '<div class="empty">No recent orders.</div>'
@@ -3547,6 +3565,61 @@ function renderStocks(data){
     }
   }else{
     noteEl.textContent="";
+  }
+}
+
+// What the last autotrader cycle actually saw, not just what it did about
+// it — previously the only way to answer "what did the last pull find?"
+// was to ask the chat bot, even though the run data itself (run.signals,
+// run.rejected) was already being recorded and served from /trading-data's
+// lastRun. positions is passed in so a symbol currently held can be
+// flagged even though it's unioned into the scan regardless of its rank.
+function renderMarketScan(run, positions){
+  const metaEl=byId("scan-meta");
+  const tableEl=byId("scan-table-wrap");
+  const rejectedEl=byId("scan-rejected");
+
+  if(!run){
+    metaEl.textContent="";
+    tableEl.innerHTML='<div class="empty">No scan recorded yet.</div>';
+    rejectedEl.textContent="";
+    return;
+  }
+
+  const held=new Set((positions||[]).map(p=>p.symbol));
+  const when=run.startedAt?new Date(run.startedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):"unknown time";
+  const outcome=run.skipped
+    ? esc(run.skipped)
+    : (run.executed?"Executed — orders were placed for anything decided below.":"Signal-only — decisions were recorded but nothing was sent to Alpaca.");
+  metaEl.textContent="Last scan "+when+" ("+esc(run.mode||"—")+"). "+outcome;
+
+  const signals=(run.signals||[]).slice().sort((a,b)=>Number(b.score||0)-Number(a.score||0));
+
+  tableEl.innerHTML=signals.length===0
+    ? '<div class="empty">The last scan recorded no signals — usually a data or history problem rather than a quiet market; see the note above.</div>'
+    : '<table class="dtable"><thead><tr>'
+      +'<th>Symbol</th><th>Action</th><th>Score</th><th>Confidence</th><th>Reason</th>'
+      +'</tr></thead><tbody>'
+      +signals.map(s=>{
+        const action=String(s.action||"hold").toLowerCase();
+        const confClass=s.confidence>=70?"conf-high":s.confidence>=40?"conf-medium":"conf-low";
+        return '<tr>'
+          +'<td>'+esc(s.symbol)+(held.has(s.symbol)?'<span class="held-tag">held</span>':'')+'</td>'
+          +'<td class="action-'+esc(action)+'">'+esc(action)+'</td>'
+          +'<td class="num">'+(s.score??"—")+'</td>'
+          +'<td class="conf '+confClass+'">'+(s.confidence??"—")+'%</td>'
+          +'<td class="reasons">'+esc(s.reason||"")+'</td>'
+          +'</tr>';
+      }).join("")
+      +'</tbody></table>';
+
+  const rejected=run.rejected||[];
+  if(rejected.length===0){
+    rejectedEl.textContent="";
+  }else{
+    const shown=rejected.slice(0,6).map(r=>esc(r.symbol)+" ("+esc(r.reason||r.stage||"rejected")+")").join(", ");
+    const more=rejected.length>6?" +"+(rejected.length-6)+" more":"";
+    rejectedEl.textContent="Considered but not traded: "+shown+more;
   }
 }
 
@@ -4491,6 +4564,12 @@ function htmlPage() {
         <div id="positions-wrap" class="scroll-x"></div>
       </div>
       <div class="sblock">
+        <h3>Active market (last scan)</h3>
+        <div id="scan-meta" class="subtle"></div>
+        <div id="scan-table-wrap" class="scroll-x"></div>
+        <div id="scan-rejected" class="subtle"></div>
+      </div>
+      <div class="sblock">
         <h3>Recent orders</h3>
         <div id="orders-wrap" class="scroll-x"></div>
       </div>
@@ -5178,6 +5257,15 @@ const server = http.createServer(async (req, res) => {
         getPositions(),
         getOrders({ limit: 25 })
       ]);
+      // The Stocks tab previously only ever showed the RESULT of the
+      // autotrader's last cycle (positions/orders) and never what it
+      // actually saw — the scanned universe's signals, and what it
+      // considered but rejected and why. That's the one thing here that
+      // can't be reconstructed from Alpaca's own account state, so it
+      // rides along with everything else this tab already needs in one
+      // request rather than a second round trip.
+      const [lastRun] = autoTraderRuns(1);
+
       return send(200, {
         mode: isLiveEndpoint() ? "LIVE" : "PAPER",
         guardrails: TRADING_LIMITS,
@@ -5185,7 +5273,8 @@ const server = http.createServer(async (req, res) => {
         account,
         positions,
         orders,
-        tradeLog: getTradeLog(25)
+        tradeLog: getTradeLog(25),
+        lastRun: lastRun || null
       });
     } catch (e) {
       return send(500, { error: String(e.message || e) });
