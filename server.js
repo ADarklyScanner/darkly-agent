@@ -938,15 +938,15 @@ const CLAUDE_TOOLS = [
   {
     name: "lottery_analysis",
     description:
-      "The user's lottery analysis app, reading real draw history from drawanalytics.com. `states` lists available states, `games` lists that state's games, and `analyze` pulls draw history and computes frequency (hot/cold), gaps/overdue, odd-even and high-low splits, sum distribution, consecutive numbers, top co-occurring pairs, and repeat-from-previous-draw rates. " +
-      "CRITICAL HONESTY RULE: every result carries a `basis` field saying this is descriptive statistics of past draws only. Relay that. Lottery draws are independent with fixed odds — a 'cold' number is not due, a 'hot' one is not running, and no frequency weighting improves anyone's chances. Present these as interesting facts about the historical record, never as an edge, a system, or a reason to expect a particular outcome. If the user asks which numbers to play, you can run the analysis and show what history looks like, but do not claim it improves their odds, because it does not.",
+      "The user's lottery analysis app, reading real draw history from drawanalytics.com. `states` lists available states, `games` lists that state's games, and `analyze` pulls draw history and computes frequency (hot/cold), gaps/overdue, odd-even and high-low splits, sum distribution, consecutive numbers, top co-occurring pairs, repeat-from-previous-draw rates, AND three generated number sets (`picks.sets`) — weighted-random picks over the full history, one weighted toward raw frequency, one blending frequency with cross-era consistency, one blending frequency with overdue/gap. " +
+      "CRITICAL HONESTY RULE: every result carries a `basis` field (and `picks.basis` for the generated sets) saying this is descriptive statistics of past draws only, reweighted and randomly drawn — not a prediction. Relay that. Lottery draws are independent with fixed odds — a 'cold' number is not due, a 'hot' one is not running, no frequency weighting improves anyone's chances, and a reweighted random pick has exactly the same odds of matching the next draw as any other combination. Present the generated sets as a fun, historically-informed way to pick numbers, never as an edge, a system, or a reason to expect a particular outcome. If the user asks which numbers to play, you can run the analysis and share the generated sets, but do not claim they improve the odds, because they do not.",
     input_schema: {
       type: "object",
       properties: {
         action: { type: "string", description: "One of: states, games, analyze." },
         state: { type: "string", description: "State name, e.g. 'California' or 'Nevada'." },
         game: { type: "string", description: "Game slug as returned by the games action." },
-        maxDraws: { type: "number", description: "How much history to pull for analyze (default 500)." },
+        maxDraws: { type: "number", description: "How much history to pull for analyze (default 3000, so the picks are based on deep history)." },
         top: { type: "number", description: "How many entries to return in each top/bottom list (default 10)." }
       },
       required: ["action"],
@@ -1638,7 +1638,7 @@ async function executeClaudeTool(name, input = {}, slot = null) {
           return { ok: false, error: "`state` and `game` are both required for the analyze action." };
         }
         const rows = await lotteryResults(input.state, input.game, {
-          maxDraws: Math.max(10, Math.min(2000, Number(input.maxDraws) || 500))
+          maxDraws: Math.max(10, Math.min(3000, Number(input.maxDraws) || 3000))
         });
         const { draws, skipped } = normalizeDraws(rows);
         if (draws.length === 0) {
@@ -2297,6 +2297,7 @@ button{cursor:pointer}
 #nav{
   display:flex;
   gap:6px;
+  align-items:center;
   overflow-x:auto;
   scrollbar-width:none;
 }
@@ -2304,6 +2305,20 @@ button{cursor:pointer}
   flex:0 0 auto;
   white-space:nowrap;
   text-align:center;
+}
+#chat-tab{
+  margin-left:auto;
+}
+.navselect{
+  flex:0 0 auto;
+  border:1px solid #33333a;
+  border-radius:9px;
+  padding:7px 10px;
+  background:#243d31;
+  color:#6ce5a0;
+  font-size:13px;
+  font-weight:600;
+  max-width:46vw;
 }
 #title{
   font-weight:700;
@@ -2703,6 +2718,25 @@ tbody tr:hover{background:#17171c}
   font-size:12px;font-variant-numeric:tabular-nums;
 }
 .numchip.cold{background:#241d2a;color:#b79aff}
+.pickset{
+  background:#15151a;
+  border:1px solid #26262d;
+  border-radius:12px;
+  padding:12px;
+  margin-bottom:10px;
+}
+.pickset-name{font-weight:700;font-size:13px;color:#eee}
+.pickset-desc{font-size:11px;color:#888;margin-top:2px;margin-bottom:10px}
+.balls{display:flex;flex-wrap:wrap;gap:8px}
+.ball{
+  width:36px;height:36px;flex:0 0 auto;
+  border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  background:#243d31;color:#6ce5a0;
+  font-weight:700;font-size:14px;
+  font-variant-numeric:tabular-nums;
+}
+.ball.bonus{background:#3d2424;color:#ff8c8c}
 #stocks-summary{
   display:flex;
   gap:7px;
@@ -2959,7 +2993,7 @@ async function switchSlot(slot){
     if (messages.length===0) {
       addMsg(
         slot==="chat"
-          ? "Darkly Agent ready. Live market data is available in the Research view."
+          ? "Darkly Agent ready. Live market data is available in the Market Scan view."
           : "Side chat "+slot+" — not saved, cleared on restart. Good for throwing around ideas.",
         "bot"
       );
@@ -2995,11 +3029,7 @@ async function newChat(){
   addMsg("New conversation started.","bot");
 }
 
-byId("research-tab").onclick=()=>showView("research");
-byId("stocks-tab").onclick=()=>showView("stocks");
-byId("driver-tab").onclick=()=>showView("driver");
-byId("lottery-tab").onclick=()=>showView("lottery");
-byId("apk-tab").onclick=()=>showView("apk");
+byId("view-select").onchange=()=>showView(byId("view-select").value);
 byId("chat-tab").onclick=()=>showView("chat");
 byId("driver-refresh").onclick=()=>loadDriver(true);
 byId("stocks-refresh").onclick=()=>loadStocks();
@@ -3019,12 +3049,8 @@ function showView(which){
   byId("apk-view").style.display=which==="apk"?"flex":"none";
   byId("chat-view").style.display=which==="chat"?"flex":"none";
 
-  byId("research-tab").classList.toggle("active",which==="research");
-  byId("stocks-tab").classList.toggle("active",which==="stocks");
-  byId("driver-tab").classList.toggle("active",which==="driver");
-  byId("lottery-tab").classList.toggle("active",which==="lottery");
-  byId("apk-tab").classList.toggle("active",which==="apk");
   byId("chat-tab").classList.toggle("active",which==="chat");
+  if(which!=="chat")byId("view-select").value=which;
 
   if(which==="chat")byId("message").focus();
   if(which==="stocks"&&!stocksLoaded)loadStocks();
@@ -3192,7 +3218,7 @@ async function runLotteryAnalysis(){
   const state=byId("lottery-state-select").value;
   const game=byId("lottery-game-select").value;
   if(!state||!game)return;
-  byId("lottery-status").textContent="Analyzing...";
+  byId("lottery-status").textContent="Analyzing full history… deep archives can take up to 30s.";
   byId("lottery-analyze-btn").disabled=true;
   try{
     const res=await fetch(
@@ -3219,8 +3245,32 @@ function numChips(list,cls){
 // itself returns — this app's whole point is that hot/cold/overdue numbers
 // describe history and do not predict anything, and that has to be said
 // here, not just in the chat tool's own honesty framing.
+// Renders the 3 generated sets as number "balls". A weighted RANDOM draw
+// over reweighted history is still exactly as unable to predict the next
+// draw as an unweighted one, which is why every set here is followed by
+// the same basis line the rest of this tab leads with.
+function renderLotteryPicks(picks){
+  if(!picks||!picks.sets||!picks.sets.length){
+    byId("lottery-picks").innerHTML="<div class='empty'>Not enough draw history to generate picks.</div>";
+    return;
+  }
+  byId("lottery-picks").innerHTML=
+    picks.sets.map(s=>
+      "<div class='pickset'>"
+      +"<div class='pickset-name'>"+esc(s.label)+"</div>"
+      +"<div class='pickset-desc'>"+esc(s.description)+"</div>"
+      +"<div class='balls'>"
+      +s.main.map(n=>"<span class='ball'>"+n+"</span>").join("")
+      +(s.bonus!=null?"<span class='ball bonus'>"+s.bonus+"</span>":"")
+      +"</div></div>"
+    ).join("")
+    +"<div class='subtle' style='margin-top:2px'>"+esc(picks.basis||"")+"</div>";
+}
+
 function renderLottery(d){
   byId("lottery-basis-note").innerHTML="<b>Descriptive only, not predictive:</b> "+esc(d.basis||"");
+
+  renderLotteryPicks(d.picks);
 
   byId("lottery-frequency").innerHTML=
     "<div class='subtle' style='margin-bottom:4px'>Hottest (most frequent)</div>"
@@ -4087,11 +4137,13 @@ function htmlPage() {
       <div class="spacer"></div>
     </div>
     <div id="nav">
-      <button id="research-tab" class="navbtn active">Research</button>
-      <button id="stocks-tab" class="navbtn">Stocks</button>
-      <button id="driver-tab" class="navbtn">Driver</button>
-      <button id="lottery-tab" class="navbtn">Lottery</button>
-      <button id="apk-tab" class="navbtn">APK</button>
+      <select id="view-select" class="navselect" aria-label="Switch section">
+        <option value="research">Market Scan</option>
+        <option value="stocks">Stocks</option>
+        <option value="driver">Driver</option>
+        <option value="lottery">Lottery</option>
+        <option value="apk">APK</option>
+      </select>
       <button id="chat-tab" class="navbtn">Chat</button>
     </div>
   </div>
@@ -4266,6 +4318,10 @@ function htmlPage() {
     <div id="lottery-basis-note" class="evnote"></div>
 
     <div id="stocks-body">
+      <div class="sblock">
+        <h3>Generated picks</h3>
+        <div id="lottery-picks" class="empty">Pick a state and game, then Analyze.</div>
+      </div>
       <div class="sblock">
         <h3>Hot &amp; cold numbers</h3>
         <div id="lottery-frequency" class="empty">Pick a state and game, then Analyze.</div>
@@ -4830,7 +4886,7 @@ const server = http.createServer(async (req, res) => {
       const state = params.get("state");
       const game = params.get("game");
       if (!state || !game) return send(400, { ok: false, error: "`state` and `game` query parameters are both required." });
-      const maxDraws = Math.max(10, Math.min(2000, Number(params.get("maxDraws")) || 500));
+      const maxDraws = Math.max(10, Math.min(3000, Number(params.get("maxDraws")) || 3000));
       const top = Math.max(3, Math.min(30, Number(params.get("top")) || 10));
 
       const rows = await lotteryResults(state, game, { maxDraws });

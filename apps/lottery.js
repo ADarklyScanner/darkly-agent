@@ -169,7 +169,15 @@ export function normalizeDraws(rows) {
       continue;
     }
 
-    const main = numbers.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0);
+    // `n >= 0`, not `n > 0`: lotto balls are always numbered from 1, but
+    // digit games (Pick 3/4/5) draw an ordinary 0-9 digit per position,
+    // and 0 is a completely normal digit there. Excluding it silently
+    // shortened any draw containing a 0 (e.g. "042" -> [4, 2]), which
+    // desyncs every digit after it from its real position — corrupting
+    // position-indexed stats (see digitStats/generateSets below) for
+    // most real digit-game history, since 0 shows up in roughly a tenth
+    // of all positions. Found by lottery-picks.test.mjs.
+    const main = numbers.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n >= 0);
     if (main.length === 0) {
       skipped++;
       continue;
@@ -372,6 +380,258 @@ export function repeatStats(draws) {
   };
 }
 
+/* ------------------------------------------------------------------ *
+ * Pick generation
+ *
+ * Ported from the same reference app's own `generateSets` — the part
+ * that was missing here. Everything above this point describes history;
+ * this section still only describes history, it just uses that
+ * description to steer a weighted random draw instead of a table.
+ *
+ * Three sets, three weightings, all computed from the FULL history
+ * fetched (see the `maxDraws` default below, which was raised so this
+ * has real depth to work with rather than the last few hundred draws):
+ *   1. Hot-weighted    — raw appearance frequency, exponentiated so the
+ *                        hottest numbers pull noticeably ahead.
+ *   2. Consistency     — frequency blended with "era consistency": does
+ *                        this number show up steadily across the whole
+ *                        archive, or only in one stretch of it.
+ *   3. Hot + overdue   — frequency blended with a small gap/overdue term.
+ *
+ * None of this predicts anything. Reweighting which random combination
+ * gets chosen does not change the odds of that combination matching the
+ * next draw — every combination remains exactly as likely as any other.
+ * `basis` on the returned object says this explicitly so nothing
+ * downstream (chat included) can present it as an edge.
+ * ------------------------------------------------------------------ */
+
+const PICK_BASIS =
+  "These three sets are randomly drawn from a distribution reweighted by historical frequency, era consistency, and gap — not predictions. Lottery draws are independent with fixed odds, so a reweighted random pick has exactly the same chance of matching the next draw as any other combination, hot or cold.";
+
+const SET_META = [
+  { label: "Set 1 · Hot-weighted", description: "Strongest emphasis on all-time appearance frequency." },
+  { label: "Set 2 · Consistency", description: "All-time frequency plus consistency across four eras of the full archive." },
+  { label: "Set 3 · Hot + overdue", description: "All-time frequency remains dominant, with a small full-archive gap/overdue component." }
+];
+
+/**
+ * Digit games (Pick 3/4/5-style: each draw is a short sequence of 0-9
+ * digits with positional meaning) are scored per-position; lotto games
+ * (numbers drawn without replacement from a larger pool) are scored
+ * per-number across the whole pool. There is no external game-metadata
+ * feed here (see fetchResults/normalizeDraws above — this module only
+ * ever sees draw rows), so this infers the game family from the draws
+ * themselves: real digit games draw every position from 0-9, and real
+ * lotto pools always run higher than that, so checking every number in
+ * every draw against the 0-9 range is a reliable enough signal in
+ * practice without needing a field no backend here promises to supply.
+ */
+export function isDigitGame(draws) {
+  const withMain = (draws || []).filter((d) => Array.isArray(d.main) && d.main.length);
+  if (!withMain.length) return false;
+  return withMain.every((d) => d.main.every((n) => Number.isInteger(n) && n >= 0 && n <= 9));
+}
+
+function digitStats(draws) {
+  const sample = draws.find((d) => Array.isArray(d.main) && d.main.length);
+  const len = sample ? sample.main.length : 0;
+  const pos = Array.from({ length: len }, () => Array(10).fill(0));
+  const freq = Array(10).fill(0);
+  const lastSeen = Array(10).fill(Infinity);
+
+  draws.forEach((d, ri) => {
+    (d.main || []).slice(0, len).forEach((raw, i) => {
+      const n = Number(raw);
+      if (Number.isInteger(n) && n >= 0 && n <= 9) {
+        pos[i][n]++;
+        freq[n]++;
+        if (lastSeen[n] === Infinity) lastSeen[n] = ri; // draws are newest-first
+      }
+    });
+  });
+
+  return { digit: true, len, pos, freq, bonusFreq: null, lastSeen, bonusLast: null, range: [0, 9], bonusRange: null, draws: draws.length };
+}
+
+function lottoStats(draws) {
+  const sample = draws.find((d) => Array.isArray(d.main) && d.main.length);
+  const len = sample ? sample.main.length : 0;
+  const min = 1;
+  const max = Math.max(1, ...draws.flatMap((d) => d.main));
+  const freq = Array(max + 1).fill(0);
+  const lastSeen = Array(max + 1).fill(Infinity);
+
+  const bmin = 1;
+  const bmax = Math.max(0, ...draws.map((d) => Number(d.bonus) || 0));
+  const bonusFreq = bmax ? Array(bmax + 1).fill(0) : null;
+  const bonusLast = bmax ? Array(bmax + 1).fill(Infinity) : null;
+
+  draws.forEach((d, ri) => {
+    const unique = new Set(d.main);
+    unique.forEach((n) => {
+      if (Number.isInteger(n) && n >= min && n <= max) {
+        freq[n]++;
+        if (lastSeen[n] === Infinity) lastSeen[n] = ri;
+      }
+    });
+    const bb = Number(d.bonus);
+    if (bonusFreq && Number.isInteger(bb) && bb >= bmin && bb <= bmax) {
+      bonusFreq[bb]++;
+      if (bonusLast[bb] === Infinity) bonusLast[bb] = ri;
+    }
+  });
+
+  return {
+    digit: false,
+    len,
+    freq,
+    bonusFreq,
+    lastSeen,
+    bonusLast,
+    range: [min, max],
+    bonusRange: bmax ? [bmin, bmax] : null,
+    draws: draws.length
+  };
+}
+
+function makeStats(draws) {
+  return isDigitGame(draws) ? digitStats(draws) : lottoStats(draws);
+}
+
+/**
+ * Splits history into 4 equal eras (most-recent-first, same order as
+ * `draws`) and scores each number by how STEADY its appearance rate is
+ * across them — high mean, low cross-era variance — rather than by raw
+ * total. A number that shows up in every era at roughly the same rate
+ * scores higher than one with the same total that only ever appears in
+ * one era.
+ */
+function eraConsistency(draws, stats) {
+  const eras = 4;
+  const size = Math.ceil(draws.length / eras);
+  const maps = [];
+  for (let e = 0; e < eras; e++) {
+    maps.push(makeStats(draws.slice(e * size, Math.min(draws.length, (e + 1) * size))));
+  }
+
+  const out = Array(stats.freq.length).fill(0);
+  for (let n = 0; n < out.length; n++) {
+    const vals = maps.map((m) => m.freq[n] || 0);
+    const norm = vals.map((v, i) => v / Math.max(1, maps[i].draws));
+    const mean = norm.reduce((a, b) => a + b, 0) / norm.length;
+    const variance = norm.reduce((a, b) => a + (b - mean) * (b - mean), 0) / norm.length;
+    out[n] = mean / (1 + Math.sqrt(variance) * 8);
+  }
+  return out;
+}
+
+/** Max-based normalization of `values` at the given indices, to [0,1]. */
+function normalized(values, indices) {
+  let max = 0;
+  indices.forEach((n) => {
+    if (Number.isFinite(values[n])) max = Math.max(max, values[n]);
+  });
+  if (max <= 0) return Object.fromEntries(indices.map((n) => [n, 0]));
+  return Object.fromEntries(indices.map((n) => [n, Math.max(0, values[n] || 0) / max]));
+}
+
+/** Weighted random pick — the actual randomness lottery odds guarantee. */
+function weightedChoice(items, weights) {
+  const total = weights.reduce((a, b) => a + (Number.isFinite(b) && b > 0 ? b : 0), 0);
+  if (total <= 0) return items[Math.floor(Math.random() * items.length)];
+  let r = Math.random() * total;
+  for (let i = 0; i < items.length; i++) {
+    r -= Math.max(0, weights[i] || 0);
+    if (r <= 0) return items[i];
+  }
+  return items[items.length - 1];
+}
+
+/** `count` weighted picks from `pool` without replacement, ascending. */
+function chooseUnique(pool, count, weightFn) {
+  let avail = [...pool];
+  const out = [];
+  for (let i = 0; i < count && avail.length; i++) {
+    const choice = weightedChoice(avail, avail.map(weightFn));
+    out.push(choice);
+    avail = avail.filter((n) => n !== choice);
+  }
+  return out.sort((a, b) => a - b);
+}
+
+function generateSets(draws, stats) {
+  if (stats.digit) {
+    const digits = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    const allNorm = normalized(stats.freq, digits);
+    const consNorm = normalized(eraConsistency(draws, stats), digits);
+    const gapNorm = normalized(stats.lastSeen.map((v) => (Number.isFinite(v) ? v : draws.length)), digits);
+
+    const sets = [];
+    for (let s = 0; s < 3; s++) {
+      const nums = [];
+      for (let p = 0; p < stats.len; p++) {
+        const pos = stats.pos[p];
+        nums.push(
+          weightedChoice(
+            digits,
+            digits.map((n) => {
+              if (s === 0) return Math.pow(pos[n] + 1, 1.65); // per-position frequency
+              if (s === 1) return 1 + 6 * (0.65 * allNorm[n] + 0.35 * consNorm[n]);
+              return 1 + 6 * (0.8 * allNorm[n] + 0.2 * gapNorm[n]);
+            })
+          )
+        );
+      }
+      sets.push({ main: nums, bonus: null });
+    }
+    return sets;
+  }
+
+  const pool = [];
+  for (let n = stats.range[0]; n <= stats.range[1]; n++) pool.push(n);
+  const freqNorm = normalized(stats.freq, pool);
+  const consNorm = normalized(eraConsistency(draws, stats), pool);
+  const gapNorm = normalized(stats.lastSeen.map((v) => (Number.isFinite(v) ? v : draws.length)), pool);
+
+  const formulas = [
+    (n) => 0.02 + Math.pow(freqNorm[n], 1.7),
+    (n) => 0.02 + 0.72 * freqNorm[n] + 0.28 * consNorm[n],
+    (n) => 0.02 + 0.82 * freqNorm[n] + 0.18 * gapNorm[n]
+  ];
+  const sets = formulas.map((fn) => ({ main: chooseUnique(pool, stats.len, fn), bonus: null }));
+
+  if (stats.bonusFreq && stats.bonusRange) {
+    const bp = [];
+    for (let n = stats.bonusRange[0]; n <= stats.bonusRange[1]; n++) bp.push(n);
+    const bNorm = normalized(stats.bonusFreq, bp);
+    const bGap = normalized(stats.bonusLast.map((v) => (Number.isFinite(v) ? v : draws.length)), bp);
+    sets[0].bonus = weightedChoice(bp, bp.map((n) => 0.02 + Math.pow(bNorm[n], 1.7)));
+    sets[1].bonus = weightedChoice(bp, bp.map((n) => 0.02 + bNorm[n]));
+    sets[2].bonus = weightedChoice(bp, bp.map((n) => 0.02 + 0.82 * bNorm[n] + 0.18 * bGap[n]));
+  }
+  return sets;
+}
+
+/**
+ * Three differently-weighted picks, generated from the full history
+ * already fetched. Pure/deterministic apart from `Math.random()` inside
+ * `weightedChoice` — everything upstream of that (frequency, era
+ * consistency, gap) is ordinary descriptive statistics.
+ */
+export function generatePickSets(draws) {
+  if (!draws || draws.length === 0) {
+    return { digitGame: false, drawsUsed: 0, sets: [], basis: PICK_BASIS };
+  }
+  const stats = makeStats(draws);
+  const sets = generateSets(draws, stats).map((s, i) => ({
+    label: SET_META[i].label,
+    description: SET_META[i].description,
+    main: s.main,
+    bonus: s.bonus
+  }));
+  return { digitGame: stats.digit, drawsUsed: draws.length, sets, basis: PICK_BASIS };
+}
+
 /** Everything at once, for one game. */
 export function analyzeAll(draws, options = {}) {
   return {
@@ -380,6 +640,7 @@ export function analyzeAll(draws, options = {}) {
     shape: shapeStats(draws),
     pairs: pairStats(draws, options),
     repeats: repeatStats(draws),
+    picks: generatePickSets(draws),
     basis: BASIS
   };
 }
