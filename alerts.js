@@ -11,11 +11,15 @@
  * Kept separate and pure so "should this have alerted" is a one-line
  * assertion instead of something only checkable by reading a live inbox.
  *
- * Two failure modes, deliberately treated differently:
+ * Three outcomes, deliberately treated differently:
  *   - a run that COMPLETED but reported something wrong (errors, an
  *     unexpected skip) — alert, but only once per throttle window, since a
  *     genuine outage can easily span many 15-minute runs and nobody wants
  *     forty identical emails for one broken API key.
+ *   - a run that completed cleanly AND actually placed one or more trades
+ *     — not a problem, but the one outcome of a clean run someone would
+ *     actually want to be told about rather than checking the console for.
+ *     Kept to its own "trade" severity so it never reads like an error.
  *   - the scheduler going quiet entirely (no run recorded in far longer
  *     than the configured interval) — this can't be detected from inside
  *     a run that never happened, so it is checked separately, from
@@ -27,8 +31,10 @@
 /**
  * A run recording "market closed" or "signal_only, nothing placed" is
  * completely normal and must never alert — those are correct behavior,
- * not failures. Distinguish that from a run that recorded a real error,
- * or that had to fall back on a decision it should not have had to make.
+ * not failures. Distinguish that from a run that recorded a real error, a
+ * skip that itself indicates a problem, or a clean run that actually
+ * placed a trade (the one "nothing is wrong, but you'll want to know"
+ * outcome).
  */
 export function classifyRunForAlert(run) {
   if (!run || typeof run !== "object") {
@@ -38,27 +44,49 @@ export function classifyRunForAlert(run) {
   const errors = Array.isArray(run.errors) ? run.errors.filter(Boolean) : [];
 
   // A benign, expected skip (market closed, mode off, signal_only) is
-  // reported via run.skipped/run.note but carries no errors. Only an
-  // actual error list, or a skip that itself indicates a problem (kill
-  // switch aside — that is a deliberate human action, not a failure),
-  // is alert-worthy.
-  if (errors.length === 0) {
-    return { alert: false, severity: null, reason: null };
+  // reported via run.skipped/run.note but carries no errors. An actual
+  // error list, or a skip that itself indicates a problem (kill switch
+  // aside — that is a deliberate human action, not a failure), is always
+  // alert-worthy and takes priority over anything below.
+  if (errors.length > 0) {
+    // A daily-loss-limit skip is the guardrail doing exactly its job. It
+    // is worth knowing about, but it is a risk event, not a system
+    // failure — flagged at a lower severity so it does not read the same
+    // as "the trading loop is broken."
+    const isDailyLossHalt = /daily loss limit/i.test(run.skipped || "");
+
+    return {
+      alert: true,
+      severity: isDailyLossHalt ? "notice" : "error",
+      reason: isDailyLossHalt
+        ? `Daily loss limit reached (${run.account?.dayPnl ?? "unknown P&L"}). Trading halted for the rest of the day — this is the guardrail working as designed, not a bug.`
+        : errors.join(" | ")
+    };
   }
 
-  // A daily-loss-limit skip is the guardrail doing exactly its job. It is
-  // worth knowing about, but it is a risk event, not a system failure —
-  // flagged at a lower severity so it does not read the same as "the
-  // trading loop is broken."
-  const isDailyLossHalt = /daily loss limit/i.test(run.skipped || "");
+  // No errors. Still worth a look if the run actually acted: a decision
+  // only counts here once it cleared every guardrail and Alpaca confirmed
+  // the order (result.placed) — a decision that was merely proposed,
+  // rejected, or blocked is not "news" the way a placed trade is.
+  const placed = Array.isArray(run.decisions)
+    ? run.decisions.filter((d) => d && d.result && d.result.placed)
+    : [];
 
-  return {
-    alert: true,
-    severity: isDailyLossHalt ? "notice" : "error",
-    reason: isDailyLossHalt
-      ? `Daily loss limit reached (${run.account?.dayPnl ?? "unknown P&L"}). Trading halted for the rest of the day — this is the guardrail working as designed, not a bug.`
-      : errors.join(" | ")
-  };
+  if (run.executed && placed.length > 0) {
+    const summary = placed
+      .map((d) => `${String(d.side || "").toUpperCase()} ${d.symbol} (${
+        d.side === "buy" ? `$${d.notional}` : `${d.qty} sh`
+      })`)
+      .join(", ");
+
+    return {
+      alert: true,
+      severity: "trade",
+      reason: `Placed ${placed.length} trade${placed.length === 1 ? "" : "s"}: ${summary}`
+    };
+  }
+
+  return { alert: false, severity: null, reason: null };
 }
 
 /**

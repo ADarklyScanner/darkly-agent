@@ -95,6 +95,76 @@ check("daily-loss-limit matching is case-insensitive",
 
 /* ------------------------------------------------------------------ */
 
+console.log("\nclassifyRunForAlert — a clean run that actually traded alerts too");
+
+{
+  const c = classifyRunForAlert({
+    errors: [],
+    executed: true,
+    decisions: [
+      { symbol: "AAPL", side: "buy", notional: 500, result: { placed: true } }
+    ]
+  });
+  check("a clean run with a placed buy alerts", c.alert === true);
+  check("a placed trade is its own severity, not 'error' or 'notice'", c.severity === "trade", c.severity);
+  check("the reason names the symbol and side", /BUY AAPL/.test(c.reason), c.reason);
+  check("a buy reason quotes the dollar amount", /\$500/.test(c.reason), c.reason);
+  check("the reason says exactly 1 trade (singular)", /Placed 1 trade:/.test(c.reason), c.reason);
+}
+
+{
+  const c = classifyRunForAlert({
+    errors: [],
+    executed: true,
+    decisions: [
+      { symbol: "AAPL", side: "buy", notional: 500, result: { placed: true } },
+      { symbol: "MSFT", side: "sell", qty: 3, result: { placed: true } }
+    ]
+  });
+  check("multiple placed trades all appear in the reason",
+    /BUY AAPL/.test(c.reason) && /SELL MSFT/.test(c.reason), c.reason);
+  check("a sell reason quotes shares, not a dollar amount", /3 sh/.test(c.reason), c.reason);
+  check("the reason pluralizes correctly for 2 trades", /Placed 2 trades:/.test(c.reason), c.reason);
+}
+
+check("a decision that was proposed but BLOCKED by a guardrail does not alert",
+  classifyRunForAlert({
+    errors: [],
+    executed: true,
+    decisions: [{ symbol: "AAPL", side: "buy", notional: 500, blocked: "Daily trade cap reached" }]
+  }).alert === false);
+
+check("a decision with no result at all (rejected before sizing) does not alert",
+  classifyRunForAlert({
+    errors: [],
+    executed: true,
+    decisions: [{ symbol: "AAPL", side: "buy", notional: 500 }]
+  }).alert === false);
+
+check("signal_only mode (executed:false) never alerts even if decisions look tradeable",
+  classifyRunForAlert({
+    errors: [],
+    executed: false,
+    decisions: [{ symbol: "AAPL", side: "buy", notional: 500, result: { placed: true } }]
+  }).alert === false);
+
+check("a run with no decisions array at all does not alert or throw",
+  classifyRunForAlert({ errors: [], executed: true }).alert === false);
+
+{
+  // An error elsewhere in the same run takes priority over a placed
+  // trade — "something went wrong" must never be masked by "and also it
+  // traded fine over here."
+  const c = classifyRunForAlert({
+    errors: ["NVDA: order rejected"],
+    executed: true,
+    decisions: [{ symbol: "AAPL", side: "buy", notional: 500, result: { placed: true } }]
+  });
+  check("errors win over a placed trade in the same run", c.severity === "error", c.severity);
+}
+
+/* ------------------------------------------------------------------ */
+
 console.log("\nshouldSendAlert — throttling by reason, not just by time");
 
 const T0 = new Date("2026-09-17T12:00:00.000Z").getTime();

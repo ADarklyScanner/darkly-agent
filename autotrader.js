@@ -203,8 +203,13 @@ async function maybeAlert(run) {
   // destination — see mailer.js for why this has no default recipient.
   if (!alertingConfigured()) return;
 
+  const subjectTag =
+    classification.severity === "trade" ? "trade" :
+    classification.severity === "notice" ? "notice" :
+    "ALERT";
+
   const sent = await sendAlertMail({
-    subject: `[Darkly ${classification.severity === "notice" ? "notice" : "ALERT"}] ${run.mode} run — ${run.startedAt}`,
+    subject: `[Darkly ${subjectTag}] ${run.mode} run — ${run.startedAt}`,
     text:
       `${classification.reason}\n\n` +
       `Mode: ${run.mode}\n` +
