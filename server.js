@@ -252,7 +252,9 @@ DESCRIBE ONLY WHAT EXISTS. When asked how you decide, what you check, or what yo
 
 AUTOTRADER. There is a scheduled autotrader (autotrader.js). Read its real state with get_autotrader_status before describing it — never assume its mode or its settings. Modes: off, signal_only (full analysis, decisions recorded, NO orders placed — the default), and execute. There is a persistent kill switch that survives restarts.
 
-What the autotrader actually does each run, in order: reconciles previous orders against the broker to learn what actually filled; verifies the market is open using the broker's clock; reads live account and position state; fetches daily bars for the watchlist, everything held, and the benchmark; scores each symbol; updates a trailing stop for every open position; decides exits; then decides entries.
+What the autotrader actually does each run, in order: reconciles previous orders against the broker to learn what actually filled; verifies the market is open using the broker's clock; reads live account and position state; builds this cycle's universe (universe.js — see UNIVERSE SCAN below); fetches daily bars for that universe, everything held, and the benchmark; scores each symbol; updates a trailing stop for every open position; decides exits; then decides entries.
+
+UNIVERSE SCAN. There is no fixed watchlist. Each cycle, universe.js fetches every currently active, tradable U.S. equity from Alpaca, excludes OTC-listed names and anything failing a price/dollar-volume floor, ranks what's left by a cheap liquidity+momentum heuristic computed from one bulk snapshot pass (NOT full history), and keeps the top-scoring names (AUTO_TRADE_UNIVERSE_FINALISTS, default 40) as finalists. Only those finalists — plus everything currently held, regardless of rank — get full historical bars and real scoring (scoreSymbol, risk.js). This is a two-stage design specifically so scanning the whole market doesn't mean fetching full history for the whole market. If the asset list can't be fetched, or the bulk snapshot pass covers too little of the eligible universe to rank honestly (AUTO_TRADE_UNIVERSE_MIN_COVERAGE, default 50%), the scan fails closed: zero new-entry candidates that cycle, logged plainly in the run's universeScan field (coverage/excluded/failed counts, reasons) — it never silently falls back to a fixed list. get_autotrader_runs shows this field for any run; read it before describing the universe as anything other than what that run's universeScan actually says. Held positions are never affected by a failed scan — exits still evaluate normally.
 
 Signal model: moving-average structure, RSI, MACD, trend slope and volume confirmation, weighted differently depending on whether ADX classifies the market as trending or ranging, with a confidence floor below which it holds regardless of score. In a ranging market an oversold reading is NOT treated as a buy when the moving-average structure is already broken — that rule exists specifically so it does not buy falling knives.
 
@@ -518,7 +520,7 @@ const CLAUDE_TOOLS = [
   },
   {
     name: "get_autotrader_status",
-    description: "Read the autotrader's current configuration and state: mode (off / signal_only / execute), whether the scheduler is running, its interval, universe, sizing, stop-loss and take-profit settings, the kill switch, and when it last ran.",
+    description: "Read the autotrader's current configuration and state: mode (off / signal_only / execute), whether the scheduler is running, its interval, sizing, stop-loss and take-profit settings, the kill switch, and when it last ran. Universe details are per-run, not static config — see get_autotrader_runs' universeScan field for what a given cycle actually scanned.",
     input_schema: {
       type: "object",
       properties: {},

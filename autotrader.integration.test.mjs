@@ -22,7 +22,24 @@ process.env.HOME = SCRATCH;
 process.env.DARKLY_STATE_DIR = SCRATCH;
 process.env.ALPACA_KEY_ID = "TEST_KEY";
 process.env.ALPACA_SECRET_KEY = "TEST_SECRET";
-process.env.AUTO_TRADE_UNIVERSE = "AAA,BBB,CCC,DDD";
+// The live scan (universe.js) now decides each cycle's symbols, not
+// this fixed list - AUTO_TRADE_UNIVERSE only still matters as
+// run_backtest's default elsewhere, so setting it here does nothing for
+// this file. AAA/BBB/CCC/DDD reach the deep-pass pipeline below because
+// stubMarket()'s /assets and /stocks/snapshots routes list them as the
+// entire (tiny, hand-built) tradable market.
+//
+// The universe scan's OWN cheap price/dollar-volume floor is deliberately
+// disabled (0) here: this file's job is to test the deep-pass pipeline -
+// scoring, sizing, risk.js's liquidityCheck, tradability - with a known,
+// hand-built world, including CCC (illiquid) and DDD (a penny stock)
+// specifically BECAUSE they should be rejected by that deep-pass
+// liquidity check. If the cheap pass's own floor were left at its live
+// default, it would filter CCC/DDD out before they ever reached the
+// check this file exists to exercise. universe.test.mjs is where that
+// cheap-pass filtering itself gets tested.
+process.env.AUTO_TRADE_UNIVERSE_MIN_PRICE = "0";
+process.env.AUTO_TRADE_UNIVERSE_MIN_DOLLAR_VOLUME = "0";
 process.env.AUTO_TRADE_MAX_POSITIONS = "5";
 // Deliberately generous so risk-based sizing is the binding constraint
 // here. The interaction with tight caps is asserted separately below —
@@ -137,6 +154,31 @@ function stubMarket() {
       return json(world.positions);
     }
 
+    // The universe scan's cheap pass: the whole tradable "market" here is
+    // exactly the hand-built symbols this file gives bars for, MINUS the
+    // SPY benchmark - SPY was never part of CONFIG.universe before this
+    // scan existed, and giving it real bars would let it start winning
+    // the ranking and entering the deep pass as a genuine candidate,
+    // which no test below is written to expect. Deliberately does NOT
+    // consult untradableSymbols: that fixture exists to prove the DEEP
+    // pass's own getAssetInfo check (below) catches a name whose
+    // tradability changed after this cheap listing was fetched - folding
+    // it in here would make that symbol vanish before deep analysis and
+    // the test it is for would never fire.
+    if (u.includes("/assets?")) {
+      const symbols = Object.keys(world.bars).filter((s) => s !== "SPY");
+      return json(symbols.map((symbol) => ({
+        symbol,
+        tradable: true,
+        status: "active",
+        exchange: "TEST",
+        class: "us_equity",
+        shortable: true,
+        fractionable: true,
+        marginable: true
+      })));
+    }
+
     if (u.includes("/assets/")) {
       const symbol = decodeURIComponent(u.split("/assets/")[1] || "");
       const untradable = world.untradableSymbols.includes(symbol);
@@ -162,7 +204,22 @@ function stubMarket() {
     }
 
     if (u.includes("/stocks/snapshots")) {
-      return json({});
+      const symbols = decodeURIComponent(
+        (u.match(/symbols=([^&]+)/) || [, ""])[1]
+      ).split(",");
+      const snapshots = {};
+      for (const s of symbols) {
+        const bars = world.bars[s];
+        if (!bars || bars.length === 0) continue;
+        const last = bars.at(-1);
+        const prev = bars.length > 1 ? bars.at(-2) : last;
+        snapshots[s] = {
+          latestTrade: { p: last.c },
+          dailyBar: { c: last.c, v: last.v },
+          prevDailyBar: { c: prev.c }
+        };
+      }
+      return json({ snapshots });
     }
 
     if (u.includes("/orders") && (init.method || "GET") === "POST") {

@@ -31,7 +31,8 @@ process.env.DARKLY_STATE_DIR = path.join(os.tmpdir(), `darkly-trading-test-${pro
 process.env.TRADE_COOLDOWN_MINUTES = "0";
 process.env.MAX_TRADES_PER_DAY = "1000";
 
-const { barsLookbackDays, getBars, getAssetInfo, placeOrder } = await import("./trading.js");
+const { barsLookbackDays, getBars, getAssetInfo, placeOrder, getTradableAssets, getBulkSnapshots } =
+  await import("./trading.js");
 
 let pass = 0;
 let fail = 0;
@@ -289,6 +290,142 @@ const ACCOUNT_OK = {
   // false. Its being true here is itself proof the assets endpoint was
   // never called for this sell.
   check("a sell is never blocked by the tradability check, so an exit is always possible", result.placed === true, JSON.stringify(result));
+
+  globalThis.fetch = realFetch;
+}
+
+/* ------------------------------------------------------------------ *
+ * getTradableAssets — the full-universe replacement for a fixed
+ * watchlist. Existence + shape only; the actual filtering/ranking logic
+ * lives in and is tested by universe.test.mjs.
+ * ------------------------------------------------------------------ */
+
+console.log("\ngetTradableAssets");
+
+{
+  const seenUrls = [];
+  globalThis.fetch = async (url) => {
+    seenUrls.push(String(url));
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([
+        { symbol: "AAPL", tradable: true, status: "active", exchange: "NASDAQ", class: "us_equity", shortable: true, fractionable: true, marginable: true },
+        { symbol: "DELISTEDCO", tradable: false, status: "inactive", exchange: "OTC", class: "us_equity" },
+        { symbol: "SOMEBOND", tradable: true, status: "active", exchange: "NASDAQ", class: "us_option" }
+      ])
+    };
+  };
+
+  const assets = await getTradableAssets();
+  check("requests status=active and asset_class=us_equity", /status=active/.test(seenUrls[0]) && /asset_class=us_equity/.test(seenUrls[0]), seenUrls[0]);
+  check("returns every row as-is (filtering is the caller's job)", assets.length === 3, `got ${assets.length}`);
+  check("booleans are read as real booleans, not truthy strings", assets[0].tradable === true && assets[1].tradable === false);
+  check("class is exposed as assetClass", assets[0].assetClass === "us_equity");
+
+  globalThis.fetch = realFetch;
+}
+
+/* ------------------------------------------------------------------ *
+ * getBulkSnapshots — the cheap-pass bulk data source. Chunking,
+ * concurrency, and partial-failure handling are what matter here: a
+ * scan across thousands of symbols must tolerate one bad chunk without
+ * losing coverage of everything else.
+ * ------------------------------------------------------------------ */
+
+console.log("\ngetBulkSnapshots");
+
+function fakeSnapshot(price, prevClose, volume = 1000000) {
+  return {
+    latestTrade: { p: price },
+    dailyBar: { c: price, v: volume },
+    prevDailyBar: { c: prevClose }
+  };
+}
+
+{
+  captured.length = 0;
+  globalThis.fetch = async (url) => {
+    captured.push(String(url));
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        snapshots: { AAPL: fakeSnapshot(150, 145), MSFT: fakeSnapshot(300, 310) }
+      })
+    };
+  };
+
+  const { snapshots, missing, errors } = await getBulkSnapshots(["aapl", "msft"], { chunkSize: 200 });
+  check("one request covers a chunk of symbols", captured.length === 1, `made ${captured.length} requests`);
+  check("symbols are uppercased", Object.keys(snapshots).includes("AAPL"));
+  check("price comes from the latest trade", snapshots.AAPL.price === 150);
+  check("changePercent is computed against the previous close", Math.abs(snapshots.MSFT.changePercent - ((300 - 310) / 310) * 100) < 1e-9, snapshots.MSFT.changePercent);
+  check("nothing reported missing when every requested symbol came back", missing.length === 0, missing);
+  check("no errors on a clean pass", errors.length === 0, errors);
+
+  globalThis.fetch = realFetch;
+}
+
+{
+  // A symbol structurally present in the universe but absent from the
+  // snapshot response (e.g. no trades yet today) must be reported as
+  // missing, never silently dropped or scored as zero.
+  captured.length = 0;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ snapshots: { AAPL: fakeSnapshot(150, 145) } })
+  });
+
+  const { snapshots, missing } = await getBulkSnapshots(["AAPL", "GHOST"]);
+  check("a symbol missing from the response is reported missing, not silently dropped",
+    missing.includes("GHOST"), missing);
+  check("the symbol that DID come back is still usable", snapshots.AAPL.price === 150);
+
+  globalThis.fetch = realFetch;
+}
+
+{
+  // Chunking: with a small chunk size, N symbols must produce multiple
+  // requests, and results from every chunk must be merged.
+  captured.length = 0;
+  let call = 0;
+  globalThis.fetch = async (url) => {
+    captured.push(String(url));
+    call++;
+    const body = call === 1
+      ? { snapshots: { A: fakeSnapshot(10, 9) } }
+      : { snapshots: { B: fakeSnapshot(20, 19) } };
+    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+  };
+
+  const { snapshots } = await getBulkSnapshots(["A", "B"], { chunkSize: 1, concurrency: 1 });
+  check("small chunk size splits the request", captured.length === 2, `made ${captured.length} requests`);
+  check("results from every chunk are merged", snapshots.A && snapshots.B, JSON.stringify(snapshots));
+
+  globalThis.fetch = realFetch;
+}
+
+{
+  // A chunk whose request throws entirely must mark its own symbols
+  // missing and report the error, without losing coverage from OTHER
+  // chunks that succeeded - this is the guarantee the whole universe
+  // scan's fail-closed behaviour is built on.
+  captured.length = 0;
+  let call = 0;
+  globalThis.fetch = async (url) => {
+    captured.push(String(url));
+    call++;
+    if (call === 1) throw new Error("network blip");
+    return { ok: true, status: 200, text: async () => JSON.stringify({ snapshots: { GOOD: fakeSnapshot(50, 48) } }) };
+  };
+
+  const { snapshots, missing, errors } = await getBulkSnapshots(["BAD", "GOOD"], { chunkSize: 1, concurrency: 1 });
+  check("a chunk that throws marks its symbols missing rather than aborting the scan",
+    missing.includes("BAD"), missing);
+  check("a later, healthy chunk still contributes its data", snapshots.GOOD && snapshots.GOOD.price === 50);
+  check("the failure is recorded, not swallowed", errors.length === 1, errors);
 
   globalThis.fetch = realFetch;
 }

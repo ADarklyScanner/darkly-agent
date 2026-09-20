@@ -226,7 +226,7 @@ function todaysTrades() {
  * Alpaca REST
  * ------------------------------------------------------------------ */
 
-async function alpacaRequest(method, endpoint, body) {
+async function alpacaRequest(method, endpoint, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
   if (!ALPACA_KEY_ID || !ALPACA_SECRET_KEY) {
     throw new Error(
       "Alpaca credentials are not configured (ALPACA_KEY_ID / ALPACA_SECRET_KEY)."
@@ -241,7 +241,7 @@ async function alpacaRequest(method, endpoint, body) {
       "Content-Type": "application/json"
     },
     body: body ? JSON.stringify(body) : undefined
-  });
+  }, timeoutMs);
 
   const text = await res.text();
   let parsed;
@@ -552,6 +552,127 @@ export async function getAssetInfo(symbol) {
     fractionable: Boolean(a.fractionable),
     marginable: Boolean(a.marginable)
   };
+}
+
+/**
+ * Every currently active, tradable U.S. equity Alpaca will accept an
+ * order for - the full replacement for a hand-picked watchlist. This is
+ * one unpaginated call, but the response is unusually large (thousands
+ * of rows), so it gets a longer timeout than the default rather than
+ * risking a spurious abort on a slow connection.
+ */
+export async function getTradableAssets() {
+  const assets = await alpacaRequest(
+    "GET",
+    "/assets?status=active&asset_class=us_equity",
+    undefined,
+    30000
+  );
+
+  return (Array.isArray(assets) ? assets : []).map((a) => ({
+    symbol: a.symbol,
+    tradable: Boolean(a.tradable),
+    status: a.status,
+    exchange: a.exchange || null,
+    assetClass: a.class || null,
+    shortable: Boolean(a.shortable),
+    fractionable: Boolean(a.fractionable),
+    marginable: Boolean(a.marginable)
+  }));
+}
+
+function chunkSymbols(symbols, size) {
+  const out = [];
+  for (let i = 0; i < symbols.length; i += size) out.push(symbols.slice(i, i + size));
+  return out;
+}
+
+/** Runs `fn` over `items` with at most `limit` calls in flight at once. */
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker)
+  );
+  return results;
+}
+
+/**
+ * One lightweight snapshot (latest trade, day bar, previous close) per
+ * symbol, for potentially thousands of symbols in one pass. This is the
+ * "bulk" data a universe-wide ranking pass runs on: full historical bars
+ * (getBars, above) are fetched only for whatever that ranking shortlists
+ * afterward, never for the whole market.
+ *
+ * Chunked and concurrency-limited on purpose. Alpaca's snapshot endpoint
+ * is not built to take an unbounded symbol list in one request, and
+ * firing thousands of requests at once would trip Alpaca's own rate
+ * limit long before anything here timed out. A chunk that errors marks
+ * every symbol in it as missing rather than aborting the whole scan -
+ * partial coverage is reported to the caller, never silently patched
+ * over or retried into a fallback.
+ */
+export async function getBulkSnapshots(symbols, options = {}) {
+  const chunkSize = Math.max(1, Number(options.chunkSize) || 200);
+  const concurrency = Math.max(1, Number(options.concurrency) || 4);
+  const feed = options.feed || ALPACA_FEED;
+
+  const unique = Array.from(
+    new Set(symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean))
+  );
+  const chunks = chunkSymbols(unique, chunkSize);
+
+  const snapshots = {};
+  const missing = [];
+  const errors = [];
+
+  await mapWithConcurrency(chunks, concurrency, async (symbolChunk) => {
+    try {
+      const data = await alpacaDataRequest(
+        `/stocks/snapshots?symbols=${encodeURIComponent(symbolChunk.join(","))}&feed=${feed}`
+      );
+      const raw = data.snapshots || data || {};
+
+      for (const symbol of symbolChunk) {
+        const s = raw[symbol];
+        if (!s) {
+          missing.push(symbol);
+          continue;
+        }
+
+        const last = s.latestTrade || {};
+        const day = s.dailyBar || {};
+        const prev = s.prevDailyBar || {};
+        const price = Number(last.p ?? day.c ?? 0) || null;
+        const prevClose = Number(prev.c ?? 0) || null;
+
+        if (!price) {
+          missing.push(symbol);
+          continue;
+        }
+
+        snapshots[symbol] = {
+          price,
+          dayVolume: Number(day.v ?? 0) || 0,
+          prevClose,
+          changePercent: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
+        };
+      }
+    } catch (e) {
+      errors.push(
+        `chunk of ${symbolChunk.length} (${symbolChunk[0]}..${symbolChunk[symbolChunk.length - 1]}): ${e.message}`
+      );
+      missing.push(...symbolChunk);
+    }
+  });
+
+  return { snapshots, missing, errors, symbolCount: unique.length, chunkCount: chunks.length };
 }
 
 /* ------------------------------------------------------------------ *

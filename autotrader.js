@@ -43,6 +43,8 @@ import {
 
 import { scoreSymbol, AGGRESSIVENESS } from "./strategy.js";
 
+import { buildUniverse } from "./universe.js";
+
 import { classifyRunForAlert, shouldSendAlert, schedulerHeartbeat } from "./alerts.js";
 import { alertingConfigured, sendAlertMail } from "./mailer.js";
 import { configFingerprint, deploymentInfo } from "./audit.js";
@@ -376,9 +378,40 @@ export async function runOnce(options = {}) {
 
     const held = new Map(positions.map((p) => [p.symbol, p]));
 
-    // --- Universe: the watchlist plus anything currently held, because
-    //     an open position always needs evaluating for an exit ---
-    const universe = Array.from(new Set([...CONFIG.universe, ...held.keys()]));
+    // --- Universe: the full tradable U.S. equity market, cheaply ranked
+    //     down to a shortlist (universe.js), plus anything currently
+    //     held - an open position always needs evaluating for an exit
+    //     regardless of how it ranks this cycle. ---
+    //
+    // A failed or badly-incomplete scan yields zero finalists rather
+    // than the old fixed 8-symbol watchlist: held positions still get
+    // evaluated for exits (they're unioned in below regardless of
+    // scan.ok), but no new entries are considered this cycle. That is a
+    // deliberate fail-closed choice, not a bug - see universe.js's own
+    // doc comment for why a silent fallback would be worse than this.
+    let scan;
+    try {
+      scan = await buildUniverse();
+    } catch (e) {
+      scan = {
+        ok: false,
+        finalists: [],
+        ranked: [],
+        stats: {},
+        error: `Universe scan threw unexpectedly: ${e.message}`
+      };
+    }
+
+    run.universeScan = {
+      ok: scan.ok,
+      error: scan.error || null,
+      ...scan.stats
+    };
+    if (!scan.ok) {
+      run.errors.push(scan.error || "Universe scan failed for an unrecorded reason.");
+    }
+
+    const universe = Array.from(new Set([...scan.finalists, ...held.keys()]));
     run.universe = universe;
 
     // The benchmark rides along in the same request: the market filter
@@ -770,7 +803,14 @@ export function getStatus() {
     schedulerRunning: Boolean(timer),
     intervalMinutes: CONFIG.intervalMinutes,
     aggressiveness: CONFIG.aggressiveness,
-    universe: CONFIG.universe,
+    // The live scan (universe.js) now decides each cycle's symbols from
+    // the full tradable market - CONFIG.universe is no longer consulted
+    // for that. It survives only as run_backtest's default universe when
+    // a backtest doesn't specify its own, so it's reported here under
+    // its actual role rather than as "universe" to avoid implying it's
+    // still the watchlist being traded.
+    universeMode: "full-market-scan",
+    backtestDefaultUniverse: CONFIG.universe,
     maxPositions: CONFIG.maxPositions,
     positionUsd: CONFIG.positionUsd,
     stopLossPercent: CONFIG.stopLossPercent,

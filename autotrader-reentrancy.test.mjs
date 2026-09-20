@@ -77,12 +77,23 @@ globalThis.fetch = async (url, init = {}) => {
     return json({ account_number: "T", status: "ACTIVE", currency: "USD", equity: "100000", last_equity: "100000", cash: "100000", buying_power: "100000", trading_blocked: false });
   }
   if (u.includes("/positions")) return json([]);
+  // The universe scan's cheap pass: a one-symbol "market" so runOnce has
+  // exactly the same real work to do (score AAA) as before this scan
+  // replaced the fixed AUTO_TRADE_UNIVERSE watchlist - this test cares
+  // about overlap timing, not universe composition, so it stays minimal.
+  if (u.includes("/assets?")) {
+    return json([{ symbol: "AAA", tradable: true, status: "active", exchange: "TEST", class: "us_equity", shortable: true, fractionable: true, marginable: true }]);
+  }
   if (u.includes("/assets/")) {
     const symbol = decodeURIComponent(u.split("/assets/")[1] || "");
     return json({ symbol, tradable: true, status: "active", exchange: "TEST", shortable: true, easy_to_borrow: true, fractionable: true, marginable: true });
   }
   if (u.includes("/stocks/bars")) return json({ bars: { AAA: world.bars }, next_page_token: null });
-  if (u.includes("/stocks/snapshots")) return json({});
+  if (u.includes("/stocks/snapshots")) {
+    const last = world.bars.at(-1);
+    const prev = world.bars.length > 1 ? world.bars.at(-2) : last;
+    return json({ snapshots: { AAA: { latestTrade: { p: last.c }, dailyBar: { c: last.c, v: last.v }, prevDailyBar: { c: prev.c } } } });
+  }
   if (u.includes("/orders") && (init.method || "GET") === "POST") {
     const body = JSON.parse(init.body);
     return json({ id: "order-1", symbol: body.symbol, side: body.side, type: body.type, qty: body.qty || null, notional: body.notional || null, status: "accepted", submitted_at: new Date().toISOString() });
