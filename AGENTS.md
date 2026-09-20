@@ -196,32 +196,75 @@ Opportunity Stack beyond what signal coincidence already gives it. The
 external plan remains a reasonable reference for *those* ideas if the
 decision above ever gets revisited — just not the current direction.
 
+**Autonomy is a separate axis from cross-module depth — don't conflate
+them.** The user wants this "very autonomous and constantly on the
+lookout." That is a real, explicit priority, and it does *not* require
+reopening the decision above: how much apps share with each other
+(shallow signals vs. rich shared state) is orthogonal to whether anything
+runs without a person asking. Right now, exactly one thing in this repo
+is genuinely autonomous in the sense that matters — running on its own,
+inside the persistent server process, whether or not anyone has a
+browser tab open, and telling the user proactively when something's
+wrong: `autotrader.js`'s `startScheduler()` (a real `setInterval`,
+started from `server.js`, deliberately silent on boot so a deploy
+doesn't trigger a burst) plus `mailer.js`'s `sendAlertMail()` (general
+purpose, gated by `ALERT_EMAIL_TO`, not actually locked to AutoTrader
+even though nothing else calls it yet). Driver, Lottery, and the
+cross-app signal/coincidence layer (`apps/registry.js`) are all
+currently **reactive** — they compute something when a route is hit, not
+on a timer. (`server.js`'s client-side `setInterval(loadResearch,180000)`
+looks like a second autonomous loop but isn't one — it runs in the
+user's own browser tab and does nothing while nobody's looking at the
+page, which is the opposite of "constantly on the lookout.") Closing
+that gap is now the higher-priority next step — see §5.
+
 ---
 
 ## 5. Concrete next steps, in order
 
 Each is sized to be one session's work: implement, test, commit, hand off
 for push, deploy, verify live — the same loop already used successfully
-in this repo's history.
+in this repo's history. Reordered from the original version of this file
+once "very autonomous, constantly on the lookout" became an explicit
+priority — the heartbeat now comes before growing the app roster, because
+it makes the two apps already registered actually autonomous immediately,
+instead of building a third reactive-only app first.
 
-1. **`apps/referralmarket.js`** — a `registerApp` adapter mirroring
+1. **Give `apps/registry.js` a real heartbeat, and let it actually tell
+   the user things.** Today `collectSignals()` / `findCoincidences()`
+   only run when a route is hit. Add a `setInterval`-based loop —
+   same shape as `autotrader.js`'s `startScheduler()`, including "don't
+   fire immediately on boot" — that periodically runs both, and when the
+   result contains something genuinely new (a coincidence, or a
+   `driving`/`lottery` signal that wasn't present last cycle), sends it
+   through `mailer.js`'s already-general-purpose `sendAlertMail()`.
+   Needs one new piece `alerts.js` doesn't currently provide generalized:
+   a small "have I already told the user about this" de-dup, keyed by
+   signal/coincidence identity and persisted via `state.js` (mirroring
+   `alerts.js`'s throttle-window idea, generalized past AutoTrader).
+   Definition of done: two registered apps' signals coinciding produces
+   exactly one email, not one per cycle; a quiet week produces none;
+   `ALERT_EMAIL_TO` unset means this stays silent, same rule as today's
+   alerting.
+2. **`apps/referralmarket.js`** — a `registerApp` adapter mirroring
    `apps/driving.js`'s shape exactly. Signals from what `sheets.js`
-   already reads: e.g. a prospect follow-up due, a new connector
-   candidate discovered. No new data access needed — this is purely
-   wiring already-real data into the existing signal system. Definition
-   of done: registered at startup next to `registerDrivingApp()` /
-   `registerLotteryApp()`, covered by tests the way `apps/lottery.js` is,
-   shows up in `listApps()`.
-2. **Per-app health, surfaced through `/health`.** Right now `/health`
+   already reads: e.g. a prospect follow-up due (`Recommendation State`
+   = `FOLLOW-UP DUE` and `Recommend After` reached — real, already-used
+   fields; not inventing a "new candidate" signal until a real
+   date-discovered column is confirmed to exist in the live Sheet).
+   Definition of done: registered at startup next to
+   `registerDrivingApp()` / `registerLotteryApp()`, covered by tests in
+   `apps.test.mjs` the way driving/lottery are, shows up in `listApps()`
+   — and, once step 1 exists, starts producing alerts for free.
+3. **Per-app health, surfaced through `/health`.** Right now `/health`
    reports only the AutoTrader heartbeat (confirmed by reading the
    handler — `autoTraderHeartbeat()` plus alerting-configured, nothing
    else). Add an optional `health()` function to the same app shape
-   `signals()` already uses (`apps/registry.js`), let Driver/Lottery/
-   ReferralMarket implement it where it's meaningful (e.g., is the Reno
-   spec loaded, is the Sheet reachable, is drawanalytics.com reachable),
-   and roll it into `/health`'s response. Still no cross-app state —
-   each app reports only on itself.
-3. **Sports, if and when it's worth pulling in here.** Sports Intelligence
+   `signals()` already uses, let Driver/Lottery/ReferralMarket implement
+   it where meaningful (is the Reno spec loaded, is the Sheet reachable,
+   is drawanalytics.com reachable), roll it into `/health`. Still no
+   cross-app state — each app reports only on itself.
+4. **Sports, if and when it's worth pulling in here.** Sports Intelligence
    today lives entirely in the separate Hatchable `Darkly_Sports_Tracker`
    project. Before writing an adapter for it, decide whether darkly-agent
    should fetch from it directly (new client code, a real dependency on
@@ -229,7 +272,7 @@ in this repo's history.
    concern with its own signals surfaced separately. This is a decision
    to make explicitly, not to default into — flagged here rather than
    started.
-4. Anything beyond this gets planned when it's next, not speculatively
+5. Anything beyond this gets planned when it's next, not speculatively
    now — a plan that predicts five phases ahead of verified ground is how
    the previous one drifted from the code.
 
