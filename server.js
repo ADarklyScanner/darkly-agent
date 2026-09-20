@@ -3152,7 +3152,7 @@ async function loadLotteryStates(){
     if(!res.ok||d.ok===false)throw new Error(d.error||("HTTP "+res.status));
     const sel=byId("lottery-state-select");
     sel.innerHTML="<option value=''>Choose a state…</option>"+
-      d.states.map(s=>{const label=esc(lotteryLabel(s));const val=esc(lotteryValue(s));return "<option value=\""+val+"\">"+label+"</option>";}).join("");
+      d.states.map(s=>{const label=esc(lotteryLabel(s));const val=esc(lotteryValue(s));return '<option value="'+val+'">'+label+'</option>';}).join("");
     lotteryStatesLoaded=true;
     byId("lottery-status").textContent=d.states.length+" states available";
   }catch(e){
@@ -3176,7 +3176,7 @@ async function onLotteryStateChange(){
     const d=await res.json();
     if(!res.ok||d.ok===false)throw new Error(d.error||("HTTP "+res.status));
     gameSel.innerHTML="<option value=''>Choose a game…</option>"+
-      d.games.map(g=>{const label=esc(lotteryLabel(g));const val=esc(lotteryValue(g));return "<option value=\""+val+"\">"+label+"</option>";}).join("");
+      d.games.map(g=>{const label=esc(lotteryLabel(g));const val=esc(lotteryValue(g));return '<option value="'+val+'">'+label+'</option>';}).join("");
     gameSel.disabled=false;
   }catch(e){
     gameSel.innerHTML="<option value=''>Failed to load games</option>";
