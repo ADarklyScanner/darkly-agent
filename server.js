@@ -2798,10 +2798,68 @@ tbody tr:hover{background:#17171c}
 const APP_JS = `
 try {
   var __sc = document.getElementById("script-check");
-  if (__sc) __sc.textContent = "Script check: OK (page JS is running). Build tag: LOGIN-DIAG-1";
+  if (__sc) __sc.textContent = "Script check: OK (page JS is running). Build tag: LOGIN-DIAG-2";
 } catch (e) {
   // if even this throws, there is nothing more client-side diagnostics can do
 }
+
+// Beacons a small diagnostic report to the server so the next occurrence of
+// tonight's "stuck loading" mystery can be read straight out of Railway's
+// logs, instead of depending on someone noticing (and accurately
+// describing) a 10px line of gray text on their own phone. sendBeacon is
+// fire-and-forget and is specifically designed to still deliver if the page
+// is unloaded a moment later - exactly the page most likely to be closed or
+// reloaded next. fetch(...,{keepalive:true}) is the fallback for the rare
+// browser without sendBeacon. Wrapped this defensively on purpose:
+// diagnostic code that itself throws would make the very bug it exists to
+// catch worse, not better.
+function __beacon(report) {
+  try {
+    var body = JSON.stringify(Object.assign({
+      ts: new Date().toISOString(),
+      url: String(location.href),
+      userAgent: navigator.userAgent
+    }, report));
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon("/client-error", new Blob([body], { type: "application/json" }));
+    } else {
+      fetch("/client-error", {
+        method: "POST",
+        body: body,
+        headers: { "Content-Type": "application/json" },
+        keepalive: true
+      }).catch(function () {});
+    }
+  } catch (e) {
+    // nothing more to do here - this must never throw back into the caller
+  }
+}
+// Fired immediately: if this is the only beacon the server ever sees for a
+// given "stuck" session, that alone proves the script started running at
+// all - the one thing the server's own access logs (which only show that
+// /, /style.css and /app.js were requested, not what the browser did with
+// them) have never been able to say.
+try { __beacon({ kind: "boot" }); } catch (e) {}
+try {
+  window.addEventListener("error", function (e) {
+    __beacon({
+      kind: "error",
+      message: e && e.message,
+      source: e && e.filename,
+      lineno: e && e.lineno,
+      colno: e && e.colno,
+      stack: e && e.error && e.error.stack
+    });
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var reason = e && e.reason;
+    __beacon({
+      kind: "unhandledrejection",
+      message: reason && reason.message ? reason.message : String(reason),
+      stack: reason && reason.stack
+    });
+  });
+} catch (e) {}
 
 // Registering this is what lets Android's "Add to Home Screen" install a
 // real standalone app (its own icon, no address bar) instead of a plain
@@ -4446,6 +4504,43 @@ const server = http.createServer(async (req, res) => {
       "self.addEventListener('fetch', (e) => { e.respondWith(fetch(e.request)); });\n",
       "application/javascript"
     );
+  }
+
+  // POST /client-error — unauthenticated like the routes just above: this
+  // is exactly how the next occurrence of tonight's "stuck loading"
+  // mystery gets diagnosed, so it has to work even when the passcode has
+  // never been entered, or the page never got far enough to render the
+  // login box at all. APP_JS beacons here the instant it starts running
+  // (proving the script executed at all - the one thing missing from this
+  // service's own access logs, which only ever show that /, /style.css and
+  // /app.js were requested, never what the browser did with them
+  // afterward) and again on any uncaught error or unhandled promise
+  // rejection. Deliberately does nothing but log: no auth, no state file,
+  // no durable storage - just one greppable line in the same place every
+  // other startup/run message already goes (Railway's deploy log), with
+  // every field capped so a malformed or hostile payload can't flood it.
+  if (req.method==="POST" && req.url==="/client-error") {
+    try {
+      const body = await readBody();
+      const cap = (v, n) => (typeof v === "string" ? v.slice(0, n) : v);
+      const kind = cap(body.kind, 40) || "unknown";
+      const line =
+        `[client-error] kind=${kind} ` +
+        `message=${JSON.stringify(cap(body.message, 300) || "")} ` +
+        `at=${cap(body.source, 200) || "?"}:${body.lineno ?? "?"}:${body.colno ?? "?"} ` +
+        `url=${JSON.stringify(cap(body.url, 200) || "")} ` +
+        `ua=${JSON.stringify(cap(body.userAgent, 200) || "")} ` +
+        `ts=${cap(body.ts, 40) || "?"}` +
+        (body.stack ? ` stack=${JSON.stringify(cap(body.stack, 600))}` : "");
+      if (kind === "boot") console.log(line); else console.error(line);
+    } catch (e) {
+      // A malformed beacon body must not turn into a 500 for a page that's
+      // already having trouble, nor an unhandled rejection that takes the
+      // whole process down (see readBody()'s own comment above) - but it's
+      // still worth a log line, since even "unreadable" is a data point.
+      console.error(`[client-error] received an unreadable report: ${String(e.message || e)}`);
+    }
+    return send(200, { ok: true });
   }
 
   // GET /health — deliberately unauthenticated: a monitor pinging this
