@@ -2656,10 +2656,13 @@ tbody tr:hover{background:var(--bg-3)}
   display:none;
   flex-direction:column;
 }
-#driver-refresh{
+#driver-refresh,#driver-research{
   border:0;border-radius:8px;
   padding:7px 12px;
   background:var(--accent-bg);color:var(--accent-text);
+}
+#driver-research:disabled,#driver-refresh:disabled{
+  opacity:.55;
 }
 .evnote{
   font-size:11px;
@@ -2730,6 +2733,7 @@ tbody tr:hover{background:var(--bg-3)}
 }
 #stocks-bar{
   display:flex;
+  flex-wrap:wrap;
   align-items:center;
   gap:8px;
   padding:8px 10px;
@@ -3158,6 +3162,7 @@ async function newChat(){
 byId("view-select").onchange=()=>showView(byId("view-select").value);
 byId("chat-tab").onclick=()=>showView("chat");
 byId("driver-refresh").onclick=()=>loadDriver(true);
+byId("driver-research").onclick=()=>researchDriver();
 byId("stocks-refresh").onclick=()=>loadStocks();
 byId("apk-upload-btn").onclick=uploadApk;
 byId("lottery-state-select").onchange=onLotteryStateChange;
@@ -3202,6 +3207,30 @@ async function loadDriver(fresh){
     byId("driver-version").textContent=d.algorithmVersion;
   }catch(e){
     byId("driver-status").textContent="Failed: "+e.message;
+  }
+}
+
+// "Research + Recalculate": the same weather/flight/event research chat can
+// already do when explicitly asked, just reachable with one tap instead of
+// needing to know the right words to type into Chat. Runs server-side in
+// its own chat turn (real web searches + an LLM to read them), so this
+// takes noticeably longer than a plain Recalculate — both buttons are
+// disabled meanwhile so a second click can't overlap it.
+async function researchDriver(){
+  const refreshBtn=byId("driver-refresh"), researchBtn=byId("driver-research");
+  refreshBtn.disabled=true; researchBtn.disabled=true;
+  byId("driver-status").textContent="Researching this week's weather, flights, and events (can take up to a minute)...";
+  byId("driver-research-summary").textContent="";
+  try{
+    const res=await fetch("/reno-research",{method:"POST",headers:{"X-Agent-Passcode":passcode}});
+    const d=await res.json();
+    if(!res.ok)throw new Error(d.error||("HTTP "+res.status));
+    byId("driver-research-summary").textContent=d.summary||"";
+    await loadDriver(false); // pick up the schedule the research just cached, without wiping it
+  }catch(e){
+    byId("driver-status").textContent="Research failed: "+e.message;
+  }finally{
+    refreshBtn.disabled=false; researchBtn.disabled=false;
   }
 }
 
@@ -4603,9 +4632,11 @@ function htmlPage() {
       <span id="driver-status">Not loaded</span>
       <div class="spacer"></div>
       <button id="driver-refresh">Recalculate</button>
+      <button id="driver-research">Research + Recalculate</button>
     </div>
 
     <div id="driver-evidence-note" class="evnote"></div>
+    <div id="driver-research-summary" class="subtle"></div>
 
     <div id="stocks-body">
       <div class="sblock">
@@ -5185,6 +5216,38 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (e) {
       return send(500, { error: String(e.message || e) });
+    }
+  }
+
+  // POST /reno-research — the Driver tab's "Research + Recalculate" button.
+  // Same tool-calling path chat already uses when asked to "research the
+  // week" (web_search for flights/events, weather_evidence for real NWS
+  // weather, run_reno_schedule to apply it all), just reachable with one
+  // tap instead of needing to know the right words to type. Runs in its
+  // own ephemeral chat slot so it never lands in the user's real Chat
+  // conversation; the schedule it produces still updates the shared
+  // lastRenoSchedule/lastRenoEvidence that /reno-schedule reads from.
+  if (req.method==="POST" && req.url==="/reno-research") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    try {
+      const slot = "2";
+      const history = historyForSlot(slot);
+      const message =
+        "Research this coming week's Reno driving conditions and update the schedule. " +
+        "Search the web for RNO airport arrival/departure activity and any notable local " +
+        "events (concerts, sports, festivals, conventions) in the Reno/Sparks area for the " +
+        "coming week, building real evidence records from what you actually find — never " +
+        "invent one. Then call weather_evidence with runSchedule true, passing your " +
+        "flight/event evidence as extraEvidence, so the schedule reflects real weather, " +
+        "flights, and events together. Finish with a short plain-language summary (2-4 " +
+        "sentences) of what you found and how it moved the numbers.";
+      const { text: reply } = await askClaude(history, message, slot);
+      history.push({ role: "user", content: message });
+      history.push({ role: "assistant", content: reply });
+      saveHistoryForSlot(slot);
+      return send(200, { summary: cleanReply(reply) });
+    } catch (e) {
+      return send(502, { error: "Research failed: " + String(e.message || e) });
     }
   }
 
