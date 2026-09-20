@@ -2513,6 +2513,11 @@ tbody tr:hover{background:#17171c}
 .msg{
   padding:11px 14px;
   border-radius:13px;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.msg-text{
   white-space:pre-wrap;
   line-height:1.45;
   font-size:14px;
@@ -2522,6 +2527,16 @@ tbody tr:hover{background:#17171c}
   align-self:flex-start;background:#18181c;
   border:1px solid #292930;max-width:96%
 }
+.copy-btn{
+  align-self:flex-end;
+  border:1px solid #33333b;
+  border-radius:7px;
+  background:#1b1b1f;
+  color:#888;
+  font-size:10px;
+  padding:3px 9px;
+}
+.copy-btn:disabled{color:#68e59c;border-color:#2c4a3a}
 #inputbar{
   display:flex;gap:8px;padding:10px;
   border-top:1px solid #292930;
@@ -4047,12 +4062,65 @@ byId("message").onkeydown=e=>{
 function addMsg(text,cls){
   const c=byId("chat");
   const d=document.createElement("div");
-
   d.className="msg "+cls;
-  d.textContent=text;
+
+  // Text lives in its own child, not directly on d.textContent, because
+  // a bot bubble also needs a Copy button appended as a sibling node -
+  // setting d.textContent afterward would wipe that button right back out.
+  const textEl=document.createElement("div");
+  textEl.className="msg-text";
+  textEl.textContent=text;
+  d.appendChild(textEl);
+
+  if(cls==="bot"){
+    const btn=document.createElement("button");
+    btn.type="button";
+    btn.className="copy-btn";
+    btn.textContent="Copy";
+    btn.onclick=()=>copyMsgText(text,btn);
+    d.appendChild(btn);
+  }
 
   c.appendChild(d);
   d.scrollIntoView({behavior:"smooth",block:"end"});
+}
+
+// navigator.clipboard needs a secure context, which Railway's https
+// domain satisfies, but it's newer than some WebView builds still see in
+// the wild - so this still falls back to the old hidden-textarea +
+// execCommand trick rather than assuming the modern API is there.
+function copyMsgText(text,btn){
+  const original=btn.textContent;
+  function showCopied(){
+    btn.textContent="Copied";
+    btn.disabled=true;
+    setTimeout(()=>{btn.textContent=original;btn.disabled=false;},1400);
+  }
+  function showFailed(){
+    btn.textContent="Copy failed";
+    setTimeout(()=>{btn.textContent=original;},1400);
+  }
+  function legacyCopy(){
+    try{
+      const ta=document.createElement("textarea");
+      ta.value=text;
+      ta.style.position="fixed";
+      ta.style.opacity="0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok=document.execCommand("copy");
+      document.body.removeChild(ta);
+      ok?showCopied():showFailed();
+    }catch(e){
+      showFailed();
+    }
+  }
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(showCopied).catch(legacyCopy);
+  }else{
+    legacyCopy();
+  }
 }
 
 async function sendMsg(){
