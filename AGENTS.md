@@ -42,6 +42,17 @@ file doesn't duplicate those. If work ever spans a Hatchable project and
 this repo in the same session, treat them as two separate change sets with
 two separate verification steps, not one.
 
+A fourth kind of "elsewhere" exists too, and it doesn't fit the table above
+because it isn't a project or a codebase: a chat-platform scheduled-
+automation layer, external to every system listed here — 16 recurring or
+one-off prompts, each with its own conversation, an iCal schedule, and an
+enabled/disabled flag (archived at
+`02_SCHEDULED_TASKS/automations_full_export.json` in the user's library
+export, not reachable live from this session). It wakes an AI conversation
+on a timer rather than running code in any of these repos. See §4 for what
+it currently does and doesn't do, and why it matters for autonomy
+specifically.
+
 ---
 
 ## 2. Principles already load-bearing in this code
@@ -217,6 +228,29 @@ looks like a second autonomous loop but isn't one — it runs in the
 user's own browser tab and does nothing while nobody's looking at the
 page, which is the opposite of "constantly on the lookout.") Closing
 that gap is now the higher-priority next step — see §5.
+
+**This repo isn't the only place "autonomous" could already mean
+something, though.** Outside every codebase listed in §1, a chat-platform
+automation layer already exists — 16 defined recurring/one-off prompts —
+and it isn't hypothetical: as of the 2026-09-20 export it's actively
+running. Three are enabled and firing on schedule right now: `Live Bet
+Signal` (hourly condition-watch, last fired today), `Refresh Darkly
+Scanner` (hourly, last fired today), `Market Shock Report` (weekday
+mornings, last fired 2026-09-18). The other 13 are disabled — including
+*both* existing `ReferralMarket Engine` automations, `Referral Market
+Morning`, `Money Opportunities`, `Asymmetric Money Hunt`, `Market Open
+Check`, `Market Close Warning`, `Factory Source Maintenance`, `Build
+Venue Outreach Bot`, and `AION Autonomous Adversary` — several aimed at
+exactly the domains §5 plans to give a heartbeat. This is a fundamentally
+different mechanism from `startScheduler()`: a scheduled prompt wakes a
+fresh AI conversation that presumably uses tools to act, rather than
+deterministic code running in this process — a model call per firing,
+behavior dependent on whatever tools that conversation has at run time,
+and nothing reachable from any session working on this repo can flip its
+switches. Worth knowing before treating §5's heartbeat as the only lever
+for "constantly on the lookout": it's one of at least two, and the other
+one is mostly switched off right now, for reasons not recorded in the
+export itself.
 
 ---
 
