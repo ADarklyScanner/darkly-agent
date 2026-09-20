@@ -753,12 +753,26 @@ export async function getBulkSnapshots(symbols, options = {}) {
  *
  * Enforced in code before anything reaches Alpaca. These exist so an
  * unattended run can fail small instead of failing catastrophically.
+ *
+ * A recurring design line through this function: several of these exist
+ * specifically to pace or cap NEW risk (impulsive/runaway buying), not
+ * to restrict activity in general — and a check aimed at new risk must
+ * never also block an exit. A guardrail is supposed to make it safer to
+ * be in this account, not to make it possible to get trapped in a
+ * position it would rather you not have opened in the first place.
+ * Checks 2-4 below are exit-exempt for exactly this reason; #5
+ * (tradability) already was, and is the precedent the other three now
+ * follow. #1 (trade count) is left applying to both sides deliberately —
+ * it is a circuit breaker on total order VOLUME (a malfunctioning loop
+ * firing far more orders than intended), not a new-risk gate, so there
+ * is no side-based exemption that makes sense for it.
  * ------------------------------------------------------------------ */
 
 async function checkGuardrails(order) {
   const blocks = [];
+  const isExit = order.side === "sell";
 
-  // 1. Trades per day
+  // 1. Trades per day — applies to both sides; see the note above.
   const today = todaysTrades();
   if (today.length >= LIMITS.maxTradesPerDay) {
     blocks.push(
@@ -766,8 +780,12 @@ async function checkGuardrails(order) {
     );
   }
 
-  // 2. Cooldown between trades
-  if (today.length > 0 && LIMITS.cooldownMinutes > 0) {
+  // 2. Cooldown between trades. This spaces out new entries so an
+  // unattended run cannot pile into position after position back to
+  // back. It protects against nothing on an exit — spacing out your own
+  // sells has no safety benefit, and only leaves a position open longer
+  // than intended while the market keeps moving underneath it.
+  if (!isExit && today.length > 0 && LIMITS.cooldownMinutes > 0) {
     const last = today[today.length - 1];
     const elapsedMin =
       (Date.now() - new Date(last.submittedAt).getTime()) / 60000;
@@ -785,35 +803,51 @@ async function checkGuardrails(order) {
   try {
     account = await getAccount();
 
+    // A broker-level halt is not a risk policy this app can choose to
+    // waive for an exit — Alpaca will not accept the order either way,
+    // on any side, so both are blocked here for an honest error message
+    // instead of a confusing rejection from Alpaca itself.
     if (account.tradingBlocked) {
       blocks.push("Alpaca reports trading is blocked on this account.");
     }
 
-    if (account.dayPnl <= -Math.abs(LIMITS.maxDailyLossUsd)) {
+    // The daily loss ceiling stops new risk for the rest of the day; the
+    // message has always said "no NEW positions", but the code blocked
+    // exits too, which is exactly backwards — hitting this ceiling is
+    // precisely when being able to cut a losing position matters most.
+    if (!isExit && account.dayPnl <= -Math.abs(LIMITS.maxDailyLossUsd)) {
       blocks.push(
         `Daily loss limit hit (${account.dayPnl} vs limit -${LIMITS.maxDailyLossUsd}). No new positions today.`
       );
     }
   } catch (e) {
+    // Fail closed on BOTH sides deliberately, unlike the checks above:
+    // an account state that cannot even be read is the "do not guess"
+    // case, not a normal operational limit, and that applies as much to
+    // an exit as to an entry.
     blocks.push(`Could not verify account state: ${e.message}`);
   }
 
-  // 4. Position size ceiling
-  //
-  // An order whose value cannot be determined is BLOCKED, not waved through:
-  // an unknown size is exactly the case the ceiling exists to catch.
+  // 4. Position size ceiling. This caps how much a single NEW position
+  // can commit — it has nothing to say about closing an existing one,
+  // including one that has since grown past the cap purely from gains.
+  // You must always be able to get out. estimatedUsd is still computed
+  // for both sides purely as trade-log context; only buys are blocked by
+  // it.
   const estimatedUsd = await estimateOrderValue(order);
 
-  if (estimatedUsd === null) {
-    blocks.push(
-      `Could not determine the order's dollar value for ${order.symbol}, so the max position size check cannot be applied. Use a limit order or a notional amount.`
-    );
-  } else if (estimatedUsd > LIMITS.maxPositionUsd) {
-    blocks.push(
-      `Order value ~$${estimatedUsd.toFixed(2)} exceeds max position size $${
-        LIMITS.maxPositionUsd
-      }.`
-    );
+  if (!isExit) {
+    if (estimatedUsd === null) {
+      blocks.push(
+        `Could not determine the order's dollar value for ${order.symbol}, so the max position size check cannot be applied. Use a limit order or a notional amount.`
+      );
+    } else if (estimatedUsd > LIMITS.maxPositionUsd) {
+      blocks.push(
+        `Order value ~$${estimatedUsd.toFixed(2)} exceeds max position size $${
+          LIMITS.maxPositionUsd
+        }.`
+      );
+    }
   }
 
   // 5. Asset tradability. A sell that reduces or closes an existing
