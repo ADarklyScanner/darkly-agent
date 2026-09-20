@@ -1382,13 +1382,15 @@ async function executeClaudeTool(name, input = {}, slot = null) {
 
   if (name === "run_reno_schedule") {
     try {
+      const evidence = input.evidence || [];
       const result = scheduleReno({
         weekStart: input.weekStart ? new Date(input.weekStart) : undefined,
-        evidence: input.evidence || [],
+        evidence,
         learnedUberTph: input.learnedUberTph,
         quest: input.quest || null
       });
       lastRenoSchedule = result;
+      lastRenoEvidence = evidence;
 
       const topHours = Math.max(1, Math.min(168, Number(input.topHours) || 24));
       const fmt = (d) =>
@@ -1752,6 +1754,7 @@ async function executeClaudeTool(name, input = {}, slot = null) {
       if (input.runSchedule !== false) {
         const schedule = scheduleReno({ evidence });
         lastRenoSchedule = schedule;
+        lastRenoEvidence = evidence;
         const fmt = (d) =>
           new Intl.DateTimeFormat("en-US", {
             timeZone: "America/Los_Angeles",
@@ -1863,6 +1866,11 @@ async function executeClaudeTool(name, input = {}, slot = null) {
 // ranking without recomputing it (and without the model having to relay all
 // 168 rows through the chat).
 let lastRenoSchedule = null;
+
+// The evidence array behind lastRenoSchedule, kept separately so a plain
+// Recalculate can replay it (see /reno-schedule below) instead of silently
+// reverting a researched schedule back to an unresearched baseline.
+let lastRenoEvidence = [];
 
 // The most recently uploaded APK's diagnosis, so the console's APK tab can
 // show the result the moment it's ready and so inspect_apk can let Claude
@@ -3596,7 +3604,13 @@ function renderMarketScan(run, positions){
   const signals=(run.signals||[]).slice().sort((a,b)=>Number(b.score||0)-Number(a.score||0));
 
   tableEl.innerHTML=signals.length===0
-    ? '<div class="empty">The last scan recorded no signals — usually a data or history problem rather than a quiet market; see the note above.</div>'
+    ? (run.skipped
+        // Every skip path (market closed, mode off, kill switch, daily-loss
+        // halt, a run already in progress...) returns before scoring the
+        // universe at all, so signals is always [] here — that's expected,
+        // not a problem, and the reason is already stated above.
+        ? '<div class="empty">No scoring ran this cycle — see the note above for why.</div>'
+        : '<div class="empty">The last scan recorded no signals — usually a data or history problem rather than a quiet market.</div>')
     : '<table class="dtable"><thead><tr>'
       +'<th>Symbol</th><th>Action</th><th>Score</th><th>Confidence</th><th>Reason</th>'
       +'</tr></thead><tbody>'
@@ -5110,8 +5124,14 @@ const server = http.createServer(async (req, res) => {
       // show that one. Otherwise compute the baseline ranking on demand, and
       // say plainly that it carries no evidence — an evidence-free ranking
       // presented as if it knew about this week's events would be a lie.
+      //
+      // "Recalculate" (fresh=1) means recompute now, not throw away research:
+      // it replays whatever evidence chat has already gathered this session
+      // (lastRenoEvidence, [] if none) rather than reverting to an
+      // unresearched baseline out from under someone who just had chat spend
+      // several tool calls building a STRONG-coverage schedule.
       const fresh = new URL(req.url, "http://x").searchParams.get("fresh") === "1";
-      const result = !fresh && lastRenoSchedule ? lastRenoSchedule : scheduleReno({});
+      const result = !fresh && lastRenoSchedule ? lastRenoSchedule : scheduleReno({ evidence: lastRenoEvidence });
       if (fresh || !lastRenoSchedule) lastRenoSchedule = result;
 
       const evidenceCount = result.hours.reduce((s, h) => s + h.applied.length, 0);
