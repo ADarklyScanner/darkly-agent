@@ -3177,8 +3177,12 @@ async function loadLotteryStates(){
     const d=await res.json();
     if(!res.ok||d.ok===false)throw new Error(d.error||("HTTP "+res.status));
     const sel=byId("lottery-state-select");
+    // Alphabetical by display label, same convention as populateMarkets()
+    // above - the backend's own order isn't meaningful here, and a 46+
+    // entry list is only really browsable sorted.
+    const sortedStates=[...d.states].sort((a,b)=>lotteryLabel(a).localeCompare(lotteryLabel(b)));
     sel.innerHTML="<option value=''>Choose a state…</option>"+
-      d.states.map(s=>{const label=esc(lotteryLabel(s));const val=esc(lotteryValue(s));return '<option value="'+val+'">'+label+'</option>';}).join("");
+      sortedStates.map(s=>{const label=esc(lotteryLabel(s));const val=esc(lotteryValue(s));return '<option value="'+val+'">'+label+'</option>';}).join("");
     lotteryStatesLoaded=true;
     byId("lottery-status").textContent=d.states.length+" states available";
   }catch(e){
@@ -3201,8 +3205,9 @@ async function onLotteryStateChange(){
     const res=await fetch("/lottery-games?state="+encodeURIComponent(state),{headers:{"X-Agent-Passcode":passcode}});
     const d=await res.json();
     if(!res.ok||d.ok===false)throw new Error(d.error||("HTTP "+res.status));
+    const sortedGames=[...d.games].sort((a,b)=>lotteryLabel(a).localeCompare(lotteryLabel(b)));
     gameSel.innerHTML="<option value=''>Choose a game…</option>"+
-      d.games.map(g=>{const label=esc(lotteryLabel(g));const val=esc(lotteryValue(g));return '<option value="'+val+'">'+label+'</option>';}).join("");
+      sortedGames.map(g=>{const label=esc(lotteryLabel(g));const val=esc(lotteryValue(g));return '<option value="'+val+'">'+label+'</option>';}).join("");
     gameSel.disabled=false;
   }catch(e){
     gameSel.innerHTML="<option value=''>Failed to load games</option>";
@@ -4101,6 +4106,7 @@ function htmlPage() {
   return `<!doctype html>
 <html>
 <head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Darkly Research Console</title>
 <link rel="manifest" href="/manifest.json">
@@ -4138,11 +4144,11 @@ function htmlPage() {
     </div>
     <div id="nav">
       <select id="view-select" class="navselect" aria-label="Switch section">
-        <option value="research">Market Scan</option>
-        <option value="stocks">Stocks</option>
+        <option value="apk">APK</option>
         <option value="driver">Driver</option>
         <option value="lottery">Lottery</option>
-        <option value="apk">APK</option>
+        <option value="research" selected>Market Scan</option>
+        <option value="stocks">Stocks</option>
       </select>
       <button id="chat-tab" class="navbtn">Chat</button>
     </div>
@@ -4429,15 +4435,25 @@ function safeEqual(a, b) {
 }
 
 const server = http.createServer(async (req, res) => {
+  // Every non-ASCII character this console sends - the em dashes and
+  // middle dots all over its own labels, the "…" in "Choose a state…" -
+  // is real UTF-8. Neither send() nor sendRaw() used to say so in the
+  // Content-Type header, so a browser with no other signal has to guess
+  // the encoding, and a wrong guess (e.g. Windows-1252) turns each
+  // multi-byte UTF-8 character into 2-3 garbled ones (e.g. "…" becomes
+  // "â€¦") — reported live on a real device. `; charset=utf-8` on every
+  // text response removes the guess entirely.
   function send(status, body, type) {
-    res.writeHead(status, {"Content-Type": type||"application/json","Cache-Control":"no-store"});
+    const contentType = type==="text/html" ? "text/html; charset=utf-8" : (type||"application/json");
+    res.writeHead(status, {"Content-Type": contentType,"Cache-Control":"no-store"});
     res.end(type==="text/html" ? body : JSON.stringify(body));
   }
   // For anything that isn't JSON or HTML text - a binary icon, or a raw
   // JS/text file that must NOT be run through JSON.stringify (send()
   // above always stringifies unless the type is exactly "text/html").
   function sendRaw(status, body, type) {
-    res.writeHead(status, {"Content-Type": type,"Cache-Control":"no-store"});
+    const isText = (type||"").startsWith("text/") || type==="application/javascript";
+    res.writeHead(status, {"Content-Type": isText ? type+"; charset=utf-8" : type,"Cache-Control":"no-store"});
     res.end(body);
   }
   function auth() {
