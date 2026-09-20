@@ -44,7 +44,7 @@ import {
   setKillSwitch,
   CONFIG as AUTOTRADER_CONFIG
 } from "./autotrader.js";
-import { stateInfo } from "./state.js";
+import { stateInfo, readState, writeState } from "./state.js";
 import { resolveExport } from "./history-export.js";
 import {
   pairTrades,
@@ -1391,6 +1391,7 @@ async function executeClaudeTool(name, input = {}, slot = null) {
       });
       lastRenoSchedule = result;
       lastRenoEvidence = evidence;
+      writeState(RENO_EVIDENCE_FILE, evidence);
 
       const topHours = Math.max(1, Math.min(168, Number(input.topHours) || 24));
       const fmt = (d) =>
@@ -1755,6 +1756,7 @@ async function executeClaudeTool(name, input = {}, slot = null) {
         const schedule = scheduleReno({ evidence });
         lastRenoSchedule = schedule;
         lastRenoEvidence = evidence;
+        writeState(RENO_EVIDENCE_FILE, evidence);
         const fmt = (d) =>
           new Intl.DateTimeFormat("en-US", {
             timeZone: "America/Los_Angeles",
@@ -1862,15 +1864,30 @@ async function executeClaudeTool(name, input = {}, slot = null) {
   throw new Error(`Unknown Claude tool: ${name}`);
 }
 
+// The evidence behind the Driver tab's schedule survives a restart on its
+// own: it's plain, flat, Date-free data (unlike the computed schedule
+// below), and every deploy tonight was otherwise throwing away real
+// research - actual web searches and weather lookups - for no reason
+// other than the container restarting. Written to the same mounted volume
+// (state.js) the trade log and autotrader history already use, so it
+// keeps this restart no worse than any other. RENO_EVIDENCE_FILE's
+// filename intentionally does not encode a week: evidenceApplies() below
+// already scopes each record to its own start/end window, so evidence
+// from a week that has passed simply stops matching anything rather than
+// needing to be cleared out by hand.
+const RENO_EVIDENCE_FILE = "reno-evidence.json";
+let lastRenoEvidence = readState(RENO_EVIDENCE_FILE, []);
+
 // The most recent schedule run, so the Driver tab can show the full 168-hour
 // ranking without recomputing it (and without the model having to relay all
-// 168 rows through the chat).
-let lastRenoSchedule = null;
-
-// The evidence array behind lastRenoSchedule, kept separately so a plain
-// Recalculate can replay it (see /reno-schedule below) instead of silently
-// reverting a researched schedule back to an unresearched baseline.
-let lastRenoEvidence = [];
+// 168 rows through the chat). Deliberately NOT itself persisted - it's a
+// large, deeply-nested object full of Date instances that scheduleReno()
+// recomputes in milliseconds from the evidence above, so persisting the
+// cheap-to-derive result would just be a second, harder-to-keep-correct
+// copy of the same information. Seeding it here means a restart with
+// surviving evidence shows that evidence's schedule immediately, rather
+// than DEGRADED until the next request happens to recompute it.
+let lastRenoSchedule = lastRenoEvidence.length ? scheduleReno({ evidence: lastRenoEvidence }) : null;
 
 // The most recently uploaded APK's diagnosis, so the console's APK tab can
 // show the result the moment it's ready and so inspect_apk can let Claude
@@ -2673,6 +2690,17 @@ tbody tr:hover{background:var(--bg-3)}
 .ev-warn{background:var(--gold-bg);color:var(--gold)}
 .ev-ok{background:var(--positive-bg);color:var(--positive)}
 .subtle{color:var(--text-dim);font-size:11px;line-height:1.5}
+/* A capped, internally-scrollable box regardless of how long a research
+ * summary turns out to be: the prompt in /reno-research asks for 2-4
+ * plain sentences, but nothing stops a model from answering at whatever
+ * length it decides on, and this is plain text (not rendered markdown),
+ * so an uncapped reply here would push the rest of the Driver tab off
+ * screen instead of just looking a bit long. */
+#driver-research-summary{
+  max-height:110px;
+  overflow-y:auto;
+  padding:4px 0;
+}
 .blk{
   border:1px solid var(--border-soft);
   border-radius:10px;
@@ -3181,7 +3209,15 @@ function showView(which){
   byId("chat-view").style.display=which==="chat"?"flex":"none";
 
   byId("chat-tab").classList.toggle("active",which==="chat");
-  if(which!=="chat")byId("view-select").value=which;
+  // Chat has no <option> of its own in view-select (it's the separate
+  // button next to it), so leaving the dropdown showing whatever tab was
+  // last picked meant: go to Chat, then pick that SAME tab again from the
+  // dropdown to go back - the <select>'s value never actually changed, so
+  // the browser never fires onchange, and nothing happens until a
+  // DIFFERENT tab is picked first. Clearing it to "" (matching no option)
+  // on the way to Chat guarantees the next pick, even of that same tab, is
+  // a real value change and fires normally.
+  byId("view-select").value=which==="chat"?"":which;
 
   if(which==="chat")byId("message").focus();
   if(which==="stocks"&&!stocksLoaded)loadStocks();
@@ -5239,8 +5275,13 @@ const server = http.createServer(async (req, res) => {
         "coming week, building real evidence records from what you actually find — never " +
         "invent one. Then call weather_evidence with runSchedule true, passing your " +
         "flight/event evidence as extraEvidence, so the schedule reflects real weather, " +
-        "flights, and events together. Finish with a short plain-language summary (2-4 " +
-        "sentences) of what you found and how it moved the numbers.";
+        "flights, and events together. " +
+        "Your reply is shown as-is in a small status line on the Driver tab, which " +
+        "already renders the full ranked hours, driving blocks, and days off elsewhere " +
+        "- do not repeat any of that. Reply with ONLY 2-4 plain prose sentences (no " +
+        "markdown headers, tables, or bullet lists, no ranked lists of hours) naming " +
+        "what you found and how it changed the week, e.g. which nights got busier and " +
+        "why.";
       const { text: reply } = await askClaude(history, message, slot);
       history.push({ role: "user", content: message });
       history.push({ role: "assistant", content: reply });
