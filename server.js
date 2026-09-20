@@ -2295,10 +2295,12 @@ button{cursor:pointer}
 #nav{
   display:flex;
   gap:6px;
+  overflow-x:auto;
+  scrollbar-width:none;
 }
 #nav .navbtn{
-  flex:1 1 0;
-  min-width:0;
+  flex:0 0 auto;
+  white-space:nowrap;
   text-align:center;
 }
 #title{
@@ -2555,7 +2557,15 @@ tbody tr:hover{background:#17171c}
 .dk{color:#777;font-size:10px;text-transform:uppercase}
 .dv{font-size:12px;white-space:pre-wrap;word-break:break-word}
 
-#stocks-view,#driver-view{
+/* Lottery and APK were added after this rule was written and were never
+ * added to it, so neither got flex-direction:column (or overflow:hidden,
+ * or the default display:none showView() expects to override). Without
+ * flex-direction:column, each view's default flex-direction is row, so
+ * its own children - the picker bar, the basis note, and the five-card
+ * results block - laid out side by side instead of stacked, leaving
+ * almost everything squeezed into a sliver at the right edge. Stocks and
+ * Driver were never broken; only these two ever fell outside this rule. */
+#stocks-view,#driver-view,#lottery-view,#apk-view{
   flex:1;
   overflow:hidden;
   display:none;
@@ -2769,7 +2779,6 @@ tbody tr:hover{background:#17171c}
 @media(min-width:700px){
   #topbar{flex-direction:row;align-items:center}
   #topbar-main{flex:1}
-  #nav .navbtn{flex:0 0 auto}
 }
 
 @media(max-width:700px){
@@ -3055,10 +3064,24 @@ let lotteryStatesLoaded=false;
 // field name (apps/lottery.js itself normalizes /results defensively for
 // the same reason), so this reads whichever of state/name/slug/game is
 // present, or falls back to the raw value if it's already a plain string.
+// Display text only - see lotteryValue() below for what to actually submit.
 function lotteryLabel(entry){
   if(entry==null)return "";
   if(typeof entry==="string"||typeof entry==="number")return String(entry);
   return String(entry.state||entry.name||entry.slug||entry.game||JSON.stringify(entry));
+}
+
+// The backend's own identifier for this row - what /lottery-games and
+// /lottery-analyze need back in the URL path. This is why Analyze returned
+// HTTP 404: the game dropdown's option value was lotteryLabel()'s pretty
+// text ("Daily 3"), and that got sent straight through as the game path
+// segment. drawanalytics.com's /results route wants its own id ("daily3"),
+// not the display name - so id/slug must be tried BEFORE name/state here,
+// the opposite priority from the label above.
+function lotteryValue(entry){
+  if(entry==null)return "";
+  if(typeof entry==="string"||typeof entry==="number")return String(entry);
+  return String(entry.id||entry.slug||entry.state||entry.name||entry.game||JSON.stringify(entry));
 }
 
 async function loadLotteryStates(){
@@ -3069,7 +3092,7 @@ async function loadLotteryStates(){
     if(!res.ok||d.ok===false)throw new Error(d.error||("HTTP "+res.status));
     const sel=byId("lottery-state-select");
     sel.innerHTML="<option value=''>Choose a state…</option>"+
-      d.states.map(s=>{const label=esc(lotteryLabel(s));return "<option value=\""+label+"\">"+label+"</option>";}).join("");
+      d.states.map(s=>{const label=esc(lotteryLabel(s));const val=esc(lotteryValue(s));return "<option value=\""+val+"\">"+label+"</option>";}).join("");
     lotteryStatesLoaded=true;
     byId("lottery-status").textContent=d.states.length+" states available";
   }catch(e){
@@ -3093,7 +3116,7 @@ async function onLotteryStateChange(){
     const d=await res.json();
     if(!res.ok||d.ok===false)throw new Error(d.error||("HTTP "+res.status));
     gameSel.innerHTML="<option value=''>Choose a game…</option>"+
-      d.games.map(g=>{const label=esc(lotteryLabel(g));return "<option value=\""+label+"\">"+label+"</option>";}).join("");
+      d.games.map(g=>{const label=esc(lotteryLabel(g));const val=esc(lotteryValue(g));return "<option value=\""+val+"\">"+label+"</option>";}).join("");
     gameSel.disabled=false;
   }catch(e){
     gameSel.innerHTML="<option value=''>Failed to load games</option>";
