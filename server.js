@@ -2342,6 +2342,8 @@ button{cursor:pointer}
 }
 
 #app{
+  width:100%;
+  max-width:100vw;
   height:100vh;
   height:100dvh;
   display:flex;
@@ -2555,9 +2557,9 @@ tbody tr:hover{background:var(--bg-3)}
 }
 #chat-header{
   display:flex;justify-content:space-between;align-items:center;gap:8px;
-  padding:8px 10px 0;
+  padding:8px 10px 0;flex-wrap:wrap;
 }
-#chat-slot-tabs{display:flex;gap:6px;flex-wrap:wrap}
+#chat-slot-tabs{display:flex;gap:6px;flex-wrap:wrap;min-width:0}
 .slot-tab{
   border:1px solid var(--border-soft);border-radius:9px;
   background:var(--bg-2);color:var(--text-dim);padding:6px 12px;
@@ -2575,6 +2577,7 @@ tbody tr:hover{background:var(--bg-3)}
 #chat{
   flex:1;
   overflow-y:auto;
+  overflow-x:hidden;
   padding:14px;
   display:flex;
   flex-direction:column;
@@ -2587,11 +2590,32 @@ tbody tr:hover{background:var(--bg-3)}
   flex-direction:column;
   gap:6px;
 }
+.msg{min-width:0;max-width:100%}
 .msg-text{
   white-space:pre-wrap;
+  overflow-wrap:anywhere;
   line-height:1.45;
   font-size:14px;
+  min-width:0;
 }
+.msg-text.md{white-space:normal}
+.md p{margin:0 0 8px}
+.md p:last-child{margin-bottom:0}
+.md h3,.md h4,.md h5,.md h6{margin:10px 0 6px;font-size:15px;color:var(--accent-text)}
+.md h3:first-child,.md h4:first-child{margin-top:0}
+.md ul,.md ol{margin:0 0 8px;padding-left:20px}
+.md li{margin:2px 0}
+.md hr{border:0;border-top:1px solid var(--border-soft);margin:10px 0}
+.md code{background:var(--bg-recessed);border-radius:5px;padding:1px 5px;font-size:13px}
+.md-pre{background:var(--bg-recessed);border-radius:8px;padding:8px;overflow-x:auto;white-space:pre;margin:0 0 8px}
+.md-pre code{background:none;padding:0}
+.md a{color:var(--accent-text)}
+.md-table{overflow-x:auto;max-width:100%;margin:0 0 8px}
+.md-table table{border-collapse:collapse;font-size:13px;width:100%;min-width:0}
+.md-table th{position:static;white-space:normal;cursor:default;color:var(--text)}
+.md-table tbody tr{cursor:default}
+.md-table th,.md-table td{border:1px solid var(--border-soft);padding:5px 8px;text-align:left;vertical-align:top;overflow-wrap:break-word;word-break:normal}
+.md-table th{background:var(--bg-recessed)}
 .me{align-self:flex-end;background:var(--accent-bg);max-width:88%}
 .bot{
   align-self:flex-start;background:var(--bg-2);
@@ -4077,7 +4101,7 @@ async function loadResearch(){
     updateSummary();
     renderResearch();
 
-    byId("row-count").textContent=researchRows.length+" records";
+    byId("row-count").textContent="ReferralMarket: "+researchRows.length+" records";
     byId("load-status").textContent="Live";
   }catch(e){
     byId("load-status").textContent="Error: "+e.message;
@@ -4362,6 +4386,82 @@ byId("message").onkeydown=e=>{
   }
 };
 
+// Small, safe markdown renderer for bot replies. Everything is HTML-escaped
+// FIRST, so model output can never inject markup; only the handful of
+// patterns below (headers, bold, italic, code, lists, tables, rules, links)
+// are turned back into tags. The Copy button still copies the raw text.
+function mdInline(t){
+  const B=String.fromCharCode(96);
+  let out="",i=0;
+  while(i<t.length){
+    const a=t.indexOf(B,i);
+    if(a<0){out+=mdSpans(t.slice(i));break;}
+    const b=t.indexOf(B,a+1);
+    if(b<0){out+=mdSpans(t.slice(i));break;}
+    out+=mdSpans(t.slice(i,a))+"<code>"+t.slice(a+1,b)+"</code>";
+    i=b+1;
+  }
+  return out;
+}
+function mdSpans(t){
+  return t
+    .replace(/[*][*]([^*]+)[*][*]/g,"<strong>$1</strong>")
+    .replace(/(^|[^*])[*]([^*]+)[*](?![*])/g,"$1<em>$2</em>")
+    .replace(/\\[([^\\]]+)\\]\\((https?:[^ )]+)\\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+function mdCells(line){
+  let l=line.trim();
+  if(l.startsWith("|"))l=l.slice(1);
+  if(l.endsWith("|"))l=l.slice(0,-1);
+  return l.split("|").map(c=>c.trim());
+}
+function renderMd(src){
+  const lines=esc(src).split(String.fromCharCode(10));
+  const html=[];
+  let list=null,para=[];
+  const flushPara=()=>{if(para.length){html.push("<p>"+para.map(mdInline).join("<br>")+"</p>");para=[];}};
+  const closeList=()=>{if(list){html.push("</"+list+">");list=null;}};
+  const B3=String.fromCharCode(96).repeat(3);
+  for(let i=0;i<lines.length;i++){
+    const line=lines[i];
+    const t=line.trim();
+    if(t.startsWith(B3)){
+      flushPara();closeList();
+      const code=[];i++;
+      while(i<lines.length&&!lines[i].trim().startsWith(B3)){code.push(lines[i]);i++;}
+      html.push('<pre class="md-pre"><code>'+code.join(String.fromCharCode(10))+"</code></pre>");
+      continue;
+    }
+    if(!t){flushPara();closeList();continue;}
+    if(/^(-{3,}|[*]{3,}|_{3,})$/.test(t)){flushPara();closeList();html.push("<hr>");continue;}
+    const h=t.match(/^(#{1,6}) +(.*)$/);
+    if(h){flushPara();closeList();const lv=Math.min(h[1].length+2,6);html.push("<h"+lv+">"+mdInline(h[2])+"</h"+lv+">");continue;}
+    if(t.startsWith("|")&&i+1<lines.length&&/^[|: -]+$/.test(lines[i+1].trim())&&lines[i+1].includes("-")){
+      flushPara();closeList();
+      const head=mdCells(t);i+=2;
+      const rows=[];
+      while(i<lines.length&&lines[i].trim().startsWith("|")){rows.push(mdCells(lines[i]));i++;}
+      i--;
+      html.push('<div class="md-table"><table><thead><tr>'+head.map(c=>"<th>"+mdInline(c)+"</th>").join("")+"</tr></thead><tbody>"+
+        rows.map(r=>"<tr>"+r.map(c=>"<td>"+mdInline(c)+"</td>").join("")+"</tr>").join("")+"</tbody></table></div>");
+      continue;
+    }
+    const ul=t.match(/^[-*+] +(.*)$/);
+    const ol=t.match(/^[0-9]+[.)] +(.*)$/);
+    if(ul||ol){
+      flushPara();
+      const want=ul?"ul":"ol";
+      if(list!==want){closeList();html.push("<"+want+">");list=want;}
+      html.push("<li>"+mdInline((ul||ol)[1])+"</li>");
+      continue;
+    }
+    closeList();
+    para.push(t);
+  }
+  flushPara();closeList();
+  return html.join("");
+}
+
 function addMsg(text,cls){
   const c=byId("chat");
   const d=document.createElement("div");
@@ -4371,8 +4471,13 @@ function addMsg(text,cls){
   // a bot bubble also needs a Copy button appended as a sibling node -
   // setting d.textContent afterward would wipe that button right back out.
   const textEl=document.createElement("div");
-  textEl.className="msg-text";
-  textEl.textContent=text;
+  if(cls==="bot"){
+    textEl.className="msg-text md";
+    textEl.innerHTML=renderMd(text);
+  }else{
+    textEl.className="msg-text";
+    textEl.textContent=text;
+  }
   d.appendChild(textEl);
 
   if(cls==="bot"){
@@ -4508,13 +4613,14 @@ function htmlPage() {
 
   <div id="topbar">
     <div id="topbar-main">
-      <div id="title">Darkly</div>
+      <div id="title">Darkly Agent</div>
       <div class="mode-badge">PRE-LAUNCH CALIBRATION</div>
       <div id="row-count">0 rows</div>
       <div class="spacer"></div>
     </div>
     <div id="nav">
       <select id="view-select" class="navselect" aria-label="Switch section">
+        <option value="" hidden>Sections</option>
         <option value="apk">APK</option>
         <option value="driver">Driver</option>
         <option value="lottery">Lottery</option>
@@ -4770,7 +4876,7 @@ function htmlPage() {
     </div>
     <div id="chat"></div>
     <div id="inputbar">
-      <textarea id="message" placeholder="Ask Darkly about the live ReferralMarket data..."></textarea>
+      <textarea id="message" placeholder="Ask Darkly Agent anything..."></textarea>
       <button id="send-btn">Send</button>
     </div>
   </section>
