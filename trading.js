@@ -105,6 +105,39 @@ export function updateGuardrails(patch) {
   return { ...LIMITS };
 }
 
+/**
+ * Hard safety ceilings. These are NOT editable from the console or chat —
+ * only by changing this code. On Sept 20, 2026 the console's Guardrails
+ * panel was set to 500 trades/day, $1,000,000 per position and a
+ * $1,000,000 daily loss limit, and the chat agent then put the whole
+ * paper account into ~14 mostly-crypto names in one afternoon. With real
+ * money that is not survivable, so whatever LIMITS says, the effective
+ * limit is never looser than these.
+ */
+// Only changeable in Railway's env vars (never from the console or chat).
+const envPct = (name, def) => {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 && n <= 100 ? n : def;
+};
+export const HARD_CEILINGS = {
+  maxTradesPerDay: 30,
+  maxPositionPercentOfEquity: envPct("HARD_MAX_POSITION_PERCENT", 10),
+  maxDailyLossPercentOfEquity: envPct("HARD_MAX_DAILY_LOSS_PERCENT", 3)
+};
+
+export function effectiveLimits(equity) {
+  const eq = Number(equity);
+  const hasEq = Number.isFinite(eq) && eq > 0;
+  const pos = hasEq ? (eq * HARD_CEILINGS.maxPositionPercentOfEquity) / 100 : LIMITS.maxPositionUsd;
+  const loss = hasEq ? (eq * HARD_CEILINGS.maxDailyLossPercentOfEquity) / 100 : LIMITS.maxDailyLossUsd;
+  return {
+    maxTradesPerDay: Math.min(LIMITS.maxTradesPerDay, HARD_CEILINGS.maxTradesPerDay),
+    maxPositionUsd: Number(Math.min(LIMITS.maxPositionUsd, pos).toFixed(2)),
+    maxDailyLossUsd: Number(Math.min(Math.abs(LIMITS.maxDailyLossUsd), loss).toFixed(2)),
+    cooldownMinutes: LIMITS.cooldownMinutes
+  };
+}
+
 export function isLiveEndpoint() {
   return !/paper-api\.alpaca\.markets/.test(ALPACA_BASE);
 }
@@ -772,11 +805,23 @@ async function checkGuardrails(order) {
   const blocks = [];
   const isExit = order.side === "sell";
 
+  // Read the account first so every limit below can be held to the hard
+  // ceilings (which scale with account size). If it can't be read, the
+  // account check further down fails closed anyway.
+  let account = null;
+  let accountError = null;
+  try {
+    account = await getAccount();
+  } catch (e) {
+    accountError = e;
+  }
+  const L = effectiveLimits(account ? account.equity : null);
+
   // 1. Trades per day — applies to both sides; see the note above.
   const today = todaysTrades();
-  if (today.length >= LIMITS.maxTradesPerDay) {
+  if (today.length >= L.maxTradesPerDay) {
     blocks.push(
-      `Daily trade limit reached (${today.length}/${LIMITS.maxTradesPerDay}).`
+      `Daily trade limit reached (${today.length}/${L.maxTradesPerDay}).`
     );
   }
 
@@ -799,9 +844,8 @@ async function checkGuardrails(order) {
   }
 
   // 3. Account state + daily loss ceiling
-  let account = null;
   try {
-    account = await getAccount();
+    if (accountError) throw accountError;
 
     // A broker-level halt is not a risk policy this app can choose to
     // waive for an exit — Alpaca will not accept the order either way,
@@ -815,9 +859,9 @@ async function checkGuardrails(order) {
     // message has always said "no NEW positions", but the code blocked
     // exits too, which is exactly backwards — hitting this ceiling is
     // precisely when being able to cut a losing position matters most.
-    if (!isExit && account.dayPnl <= -Math.abs(LIMITS.maxDailyLossUsd)) {
+    if (!isExit && account.dayPnl <= -Math.abs(L.maxDailyLossUsd)) {
       blocks.push(
-        `Daily loss limit hit (${account.dayPnl} vs limit -${LIMITS.maxDailyLossUsd}). No new positions today.`
+        `Daily loss limit hit (${account.dayPnl} vs limit -${L.maxDailyLossUsd}). No new positions today.`
       );
     }
   } catch (e) {
@@ -841,10 +885,10 @@ async function checkGuardrails(order) {
       blocks.push(
         `Could not determine the order's dollar value for ${order.symbol}, so the max position size check cannot be applied. Use a limit order or a notional amount.`
       );
-    } else if (estimatedUsd > LIMITS.maxPositionUsd) {
+    } else if (estimatedUsd > L.maxPositionUsd) {
       blocks.push(
         `Order value ~$${estimatedUsd.toFixed(2)} exceeds max position size $${
-          LIMITS.maxPositionUsd
+          L.maxPositionUsd
         }.`
       );
     }

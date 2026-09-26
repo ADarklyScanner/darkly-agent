@@ -457,7 +457,7 @@ const CLAUDE_TOOLS = [
   },
   {
     name: "place_order",
-    description: "Submit an order to Alpaca. Guardrails (daily trade count, cooldown, max position size, daily loss ceiling) are enforced before submission; a blocked order returns the reasons and places nothing. Always supply a rationale.",
+    description: "SELL/close only — buying from chat is disabled; the autotrader alone opens positions. Submit a sell order to Alpaca. Guardrails (daily trade count, cooldown, max position size, daily loss ceiling) are enforced before submission; a blocked order returns the reasons and places nothing. Always supply a rationale.",
     input_schema: {
       type: "object",
       properties: {
@@ -1194,6 +1194,17 @@ async function executeClaudeTool(name, input = {}, slot = null) {
   }
 
   if (name === "place_order") {
+    // Fully automated trading: only the autotrader opens positions. On
+    // Sept 20, 2026 a chat session bought ~110 orders in one afternoon
+    // and put the whole account into mostly-crypto names. Chat may still
+    // SELL (getting out must always be possible), never buy.
+    if (String(input?.side || "").toLowerCase() !== "sell") {
+      return {
+        placed: false,
+        blocked: true,
+        reasons: ["Buying from chat is turned off. The autotrader is the only thing that opens positions. Chat can sell/close, pause trading with the kill switch, or report."]
+      };
+    }
     return await placeOrder(input);
   }
 

@@ -37,7 +37,9 @@ import {
   placeOrder,
   reconcileFills,
   getAssetInfo,
+  getTradeLog,
   LIMITS,
+  effectiveLimits,
   isLiveEndpoint
 } from "./trading.js";
 
@@ -366,7 +368,9 @@ export async function runOnce(options = {}) {
     // A breached daily loss ceiling stops the session outright. The
     // per-order guardrail would catch it too, but stopping here means we
     // do not spend the run pretending to consider trades we cannot make.
-    if (account.dayPnl <= -Math.abs(LIMITS.maxDailyLossUsd)) {
+    const effLimits = effectiveLimits(account.equity);
+    run.effectiveLimits = effLimits;
+    if (account.dayPnl <= -Math.abs(effLimits.maxDailyLossUsd)) {
       run.skipped = `Daily loss limit reached (${account.dayPnl}). No further trading today.`;
       recordRun(run);
       return run;
@@ -635,7 +639,7 @@ export async function runOnce(options = {}) {
         price: Number(bars[bars.length - 1].c),
         stopPrice: stop.stopPrice,
         cash: account.cash,
-        maxPositionUsd: Math.min(CONFIG.positionUsd, LIMITS.maxPositionUsd)
+        maxPositionUsd: Math.min(CONFIG.positionUsd, effLimits.maxPositionUsd)
       });
 
       if (!size.ok) {
@@ -764,6 +768,134 @@ export function _resetRunInProgressForTests() {
 }
 
 /* ------------------------------------------------------------------ *
+ * Daily summary email
+ *
+ * Fully automated means the owner does nothing and just reads one email
+ * after the close: what the account did today, what was bought and sold,
+ * what's held, and — the number that decides whether this is worth real
+ * money — how the account has done since tracking began versus simply
+ * holding SPY over the same period.
+ * ------------------------------------------------------------------ */
+
+function nyParts(date = new Date()) {
+  const f = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", weekday: "short", hour12: false
+  });
+  const p = Object.fromEntries(f.formatToParts(date).map((x) => [x.type, x.value]));
+  return {
+    date: `${p.year}-${p.month}-${p.day}`,
+    minutes: (Number(p.hour) % 24) * 60 + Number(p.minute),
+    weekday: p.weekday
+  };
+}
+
+const money = (n) =>
+  (Number(n) < 0 ? "-" : "") + "$" + Math.abs(Number(n)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = (n) => (Number(n) >= 0 ? "+" : "") + Number(n).toFixed(2) + "%";
+
+async function latestSpyClose() {
+  const bars = await getBars({ symbols: ["SPY"], timeframe: "1Day", limit: 5 });
+  const spy = bars.SPY || [];
+  return spy.length ? Number(spy[spy.length - 1].c) : null;
+}
+
+export async function buildDailySummary({ today } = {}) {
+  const day = today || nyParts().date;
+  const [account, positions] = await Promise.all([getAccount(), getPositions()]);
+  let spy = null;
+  try { spy = await latestSpyClose(); } catch { spy = null; }
+
+  const state = loadState();
+  if (!state.baseline && spy) {
+    state.baseline = { date: day, equity: account.equity, spy };
+    saveState(state);
+  }
+  const base = state.baseline;
+
+  const trades = (getTradeLog(500) || []).slice().reverse().filter((t) => {
+    if (!t || !t.accepted || !t.submittedAt) return false;
+    return nyParts(new Date(t.submittedAt)).date === day;
+  });
+
+  const lines = [];
+  lines.push(`${account.mode} account — ${day}`);
+  lines.push("");
+  lines.push(`Today: ${money(account.dayPnl)} (${pct(account.dayPnlPercent)})`);
+  lines.push(`Account value: ${money(account.equity)}   Cash: ${money(account.cash)}`);
+
+  let verdict = "";
+  if (base && spy) {
+    const botPct = ((account.equity - base.equity) / base.equity) * 100;
+    const spyPct = ((spy - base.spy) / base.spy) * 100;
+    lines.push("");
+    lines.push(`Since ${base.date}: bot ${pct(botPct)}  vs  just holding SPY ${pct(spyPct)}`);
+    verdict = botPct > spyPct ? "AHEAD of SPY" : "BEHIND SPY";
+    lines.push(`=> ${verdict}`);
+  }
+
+  lines.push("");
+  lines.push(`Trades today: ${trades.length}`);
+  for (const t of trades) {
+    const o = t.order || {};
+    const f = t.fill || {};
+    lines.push(`  ${String(o.side || "").toUpperCase()} ${o.symbol}` +
+      (f.value ? ` ${money(f.value)} @ ${f.price}` : o.notional ? ` ${money(o.notional)}` : "") +
+      (t.rationale ? ` — ${String(t.rationale).slice(0, 90)}` : ""));
+  }
+
+  lines.push("");
+  lines.push(`Holding ${positions.length} position(s):`);
+  for (const p of positions) {
+    lines.push(`  ${p.symbol}  ${money(p.marketValue)}  ${money(p.unrealizedPl)} (${pct(p.unrealizedPlPercent)})`);
+  }
+
+  lines.push("");
+  lines.push(state.killSwitch ? "Trading is PAUSED (kill switch on)." : `Autotrader: ${CONFIG.mode}, every ${CONFIG.intervalMinutes} min.`);
+  lines.push("Nothing for you to do. Reply not needed.");
+
+  const subject = `[Darkly daily] ${day}: ${money(account.dayPnl)} today` + (verdict ? ` — ${verdict}` : "");
+  return { subject, text: lines.join("\n") };
+}
+
+let summaryInProgress = false;
+
+export async function maybeSendDailySummary(now = new Date()) {
+  const ny = nyParts(now);
+  if (ny.weekday === "Sat" || ny.weekday === "Sun") return { sent: false, reason: "weekend" };
+  if (ny.minutes < 16 * 60 + 10) return { sent: false, reason: "before close" };
+  const state = loadState();
+  if (state.lastSummaryDate === ny.date) return { sent: false, reason: "already sent" };
+  if (!alertingConfigured()) return { sent: false, reason: "email not configured" };
+  if (summaryInProgress) return { sent: false, reason: "in progress" };
+  summaryInProgress = true;
+  try {
+    // Holidays: if the broker says today had no session, skip quietly.
+    try {
+      const clock = await getClock();
+      const nextOpenDay = clock.nextOpen ? String(clock.nextOpen).slice(0, 10) : null;
+      const todaysRuns = (loadState().runs || []).filter(
+        (r) => r.startedAt && nyParts(new Date(r.startedAt)).date === ny.date && r.marketOpen
+      );
+      if (todaysRuns.length === 0 && nextOpenDay !== ny.date) {
+        const s2 = loadState(); s2.lastSummaryDate = ny.date; saveState(s2);
+        return { sent: false, reason: "market did not open today" };
+      }
+    } catch { /* fall through and send anyway */ }
+
+    const { subject, text } = await buildDailySummary({ today: ny.date });
+    const sent = await sendAlertMail({ subject, text });
+    if (sent.ok) {
+      const s2 = loadState(); s2.lastSummaryDate = ny.date; saveState(s2);
+    }
+    return { sent: Boolean(sent.ok), reason: sent.reason || null };
+  } finally {
+    summaryInProgress = false;
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Scheduler
  * ------------------------------------------------------------------ */
 
@@ -778,9 +910,15 @@ export function startScheduler() {
   const intervalMs = Math.max(1, CONFIG.intervalMinutes) * 60 * 1000;
 
   timer = setInterval(() => {
-    runOnce().catch((e) => {
-      console.error("[autotrader] run failed:", e.message);
-    });
+    runOnce()
+      .catch((e) => {
+        console.error("[autotrader] run failed:", e.message);
+      })
+      .finally(() => {
+        maybeSendDailySummary().catch((e) => {
+          console.error("[autotrader] daily summary failed:", e.message);
+        });
+      });
   }, intervalMs);
 
   // Do not fire immediately on boot: a deploy loop would otherwise turn

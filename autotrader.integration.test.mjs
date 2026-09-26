@@ -46,6 +46,10 @@ process.env.AUTO_TRADE_MAX_POSITIONS = "5";
 // see "When caps bind, sizing says so".
 process.env.AUTO_TRADE_POSITION_USD = "100000";
 process.env.MAX_POSITION_USD = "100000";
+// Let the risk-based sizing bind in these checks, not the hard 10%-of-equity ceiling
+// (that ceiling has its own test: hard-ceilings.test.mjs).
+process.env.HARD_MAX_POSITION_PERCENT = "100";
+process.env.HARD_MAX_DAILY_LOSS_PERCENT = "100";
 process.env.MAX_TRADES_PER_DAY = "50";
 process.env.TRADE_COOLDOWN_MINUTES = "0";
 
