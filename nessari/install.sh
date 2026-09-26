@@ -43,7 +43,7 @@ elif [ -f "$SMALL" ]; then M="$SMALL"; NAME="fast 3B"
 else M="$OLD"; NAME="old 3B"; fi
 [ "$CHOICE" = big ] && [ ! -f "$BIG" ] && echo "Smart brain isn't downloaded yet - using the fast one."
 termux-wake-lock 2>/dev/null || true
-pkill -f llama-server 2>/dev/null || true
+pkill -x llama-server 2>/dev/null || true
 sleep 1
 echo "Nessari is starting with her $NAME brain. Open http://127.0.0.1:8080 in Chrome. Keep Termux open."
 exec "$HOME/llama.cpp/build/bin/llama-server" -m "$M" --path "$HOME/chatbot" --host 127.0.0.1 --port 8080 -c 4096 -t 6
