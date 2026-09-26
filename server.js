@@ -2083,7 +2083,22 @@ const CORE_ENGINE_CONFIG_KEYS = [
   "RUN_TIMESTAMP_FORMAT"
 ];
 
+// The Sheet context barely changes minute to minute, so reuse it for a few
+// minutes instead of reading the Sheet twice before every single reply.
+const RUNTIME_CONTEXT_TTL_MS = 5 * 60 * 1000;
+let runtimeContextCache = { at: 0, value: null };
+
 async function buildLiveRuntimeContext() {
+  const now = Date.now();
+  if (runtimeContextCache.value && now - runtimeContextCache.at < RUNTIME_CONTEXT_TTL_MS) {
+    return runtimeContextCache.value;
+  }
+  const value = await readLiveRuntimeContext();
+  runtimeContextCache = { at: now, value };
+  return value;
+}
+
+async function readLiveRuntimeContext() {
   const [market, config] = await Promise.all([
     readActiveMarket(),
     readEngineConfig(CORE_ENGINE_CONFIG_KEYS)
@@ -2100,14 +2115,27 @@ async function buildLiveRuntimeContext() {
   };
 }
 
+// Same tools, with a cache marker on the last one so the whole tool list is cached.
+const CACHED_CLAUDE_TOOLS = CLAUDE_TOOLS.map((t, i) =>
+  i === CLAUDE_TOOLS.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t
+);
+
 async function askClaude(history, userMessage, slot = null) {
   const runtimeContext = await buildLiveRuntimeContext();
 
-  const runtimeSystem =
-    SYSTEM_PROMPT +
-    "\n\nLIVE AUTHORITATIVE RUNTIME CONTEXT — fetched from the master Google Sheet for this request:\n" +
+  const runtimeTail =
+    "LIVE AUTHORITATIVE RUNTIME CONTEXT — fetched from the master Google Sheet (refreshed every few minutes):\n" +
     JSON.stringify(runtimeContext, null, 2) +
     "\n\nRules for this runtime context: Engine Config overrides inference and descriptive notes. A missing active market means NO_MARKET_LOCK and must never block ordinary chat, database research, or cross-market analysis. Discovery Phase is only relevant when discussing or executing a market-specific production run. Never invent fixed thresholds. Never recommend promotional sending when PROSPECT_EMAIL_MODE=DRAFT_ONLY or PROSPECT_AUTO_SEND=FALSE.";
+  const runtimeSystem = SYSTEM_PROMPT + "\n\n" + runtimeTail;
+
+  // Prompt caching: the big fixed instructions and tool list are cached by
+  // Anthropic, so each reply (and each tool round) doesn't resend them from
+  // scratch. The live Sheet context goes after the cached part.
+  const cachedSystem = [
+    { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+    { type: "text", text: runtimeTail }
+  ];
 
   // Only the recent part of a long saved chat goes to the model.
   let recent = history.slice(-40);
@@ -2121,13 +2149,27 @@ async function askClaude(history, userMessage, slot = null) {
   // llm-provider.js for why that boundary is drawn exactly here.
   async function callModelRound() {
     try {
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 4096,
-        system: runtimeSystem,
-        tools: CLAUDE_TOOLS,
-        messages
-      });
+      let response;
+      try {
+        response = await anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 4096,
+          system: cachedSystem,
+          tools: CACHED_CLAUDE_TOOLS,
+          messages
+        });
+      } catch (cacheError) {
+        // Safety net: if caching is ever rejected, answer the old uncached way.
+        if (Number(cacheError?.status) !== 400 || !/cache/i.test(String(cacheError?.message || ""))) throw cacheError;
+        console.error("[prompt-cache] rejected, retrying uncached:", cacheError.message);
+        response = await anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 4096,
+          system: runtimeSystem,
+          tools: CLAUDE_TOOLS,
+          messages
+        });
+      }
       return { content: response.content };
     } catch (error) {
       if (!isQuotaOrRateLimitError(error) || !fallbackConfigured()) throw error;
