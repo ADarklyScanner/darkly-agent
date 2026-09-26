@@ -12,7 +12,7 @@ mkdir -p "$HOME/chatbot" "$HOME/models"
 
 get() { # url file label
   if [ -f "$2" ]; then echo "   already have $3"; return; fi
-  echo "   downloading $3 (use Wi-Fi; if it stops, run the same line again to resume)..."
+  echo "   downloading $3..."
   curl -fL -C - "$1" -o "$2.part" && mv "$2.part" "$2"
 }
 
