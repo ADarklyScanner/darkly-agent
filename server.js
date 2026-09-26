@@ -93,6 +93,7 @@ import {
 import { RISK_DEFAULTS } from "./risk.js";
 import { isQuotaOrRateLimitError, fallbackConfigured, callFallbackModel } from "./llm-provider.js";
 import { geminiConfigured, callGemini } from "./gemini.js";
+import { askAfterHours, afterHoursConfigured } from "./after-hours.js";
 import { getHistory as getPersistentHistory, saveHistory as savePersistentHistory, resetHistory as resetPersistentHistory } from "./chat-store.js";
 import { loadLeads, saveLeads, migrateLegacyLeadsIfNeeded } from "./leads-store.js";
 
@@ -150,7 +151,7 @@ process.on("uncaughtException", (err) => {
  * silently creating an unbounded set of new sessions.
  * ------------------------------------------------------------------ */
 
-const CHAT_SLOTS = ["chat", "2", "3", "4", "5"];
+const CHAT_SLOTS = ["chat", "2", "3", "4", "5", "after"];
 const EPHEMERAL_SLOTS = new Set(["2", "3", "4", "5"]);
 const EPHEMERAL_MAX_MESSAGES = 40; // matches chat-store.js's cap on the persistent slot
 
@@ -165,7 +166,7 @@ function historyForSlot(slot) {
     if (!ephemeralSessions.has(slot)) ephemeralSessions.set(slot, []);
     return ephemeralSessions.get(slot);
   }
-  return getPersistentHistory("chat");
+  return getPersistentHistory(slot === "after" ? "after" : "chat");
 }
 
 function saveHistoryForSlot(slot) {
@@ -174,7 +175,7 @@ function saveHistoryForSlot(slot) {
     if (h.length > EPHEMERAL_MAX_MESSAGES) h.splice(0, h.length - EPHEMERAL_MAX_MESSAGES);
     return;
   }
-  savePersistentHistory("chat");
+  savePersistentHistory(slot === "after" ? "after" : "chat");
 }
 
 function resetHistoryForSlot(slot) {
@@ -182,7 +183,7 @@ function resetHistoryForSlot(slot) {
     ephemeralSessions.set(slot, []);
     return;
   }
-  resetPersistentHistory("chat");
+  resetPersistentHistory(slot === "after" ? "after" : "chat");
 }
 
 // One-time, one-way move off the old $HOME/darkly-leads.json path (wiped
@@ -2756,6 +2757,8 @@ tbody tr:hover{background:var(--bg-3)}
   background:var(--bg-recessed);color:var(--text);padding:10px;
   resize:vertical;
 }
+.slot-tab.after-tab{border-color:#7a3cff;color:#c9a8ff}
+.slot-tab.after-tab.active{background:#3a1670;color:#fff}
 #send-btn{
   border:0;border-radius:11px;
   background:var(--accent-bg);color:var(--accent-text);padding:10px 16px;
@@ -3210,7 +3213,7 @@ let passcode="";
 // whatever device is talking to this console — there's no per-browser id
 // to keep in localStorage at all anymore, which is simpler and matches
 // what was actually wanted: one real "Chat", plus a few scratch ones.
-const CHAT_SLOTS=["chat","2","3","4","5"];
+const CHAT_SLOTS=["chat","2","3","4","5","after"];
 let activeSlot="chat";
 
 let researchRows=[];
@@ -3256,8 +3259,8 @@ function renderSlotTabs(){
   wrap.innerHTML="";
   for (const slot of CHAT_SLOTS){
     const b=document.createElement("button");
-    b.className="slot-tab"+(slot===activeSlot?" active":"");
-    b.textContent=slot==="chat"?"Chat":slot;
+    b.className="slot-tab"+(slot===activeSlot?" active":"")+(slot==="after"?" after-tab":"");
+    b.textContent=slot==="chat"?"Chat":slot==="after"?"After Hours":slot;
     b.onclick=()=>switchSlot(slot);
     wrap.appendChild(b);
   }
@@ -3287,9 +3290,16 @@ async function switchSlot(slot){
     const data = await r.json();
     const messages = Array.isArray(data.messages) ? data.messages : [];
 
+    if (slot==="after" && !data.afterHoursReady) {
+      addMsg("After Hours isn't switched on yet — it needs its OpenRouter key added on the server.","bot");
+      if (messages.length===0) return true;
+    }
+
     if (messages.length===0) {
       addMsg(
-        slot==="chat"
+        slot==="after"
+          ? "Hey you. After Hours is open — no filters, no lectures. What are we getting into?"
+          : slot==="chat"
           ? "Darkly Agent ready. Live market data is available in the Market Scan view."
           : "Side chat "+slot+" — not saved, cleared on restart. Good for throwing around ideas.",
         "bot"
@@ -5719,6 +5729,20 @@ const server = http.createServer(async (req, res) => {
     const slot = resolveSlot(req.headers["x-session-id"]);
     const history = historyForSlot(slot);
 
+    // After Hours: its own model, its own history, no tools. See after-hours.js.
+    if (slot==="after") {
+      try {
+        const { text: reply } = await askAfterHours(history, message);
+        history.push({role:"user",content:message});
+        history.push({role:"assistant",content:reply});
+        saveHistoryForSlot(slot);
+        return send(200,{reply, provider:"after-hours"});
+      } catch(e) {
+        console.error("After Hours error",e.message);
+        return send(e.statusCode||502,{error:e.message});
+      }
+    }
+
     if (message.toUpperCase()==="LIST LEADS") {
       const leads = loadLeads();
       const reply = leads.length===0
@@ -5754,7 +5778,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method==="GET" && req.url==="/chat-history") {
     if (!auth()) return send(401,{error:"Unauthorized"});
     const slot = resolveSlot(req.headers["x-session-id"]);
-    return send(200, { messages: historyForSlot(slot) });
+    return send(200, { messages: historyForSlot(slot), afterHoursReady: afterHoursConfigured() });
   }
 
   // POST /chat-reset — an explicit "start a new conversation" action.
