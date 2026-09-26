@@ -4933,6 +4933,46 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+// Public privacy policy for the Darkly Driver Google Play listing. Served
+// without the passcode (Google Play and users must be able to read it) and,
+// on the public brand host (darkly.referralmarket.site), it is the ONLY
+// thing served there, so the private console never shows on that domain.
+const PRIVACY_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Darkly Driver: Privacy Policy</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;max-width:680px;margin:0 auto;padding:24px 18px 48px;line-height:1.6;color:#1d1a22;background:#fbfafc}
+h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:26px 0 6px}
+.date{color:#6b6475;font-size:14px;margin:0 0 20px}ul{padding-left:20px}
+a{color:#6a2c91}
+@media(prefers-color-scheme:dark){body{background:#140d1a;color:#ece6f2}.date{color:#a79fb2}a{color:#d9a6ff}}
+</style></head><body>
+<h1>Darkly Driver: Privacy Policy</h1>
+<p class="date">Last updated: September 26, 2026</p>
+<p><strong>The short version:</strong> we don't sell your data, and we only collect what we need to run and improve the app.</p>
+<h2>What we collect</h2>
+<ul>
+<li>No account needed. We don't ask for your name, email, or phone number.</li>
+<li>Basic, anonymous usage and crash info (like which screens get used, or when something breaks) so we can fix and improve the app.</li>
+<li>We don't track your location.</li>
+</ul>
+<h2>Payments</h2>
+<p>Google Play handles all payments. We never see your card or bank details.</p>
+<h2>What we don't do</h2>
+<ul>
+<li>We don't sell or rent your info to anyone.</li>
+<li>We don't use it for ads. The app has no ads.</li>
+</ul>
+<h2>Outside services</h2>
+<p>The app pulls public info like weather, flight, and event data to build your schedule. None of your personal info is sent with those requests.</p>
+<h2>Kids</h2>
+<p>This app is for adult drivers and isn't meant for anyone under 18.</p>
+<h2>Changes</h2>
+<p>If this policy changes, we'll update this page and the date above.</p>
+<h2>Contact</h2>
+<p>Darkly Scanner, Nevada<br><a href="mailto:referralmarket.site@gmail.com">referralmarket.site@gmail.com</a></p>
+</body></html>`;
+
 const server = http.createServer(async (req, res) => {
   // Every non-ASCII character this console sends - the em dashes and
   // middle dots all over its own labels, the "…" in "Choose a state…" -
@@ -4954,6 +4994,21 @@ const server = http.createServer(async (req, res) => {
     const isText = (type||"").startsWith("text/") || type==="application/javascript";
     res.writeHead(status, {"Content-Type": isText ? type+"; charset=utf-8" : type,"Cache-Control":"no-store"});
     res.end(body);
+  }
+  {
+    const host = String(req.headers.host||"").toLowerCase().split(":")[0];
+    const path = String(req.url||"/").split("?")[0].replace(/\/+$/,"") || "/";
+    const isPublicHost = host.startsWith("darkly.");
+    if (req.method==="GET" && (path==="/privacy" || path==="/darkly-driver/privacy")) {
+      res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"public, max-age=300"});
+      res.end(PRIVACY_HTML);
+      return;
+    }
+    if (isPublicHost) {
+      res.writeHead(302,{"Location":"/privacy"});
+      res.end();
+      return;
+    }
   }
   function auth() {
     return Boolean(process.env.AGENT_PASSCODE) &&
