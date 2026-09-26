@@ -45,6 +45,7 @@ import {
   CONFIG as AUTOTRADER_CONFIG
 } from "./autotrader.js";
 import { stateInfo, readState, writeState } from "./state.js";
+import { buildDriverPayload, DRIVER_HTML } from "./driver-app.js";
 import { resolveExport } from "./history-export.js";
 import {
   pairTrades,
@@ -1888,6 +1889,95 @@ let lastRenoEvidence = readState(RENO_EVIDENCE_FILE, []);
 // surviving evidence shows that evidence's schedule immediately, rather
 // than DEGRADED until the next request happens to recompute it.
 let lastRenoSchedule = lastRenoEvidence.length ? scheduleReno({ evidence: lastRenoEvidence }) : null;
+
+// --- Darkly Driver (public Play product) -----------------------------------
+// One research pass per day for ALL drivers, not one per user, so AI cost
+// stays flat no matter how many people install the app. The public screen
+// always recomputes the week from the saved evidence (milliseconds), so it
+// never shows a stale week even if a research run fails.
+const RENO_RESEARCH_META_FILE = "reno-research-meta.json";
+let renoResearchMeta = readState(RENO_RESEARCH_META_FILE, { researchedAt: null, attemptDay: null, attempts: 0, lastError: null });
+
+const RENO_RESEARCH_PROMPT =
+  "Research this coming week's Reno driving conditions and update the schedule. " +
+  "Search the web for RNO airport arrival/departure activity and any notable local " +
+  "events (concerts, sports, festivals, conventions) in the Reno/Sparks area for the " +
+  "coming week, building real evidence records from what you actually find — never " +
+  "invent one. Give every record a short plain-English label a driver would understand " +
+  "(e.g. 'Aces game at Greater Nevada Field'), because it is shown to drivers as the reason. " +
+  "Then call weather_evidence with runSchedule true, passing your " +
+  "flight/event evidence as extraEvidence, so the schedule reflects real weather, " +
+  "flights, and events together. " +
+  "Your reply is shown as-is in a small status line on the Driver tab, which " +
+  "already renders the full ranked hours, driving blocks, and days off elsewhere " +
+  "- do not repeat any of that. Reply with ONLY 2-4 plain prose sentences (no " +
+  "markdown headers, tables, or bullet lists, no ranked lists of hours) naming " +
+  "what you found and how it changed the week, e.g. which nights got busier and " +
+  "why.";
+
+async function runRenoResearch(history) {
+  const { text: reply } = await askClaude(history, RENO_RESEARCH_PROMPT, "2");
+  history.push({ role: "user", content: RENO_RESEARCH_PROMPT });
+  history.push({ role: "assistant", content: reply });
+  renoResearchMeta = { ...renoResearchMeta, researchedAt: new Date().toISOString(), lastError: null };
+  writeState(RENO_RESEARCH_META_FILE, renoResearchMeta);
+  driverPayloadCache = null;
+  return cleanReply(reply);
+}
+
+function renoDayKey(d = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(d);
+}
+function renoHour(d = new Date()) {
+  return Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hour12: false }).format(d)) % 24;
+}
+
+// Daily research: once per Reno day, from 5 AM on. At most 3 attempts a
+// day, 3 hours apart, so an outage (e.g. API credits running out) costs
+// nothing and never loops. Never fires on boot; first check is 20 min in.
+// Off switch: DRIVER_DAILY_RESEARCH=off.
+let renoDailyRunning = false;
+async function renoDailyTick() {
+  if (renoDailyRunning) return;
+  const today = renoDayKey();
+  if (renoResearchMeta.researchedAt && renoDayKey(new Date(renoResearchMeta.researchedAt)) === today) return;
+  if (renoHour() < 5) return;
+  const attemptsToday = renoResearchMeta.attemptDay === today ? renoResearchMeta.attempts : 0;
+  if (attemptsToday >= 3) return;
+  if (attemptsToday > 0 && renoResearchMeta.lastAttemptAt && Date.now() - Date.parse(renoResearchMeta.lastAttemptAt) < 3 * 3600e3) return;
+  renoDailyRunning = true;
+  renoResearchMeta = { ...renoResearchMeta, attemptDay: today, attempts: attemptsToday + 1, lastAttemptAt: new Date().toISOString() };
+  writeState(RENO_RESEARCH_META_FILE, renoResearchMeta);
+  try {
+    const summary = await runRenoResearch([]);
+    console.log("[driver-research] daily research done: " + summary.slice(0, 200));
+  } catch (e) {
+    renoResearchMeta = { ...renoResearchMeta, lastError: String(e.message || e).slice(0, 300) };
+    writeState(RENO_RESEARCH_META_FILE, renoResearchMeta);
+    console.error("[driver-research] daily research failed: " + renoResearchMeta.lastError);
+  } finally {
+    renoDailyRunning = false;
+  }
+}
+function startDriverDailyResearch() {
+  if (String(process.env.DRIVER_DAILY_RESEARCH || "").toLowerCase() === "off") return { started: false, reason: "DRIVER_DAILY_RESEARCH=off" };
+  setInterval(() => { renoDailyTick().catch((e) => console.error("[driver-research]", e)); }, 20 * 60 * 1000);
+  return { started: true };
+}
+
+let driverPayloadCache = null;
+function driverPayload() {
+  if (driverPayloadCache && Date.now() - driverPayloadCache.at < 10 * 60 * 1000) return driverPayloadCache.body;
+  const result = scheduleReno({ evidence: lastRenoEvidence });
+  const updatedAt = renoResearchMeta.researchedAt ? new Date(renoResearchMeta.researchedAt) : new Date();
+  const body = buildDriverPayload(result, { now: new Date(), updatedAt });
+  driverPayloadCache = { at: Date.now(), body };
+  return body;
+}
+const DRIVER_FONTS = new Map();
+for (const f of ["DarklyExchange-Regular.ttf", "DarklyExchange-Bold.ttf"]) {
+  try { DRIVER_FONTS.set(f, fs.readFileSync(new URL("./assets/fonts/" + f, import.meta.url))); } catch { /* optional */ }
+}
 
 // The most recently uploaded APK's diagnosis, so the console's APK tab can
 // show the result the moment it's ready and so inspect_apk can let Claude
@@ -4999,13 +5089,36 @@ const server = http.createServer(async (req, res) => {
     const host = String(req.headers.host||"").toLowerCase().split(":")[0];
     const path = String(req.url||"/").split("?")[0].replace(/\/+$/,"") || "/";
     const isPublicHost = host.startsWith("darkly.");
+    if (req.method==="GET" && (path==="/driver" || (isPublicHost && path==="/"))) {
+      res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-cache"});
+      res.end(DRIVER_HTML);
+      return;
+    }
+    if (req.method==="GET" && path==="/driver-app/data") {
+      try {
+        res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"});
+        res.end(JSON.stringify(driverPayload()));
+      } catch (e) {
+        res.writeHead(500,{"Content-Type":"application/json"});
+        res.end(JSON.stringify({ error: "schedule unavailable" }));
+      }
+      return;
+    }
+    if (req.method==="GET" && path.startsWith("/assets/fonts/")) {
+      const buf = DRIVER_FONTS.get(path.slice("/assets/fonts/".length));
+      if (buf) {
+        res.writeHead(200,{"Content-Type":"font/ttf","Cache-Control":"public, max-age=604800"});
+        res.end(buf);
+        return;
+      }
+    }
     if (req.method==="GET" && (path==="/privacy" || path==="/darkly-driver/privacy")) {
       res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"public, max-age=300"});
       res.end(PRIVACY_HTML);
       return;
     }
     if (isPublicHost) {
-      res.writeHead(302,{"Location":"/privacy"});
+      res.writeHead(302,{"Location":"/"});
       res.end();
       return;
     }
@@ -5440,27 +5553,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method==="POST" && req.url==="/reno-research") {
     if (!auth()) return send(401,{error:"Unauthorized"});
     try {
-      const slot = "2";
-      const history = historyForSlot(slot);
-      const message =
-        "Research this coming week's Reno driving conditions and update the schedule. " +
-        "Search the web for RNO airport arrival/departure activity and any notable local " +
-        "events (concerts, sports, festivals, conventions) in the Reno/Sparks area for the " +
-        "coming week, building real evidence records from what you actually find — never " +
-        "invent one. Then call weather_evidence with runSchedule true, passing your " +
-        "flight/event evidence as extraEvidence, so the schedule reflects real weather, " +
-        "flights, and events together. " +
-        "Your reply is shown as-is in a small status line on the Driver tab, which " +
-        "already renders the full ranked hours, driving blocks, and days off elsewhere " +
-        "- do not repeat any of that. Reply with ONLY 2-4 plain prose sentences (no " +
-        "markdown headers, tables, or bullet lists, no ranked lists of hours) naming " +
-        "what you found and how it changed the week, e.g. which nights got busier and " +
-        "why.";
-      const { text: reply } = await askClaude(history, message, slot);
-      history.push({ role: "user", content: message });
-      history.push({ role: "assistant", content: reply });
-      saveHistoryForSlot(slot);
-      return send(200, { summary: cleanReply(reply) });
+      const history = historyForSlot("2");
+      const summary = await runRenoResearch(history);
+      saveHistoryForSlot("2");
+      return send(200, { summary });
     } catch (e) {
       return send(502, { error: "Research failed: " + String(e.message || e) });
     }
@@ -5850,6 +5946,9 @@ server.listen(PORT,"0.0.0.0",()=>{
   console.log(
     `[state] ${storage.directory} — ${storage.durable ? "DURABLE (survives deploys)" : "EPHEMERAL (history will be lost on the next deploy)"}`
   );
+
+  const dr = startDriverDailyResearch();
+  console.log(dr.started ? "[driver-research] daily Reno research scheduled (from 5 AM Reno time)" : `[driver-research] not scheduled: ${dr.reason}`);
 
   const auto = startAutoTrader();
   if (auto.started) {
