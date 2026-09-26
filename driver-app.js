@@ -28,8 +28,11 @@ const dayLabel = (d) => fmt(d, { weekday: "short", month: "short", day: "numeric
 const hourLabel = (d) => fmt(d, { hour: "numeric", hour12: true });
 const longDay = (d) => fmt(d, { weekday: "long" });
 
-// Evidence labels applied inside [startIdx, endIdx), strongest first, deduped.
-function whyFor(hours, startIdx, endIdx, max = 2) {
+// Evidence labels applied inside [startIdx, endIdx), keeping only ones that
+// actually RAISED those hours (checked by re-running the week without that
+// label's records), strongest first. A driver-facing "why" must never list
+// something that made the stretch worse, like "no home games this week".
+function whyFor(hours, startIdx, endIdx, max = 2, rescore) {
   const seen = new Map();
   for (const h of hours) {
     if (h.hourIndex < startIdx || h.hourIndex >= endIdx) continue;
@@ -43,18 +46,33 @@ function whyFor(hours, startIdx, endIdx, max = 2) {
       }
     }
   }
-  return [...seen.values()].sort((a, b) => b.w - a.w).slice(0, max);
+  let items = [...seen.values()].sort((a, b) => b.w - a.w).slice(0, 8);
+  if (rescore) {
+    items = items
+      .map((it) => ({ ...it, lift: rescore(it.label, startIdx, endIdx) }))
+      .filter((it) => it.lift > 0.5)
+      .sort((a, b) => b.lift - a.lift);
+  }
+  return items.slice(0, max);
 }
 
-export function buildDriverPayload(result, { now = new Date(), updatedAt = now } = {}) {
+export function buildDriverPayload(result, { now = new Date(), updatedAt = now, evidence = null, schedule = null } = {}) {
   const hours = result.hours; // chronological, with hourIndex
+  const sumScore = (hs, a, b) => hs.filter((h) => h.hourIndex >= a && h.hourIndex < b).reduce((t, h) => t + h.score, 0);
+  const rescore = evidence && schedule
+    ? (label, a, b) => {
+        const without = evidence.filter((e) => String(e.label || e.note || "").trim() !== label);
+        const r = schedule({ evidence: without, weekStart: new Date(result.weekStart) });
+        return sumScore(hours, a, b) - sumScore(r.hours, a, b);
+      }
+    : null;
   const evidenceCount = hours.reduce((s, h) => s + (h.applied ? h.applied.length : 0), 0);
 
   const blocks = result.blocks.map((b) => {
     const coreHours = hours.filter((h) => h.date >= b.coreStartDate && h.date < b.coreEndDate);
     const coreAvg = coreHours.length ? coreHours.reduce((s, h) => s + h.score, 0) / coreHours.length : 0;
     const r = rating(coreAvg);
-    const why = whyFor(hours, b.startIndex, b.endIndex);
+    const why = whyFor(hours, b.startIndex, b.endIndex, 2, rescore);
     return {
       rank: b.rank,
       day: dayLabel(b.coreStartDate),

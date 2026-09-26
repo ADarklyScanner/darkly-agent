@@ -1970,7 +1970,7 @@ function driverPayload() {
   if (driverPayloadCache && Date.now() - driverPayloadCache.at < 10 * 60 * 1000) return driverPayloadCache.body;
   const result = scheduleReno({ evidence: lastRenoEvidence });
   const updatedAt = renoResearchMeta.researchedAt ? new Date(renoResearchMeta.researchedAt) : new Date();
-  const body = buildDriverPayload(result, { now: new Date(), updatedAt });
+  const body = buildDriverPayload(result, { now: new Date(), updatedAt, evidence: lastRenoEvidence, schedule: scheduleReno });
   driverPayloadCache = { at: Date.now(), body };
   return body;
 }
