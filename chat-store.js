@@ -36,7 +36,7 @@ export const MAX_SESSIONS = 20;
 // Centralized here so every write path applies it consistently — the
 // pre-existing code only trimmed on the main chat path, silently
 // skipping it on the "LIST LEADS" shortcut.
-export const MAX_MESSAGES_PER_SESSION = 40;
+export const MAX_MESSAGES_PER_SESSION = 200;
 
 function emptyStore() {
   return { sessions: {} };

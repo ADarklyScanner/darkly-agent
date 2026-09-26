@@ -161,29 +161,61 @@ function resolveSlot(raw) {
   return CHAT_SLOTS.includes(raw) ? raw : "chat";
 }
 
+// Which tabs are "kept" (saved to disk, survive restarts). The owner flips
+// this per tab with the Keep button. Chat and After Hours start kept;
+// side tabs 2-5 start temporary.
+const CHAT_KEEP_FILE = "darkly-chat-keep.json";
+const DEFAULT_KEPT = { chat: true, after: true, "2": false, "3": false, "4": false, "5": false };
+let chatKeep = { ...DEFAULT_KEPT, ...readState(CHAT_KEEP_FILE, {}) };
+
+function isKept(slot) {
+  return Boolean(chatKeep[slot]);
+}
+
+function setKept(slot, keep) {
+  keep = Boolean(keep);
+  if (isKept(slot) === keep) return;
+  if (keep) {
+    // Move what's in the temporary tab onto disk.
+    const temp = ephemeralSessions.get(slot) || [];
+    const saved = getPersistentHistory(slot);
+    saved.splice(0, saved.length, ...temp);
+    ephemeralSessions.delete(slot);
+    chatKeep[slot] = true;
+    savePersistentHistory(slot);
+  } else {
+    // Stop saving: keep the conversation on screen for now, but off disk.
+    const saved = getPersistentHistory(slot);
+    ephemeralSessions.set(slot, saved.slice());
+    chatKeep[slot] = false;
+    resetPersistentHistory(slot);
+  }
+  writeState(CHAT_KEEP_FILE, chatKeep);
+}
+
 function historyForSlot(slot) {
-  if (EPHEMERAL_SLOTS.has(slot)) {
+  if (!isKept(slot)) {
     if (!ephemeralSessions.has(slot)) ephemeralSessions.set(slot, []);
     return ephemeralSessions.get(slot);
   }
-  return getPersistentHistory(slot === "after" ? "after" : "chat");
+  return getPersistentHistory(slot);
 }
 
 function saveHistoryForSlot(slot) {
-  if (EPHEMERAL_SLOTS.has(slot)) {
+  if (!isKept(slot)) {
     const h = ephemeralSessions.get(slot) || [];
     if (h.length > EPHEMERAL_MAX_MESSAGES) h.splice(0, h.length - EPHEMERAL_MAX_MESSAGES);
     return;
   }
-  savePersistentHistory(slot === "after" ? "after" : "chat");
+  savePersistentHistory(slot);
 }
 
 function resetHistoryForSlot(slot) {
-  if (EPHEMERAL_SLOTS.has(slot)) {
+  if (!isKept(slot)) {
     ephemeralSessions.set(slot, []);
     return;
   }
-  resetPersistentHistory(slot === "after" ? "after" : "chat");
+  resetPersistentHistory(slot);
 }
 
 // One-time, one-way move off the old $HOME/darkly-leads.json path (wiped
@@ -2077,7 +2109,10 @@ async function askClaude(history, userMessage, slot = null) {
     JSON.stringify(runtimeContext, null, 2) +
     "\n\nRules for this runtime context: Engine Config overrides inference and descriptive notes. A missing active market means NO_MARKET_LOCK and must never block ordinary chat, database research, or cross-market analysis. Discovery Phase is only relevant when discussing or executing a market-specific production run. Never invent fixed thresholds. Never recommend promotional sending when PROSPECT_EMAIL_MODE=DRAFT_ONLY or PROSPECT_AUTO_SEND=FALSE.";
 
-  const messages = [...history, { role: "user", content: userMessage }];
+  // Only the recent part of a long saved chat goes to the model.
+  let recent = history.slice(-40);
+  while (recent.length && recent[0].role !== "user") recent = recent.slice(1);
+  const messages = [...recent, { role: "user", content: userMessage }];
   let providerUsed = "anthropic";
 
   // One call, either provider, always the SAME system prompt and SAME
@@ -2684,6 +2719,11 @@ tbody tr:hover{background:var(--bg-3)}
 .slot-tab.active{
   background:var(--accent-bg);color:var(--accent-text);border-color:var(--accent-border);
 }
+#keep-btn{
+  border:1px solid var(--border-soft);border-radius:9px;
+  background:var(--bg-2);color:var(--text-dim);padding:6px 12px;font-size:12px;flex-shrink:0;
+}
+#keep-btn.kept{background:var(--accent-bg);color:var(--accent-text);border-color:var(--accent-border)}
 #new-chat-btn{
   border:1px solid var(--border-soft);border-radius:9px;
   background:var(--bg-2);color:var(--text-dim);padding:6px 12px;
@@ -3289,6 +3329,7 @@ async function switchSlot(slot){
 
     const data = await r.json();
     const messages = Array.isArray(data.messages) ? data.messages : [];
+    renderKeep(!!data.kept);
 
     if (slot==="after" && !data.afterHoursReady) {
       addMsg("After Hours isn't switched on yet — it needs its OpenRouter key added on the server.","bot");
@@ -3301,7 +3342,9 @@ async function switchSlot(slot){
           ? "Hey you. After Hours is open — no filters, no lectures. What are we getting into?"
           : slot==="chat"
           ? "Darkly Agent ready. Live market data is available in the Market Scan view."
-          : "Side chat "+slot+" — not saved, cleared on restart. Good for throwing around ideas.",
+          : data.kept
+            ? "Chat "+slot+" — saved."
+            : "Chat "+slot+" — not saved. Tap Keep if you want this one to stick around.",
         "bot"
       );
       return true;
@@ -3346,6 +3389,30 @@ byId("lottery-state-select").onchange=onLotteryStateChange;
 byId("lottery-game-select").onchange=onLotteryGameChange;
 byId("lottery-analyze-btn").onclick=runLotteryAnalysis;
 byId("new-chat-btn").onclick=newChat;
+byId("keep-btn").onclick=toggleKeep;
+
+function renderKeep(kept){
+  const b=byId("keep-btn");
+  b.dataset.kept=kept?"1":"";
+  b.classList.toggle("kept",kept);
+  b.textContent=kept?"✓ Kept":"Keep";
+}
+
+async function toggleKeep(){
+  const want=!byId("keep-btn").dataset.kept;
+  try{
+    const r=await fetch("/chat-keep",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","X-Agent-Passcode":passcode,"X-Session-Id":activeSlot},
+      body:JSON.stringify({keep:want})
+    });
+    const d=await r.json();
+    renderKeep(!!d.kept);
+    addMsg(d.kept?"This chat will be saved.":"This chat won't be saved anymore.","bot");
+  }catch(e){
+    addMsg("Couldn't change saving: "+e.message,"bot");
+  }
+}
 
 let stocksLoaded=false;
 
@@ -5010,7 +5077,10 @@ function htmlPage() {
   <section id="chat-view">
     <div id="chat-header">
       <div id="chat-slot-tabs"></div>
-      <button id="new-chat-btn" title="Clear this chat's history">New chat</button>
+      <div style="display:flex;gap:6px">
+        <button id="keep-btn" title="Save this chat so it's still here later">Keep</button>
+        <button id="new-chat-btn" title="Clear this chat's history">New chat</button>
+      </div>
     </div>
     <div id="chat"></div>
     <div id="inputbar">
@@ -5778,12 +5848,21 @@ const server = http.createServer(async (req, res) => {
   if (req.method==="GET" && req.url==="/chat-history") {
     if (!auth()) return send(401,{error:"Unauthorized"});
     const slot = resolveSlot(req.headers["x-session-id"]);
-    return send(200, { messages: historyForSlot(slot), afterHoursReady: afterHoursConfigured() });
+    return send(200, { messages: historyForSlot(slot), afterHoursReady: afterHoursConfigured(), kept: isKept(slot) });
   }
 
   // POST /chat-reset — an explicit "start a new conversation" action.
   // Only clears the one slot named by X-Session-Id; every other slot
   // (the main "chat", or another side slot) is untouched.
+  // POST /chat-keep {keep:true|false} — turn saving on/off for one tab.
+  if (req.method==="POST" && req.url==="/chat-keep") {
+    if (!auth()) return send(401,{error:"Unauthorized"});
+    const slot = resolveSlot(req.headers["x-session-id"]);
+    const body = await readBody();
+    setKept(slot, body.keep);
+    return send(200, { ok: true, kept: isKept(slot) });
+  }
+
   if (req.method==="POST" && req.url==="/chat-reset") {
     if (!auth()) return send(401,{error:"Unauthorized"});
     const slot = resolveSlot(req.headers["x-session-id"]);
