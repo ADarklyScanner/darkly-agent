@@ -193,6 +193,9 @@ export const DRIVER_HTML = String.raw`<!doctype html>
   --h1:#1d1926;--h2:#3a2758;--h3:#6c3fbf;--h4:#f2b13a;
   --good:#3ecf7c;--slow:#8b8497;--barbg:rgba(12,10,16,.92);--navbg:rgba(16,13,21,.96);
 }
+@font-face{font-family:"Darkly Exchange";src:url("/assets/fonts/DarklyExchange-Regular.ttf") format("truetype");font-weight:400;font-display:swap}
+@font-face{font-family:"Darkly Exchange";src:url("/assets/fonts/DarklyExchange-Bold.ttf") format("truetype");font-weight:700;font-display:swap}
+:root{--display:"Darkly Exchange",Inter,system-ui,sans-serif}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%;font-feature-settings:"tnum" 1,"cv11" 1}
 body{padding:0 0 calc(76px + env(safe-area-inset-bottom))}
@@ -282,6 +285,11 @@ body{padding:0 0 calc(76px + env(safe-area-inset-bottom))}
 .why:first-of-type{border-top:0}
 .why small{display:block;color:var(--faint);font-size:12px;margin-top:2px}
 .loading{color:var(--dim);padding:60px 0;text-align:center}
+/* Brand font: Darkly Exchange on the brand mark, headlines, times and numbers; Inter for reading text. */
+.logo,.title,.hero h1,.sec h2,.card .t,.sheet h3,.kv dd,.li .sc b,.li .a{font-family:var(--display);letter-spacing:.2px}
+.hero h1{letter-spacing:.3px;font-weight:700}
+.title{font-weight:700;font-size:18px}
+
 .seg{display:flex;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:3px}
 .seg button{flex:1;background:none;border:0;color:var(--dim);font:inherit;font-weight:600;font-size:14px;padding:9px 0;border-radius:9px;cursor:pointer}
 .seg button.on{background:var(--brand);color:var(--brand-ink)}
