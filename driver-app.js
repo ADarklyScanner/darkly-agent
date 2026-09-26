@@ -33,13 +33,21 @@ const longDay = (d) => fmt(d, { weekday: "long" });
 // label's records), strongest first. A driver-facing "why" must never list
 // something that made the stretch worse, like "no home games this week".
 function whyFor(hours, startIdx, endIdx, max = 2, rescore) {
+  // A reason has to be about THIS stretch. Anything that touches more than
+  // a day's worth of hours (a season ending, "normal flight operations")
+  // is background, not a reason, even if it nudges relative scores.
+  const span = new Map();
+  for (const h of hours) for (const a of h.applied || []) {
+    const l = String((a.evidence && (a.evidence.label || a.evidence.note)) || "").trim();
+    if (l) span.set(l, (span.get(l) || 0) + 1);
+  }
   const seen = new Map();
   for (const h of hours) {
     if (h.hourIndex < startIdx || h.hourIndex >= endIdx) continue;
     for (const a of h.applied || []) {
       const ev = a.evidence || {};
       const label = String(ev.label || ev.note || "").trim();
-      if (!label) continue;
+      if (!label || (span.get(label) || 0) > 24) continue;
       const w = Math.abs(Number(a.w) || 0);
       if (!seen.has(label) || seen.get(label).w < w) {
         seen.set(label, { label, w, source: ev.source || "", note: ev.note || "" });
