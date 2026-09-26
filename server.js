@@ -3281,15 +3281,28 @@ async function researchDriver(){
   refreshBtn.disabled=true; researchBtn.disabled=true;
   byId("driver-status").textContent="Researching this week's weather, flights, and events (can take up to a minute)...";
   byId("driver-research-summary").textContent="";
+  // The research keeps running and caches its result on the server even if
+  // this request's reply never makes it back (phone WebViews and proxies
+  // drop long-held connections), which used to leave the page stuck on
+  // "Researching..." with both buttons greyed out forever. So stop waiting
+  // after 90s and just load whatever schedule the server has by then.
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),90000);
   try{
-    const res=await fetch("/reno-research",{method:"POST",headers:{"X-Agent-Passcode":passcode}});
+    const res=await fetch("/reno-research",{method:"POST",headers:{"X-Agent-Passcode":passcode},signal:ctrl.signal});
     const d=await res.json();
     if(!res.ok)throw new Error(d.error||("HTTP "+res.status));
     byId("driver-research-summary").textContent=d.summary||"";
     await loadDriver(false); // pick up the schedule the research just cached, without wiping it
   }catch(e){
-    byId("driver-status").textContent="Research failed: "+e.message;
+    if(e.name==="AbortError"){
+      await loadDriver(false);
+      byId("driver-status").textContent+=" · research reply timed out; showing latest saved schedule";
+    }else{
+      byId("driver-status").textContent="Research failed: "+e.message;
+    }
   }finally{
+    clearTimeout(timer);
     refreshBtn.disabled=false; researchBtn.disabled=false;
   }
 }
