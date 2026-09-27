@@ -47,7 +47,8 @@ for d in ['classic','frenzy']:
     open(f,'w',encoding='utf-8').write(s)
     print('WEB',d,'base44 left:',len(re.findall('base44',s,re.I)),'shim:', 'darkly-shim.js' in s)
 PY
-pip install -q --break-system-packages pillow 2>/dev/null || pip install -q pillow 2>/dev/null
+export DEBIAN_FRONTEND=noninteractive; python3 -c 'import PIL' 2>/dev/null || (apt-get update -qq && apt-get install -y -qq python3-pil > /dev/null)
+grep -o '.\{80\}base44.\{80\}' web/classic/index.html | head -3
 
 P=$W/app; A=$P/app/src/main; mkdir -p $A/assets $A/java/com/darkly/bubblefoam $A/res/values
 cp -r web $A/assets/web
@@ -62,6 +63,7 @@ for d,px in {'mdpi':48,'hdpi':72,'xhdpi':96,'xxhdpi':144,'xxxhdpi':192}.items():
 im.resize((512,512),Image.LANCZOS).convert('RGB').save('/out/Bubble-Foam-icon-512.png')
 print('ICONS_OK',w,h)
 PY
+[ -f $A/res/mipmap-xxxhdpi/ic_launcher.png ] || { echo 'STAGE DONE_FAIL icons'; sleep infinity; }
 echo "$BUBBLE_P12_B64" | base64 -d > $W/release.p12
 
 cat > $P/settings.gradle <<'EOF'
