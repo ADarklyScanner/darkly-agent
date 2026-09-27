@@ -7,8 +7,37 @@ echo "STAGE START"
 W=/work/bb; rm -rf $W; mkdir -p $W; cd $W
 SDK=${ANDROID_HOME:-/opt/android-sdk-linux}
 yes | $SDK/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" > /dev/null 2>&1
-tar xzf $OUT/bubble-web-ready.tgz || { echo "STAGE DONE_FAIL noweb"; sleep infinity; }
 curl -sSL https://codeload.github.com/ADarklyScanner/darkly-agent/tar.gz/refs/heads/build-inputs | tar xz --strip-components=1 --wildcards '*/bubble/*'
+grab() { # $1 name $2 url
+  mkdir -p web/$1 && cd web/$1
+  curl -sSL "$2/" -o index.html
+  for a in $(grep -oE '(src|href)="/[^"]+"' index.html | sed -E 's/.*="\/([^"]+)"/\1/' | grep -v badge); do
+    mkdir -p "$(dirname "$a")"; curl -sSL "$2/$a" -o "$a"
+  done
+  cd $W
+}
+grab classic "https://checkpoint--6a9d20686a8e8203f92cf3ed--6a9ea0d2135302727636d0ca.base44.app"
+grab frenzy "https://pop-foam-frenzy.base44.app"
+curl -sSL -o web/logo.png "https://media.base44.com/images/public/6a9d20686a8e8203f92cf3ed/35694e1f8_logo.png"
+
+python3 - <<'PY'
+import re,glob,shutil
+for d in ['classic','frenzy']:
+    f=f'web/{d}/index.html'; s=open(f,encoding='utf-8').read()
+    s=re.sub(r'<script[^>]*(badge\.js|data-platform-url|data-app-id)[^>]*>\s*</script>','',s,flags=re.S)
+    s=re.sub(r'<link[^>]*media\.base44\.com[^>]*/?>','',s)
+    s=s.replace('Base44 APP','Bubble Foam Frenzy')
+    s=re.sub(r'<head>','<head><script src="/darkly-shim.js"></script>',s,count=1)
+    open(f,'w',encoding='utf-8').write(s)
+    shutil.copy('bubble/shim.js',f'web/{d}/darkly-shim.js')
+    print(d,'base44 mentions left in index.html:',len(re.findall('base44',s,re.I)))
+    for js in glob.glob(f'web/{d}/assets/*.js'):
+        t=open(js,encoding='utf-8',errors='ignore').read()
+        hits=sorted(set(re.findall(r'.{0,30}(?:Game Over|GAME OVER|Time.s up|TIME.S UP|Final Score|Play Again|Try Again|New High|Round Over)[^`"\']{0,20}',t)))
+        print(d,'end-of-round text:',hits[:12])
+PY
+[ -s web/frenzy/index.html ] && [ -s web/classic/index.html ] || { echo "STAGE DONE_FAIL noweb"; sleep infinity; }
+
 mkdir -p web/menu && cp bubble/menu.html web/menu/index.html && cp web/logo.png web/menu/logo.png
 python3 - <<'PY'
 import re
