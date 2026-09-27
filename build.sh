@@ -47,6 +47,7 @@ org.gradle.jvmargs=-Xmx3g
 android.useAndroidX=true
 org.gradle.daemon=false
 EOF
+write_gradle() {
 cat > $P/app/build.gradle <<EOF
 plugins { id 'com.android.application' }
 android {
@@ -58,9 +59,9 @@ android {
     targetSdk 36
     versionCode ${VERSION_CODE:-1}
     versionName '${VERSION_NAME:-1.0}'
-    manifestPlaceholders = [admobAppId: '${ADMOB_APP_ID}']
-    buildConfigField 'String', 'REWARDED_ID', '"${ADMOB_REWARDED_ID}"'
-    buildConfigField 'String', 'INTERSTITIAL_ID', '"${ADMOB_INTERSTITIAL_ID}"'
+    manifestPlaceholders = [admobAppId: '$1']
+    buildConfigField 'String', 'REWARDED_ID', '"$2"'
+    buildConfigField 'String', 'INTERSTITIAL_ID', '"$3"'
   }
   buildFeatures { buildConfig true }
   signingConfigs { release { storeFile file('$W/release.p12'); storeType 'pkcs12'; storePassword '${P12_PASS}'; keyAlias 'rng 1-100'; keyPassword '${P12_PASS}' } }
@@ -72,6 +73,7 @@ dependencies {
   implementation 'com.google.android.ump:user-messaging-platform:3.2.0'
 }
 EOF
+}
 cat > $P/app/src/main/AndroidManifest.xml <<'EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -223,11 +225,13 @@ EOF
 
 # 4) gradle
 cd $W; curl -sSL -o g.zip https://services.gradle.org/distributions/gradle-8.14.3-bin.zip && unzip -q g.zip; G=$W/gradle-8.14.3/bin/gradle
-cd $P && $G --no-daemon -q bundleRelease assembleRelease; RC=$?
+T_APP=ca-app-pub-3940256099942544~3347511713; T_RW=ca-app-pub-3940256099942544/5224354917; T_IN=ca-app-pub-3940256099942544/1033173712
+cd $P && write_gradle "$ADMOB_APP_ID" "$ADMOB_REWARDED_ID" "$ADMOB_INTERSTITIAL_ID" && $G --no-daemon -q bundleRelease; RC=$?
+if [ $RC -eq 0 ]; then cp app/build/outputs/bundle/release/app-release.aab $OUT/1-100-RNG-Lucky-PLAY.aab; unzip -p $OUT/1-100-RNG-Lucky-PLAY.aab base/manifest/AndroidManifest.xml | strings | grep -o 'ca-app-pub-[0-9~]*' ; fi
+if [ $RC -eq 0 ]; then write_gradle "$T_APP" "$T_RW" "$T_IN" && $G --no-daemon -q assembleRelease; RC=$?; fi
 echo "ASSEMBLE_EXIT=$RC"
 if [ $RC -eq 0 ]; then
-  cp app/build/outputs/bundle/release/app-release.aab $OUT/1-100-RNG-Lucky-ads.aab
-  cp app/build/outputs/apk/release/app-release.apk $OUT/TEST-INSTALL-RNG-Lucky-ads.apk
+    cp app/build/outputs/apk/release/app-release.apk $OUT/TEST-INSTALL-RNG-Lucky-ads.apk
   AAPT=$(ls -d $SDK/build-tools/*/ | tail -1)aapt2
   $AAPT dump badging $OUT/TEST-INSTALL-RNG-Lucky-ads.apk | head -6
   ls -la $OUT; sha256sum $OUT/*
