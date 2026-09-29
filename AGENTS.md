@@ -175,6 +175,21 @@ gave it credit for. Specifics, not just the seven listed there:
 
 ---
 
+- **Robot app (`robot/`, branch `robot-app`)** — native Android app for the
+  owner's Galaxy S22 that becomes the phone's home screen. It is the first
+  real client of `device.js` and `sensors.js`: it registers a five-action
+  manifest (`robot.status`, `robot.body`, `files.list`, `files.read`,
+  `robot.say`), polls `/device/commands`, enforces write/`alwaysConfirm`
+  approval on its own screen, and pushes light/motion/pressure/steps/battery
+  to `/sensor-reading` every minute. It talks to `/chat` on the main "chat"
+  slot, prefixing each message with its body/sensor state. If the server is
+  unreachable it falls back to a llama-server on the phone
+  (`127.0.0.1:8080`) with the owner's base prompt, and labels every reply
+  with which brain produced it. USB devices are detected and reported, but
+  no motor driver exists yet. No server changes were needed for any of this.
+  Built by `.github/workflows/robot-apk.yml` (logs pushed to branch
+  `robot-ci-log`, APK published at release tag `robot-latest`).
+
 ## 4. The chosen direction: extend, don't replace
 
 The external plan describes a much richer cross-module layer than what's

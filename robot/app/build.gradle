@@ -1,0 +1,46 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Version comes from the CI run number so every build installs over the last one.
+def buildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1") as int
+
+android {
+    namespace 'com.darkly.robot'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.darkly.robot'
+        minSdk 26
+        targetSdk 34
+        versionCode buildNumber
+        versionName "0.1." + buildNumber
+    }
+
+    // One fixed key, kept in the repo, so each new build updates the installed
+    // app instead of being rejected as a different app. It only proves "this is
+    // the same Darkly Robot build as before"; it grants no other access.
+    signingConfigs {
+        robot {
+            storeFile file('../keystore/robot.jks')
+            storePassword 'darklyrobot'
+            keyAlias 'robot'
+            keyPassword 'darklyrobot'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.robot
+        }
+        debug {
+            signingConfig signingConfigs.robot
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

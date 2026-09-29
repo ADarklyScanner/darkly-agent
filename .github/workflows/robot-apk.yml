@@ -1,0 +1,80 @@
+name: Robot APK
+
+# Builds the Darkly Robot Android app and publishes it as a release the phone
+# can download directly: https://github.com/ADarklyScanner/darkly-agent/releases/tag/robot-latest
+
+on:
+  push:
+    branches: [robot-app, main]
+    paths:
+      - "robot/**"
+      - ".github/workflows/robot-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: robot-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+
+      - name: Build APK
+        id: build
+        run: |
+          set +e
+          gradle -p robot assembleRelease --no-daemon --stacktrace > build.log 2>&1
+          code=$?
+          tail -n 80 build.log
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      # Build logs go to a branch so they can be read without Actions access.
+      - name: Save build log
+        if: always()
+        run: |
+          git config user.name "robot-ci"
+          git config user.email "robot-ci@users.noreply.github.com"
+          cp build.log /tmp/build.log 2>/dev/null || echo "no log" > /tmp/build.log
+          git fetch origin robot-ci-log || true
+          if git rev-parse --verify origin/robot-ci-log >/dev/null 2>&1; then
+            git worktree add /tmp/log origin/robot-ci-log
+            cd /tmp/log && git checkout -B robot-ci-log
+          else
+            git worktree add --detach /tmp/log
+            cd /tmp/log && git checkout --orphan robot-ci-log && git rm -rf . >/dev/null
+          fi
+          cp /tmp/build.log build.log
+          echo "run=${{ github.run_number }} sha=${{ github.sha }} result=${{ steps.build.outputs.code }}" > status.txt
+          git add build.log status.txt
+          git commit -m "Robot build ${{ github.run_number }}: exit ${{ steps.build.outputs.code }}" || true
+          git push origin robot-ci-log
+
+      - name: Rename APK
+        run: cp robot/app/build/outputs/apk/release/app-release.apk DarklyRobot.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: robot-latest
+          name: Darkly Robot (latest build)
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          body: |
+            Latest Darkly Robot build (run ${{ github.run_number }}, commit ${{ github.sha }}).
+            On the S22: download DarklyRobot.apk below and install it.
+          files: DarklyRobot.apk

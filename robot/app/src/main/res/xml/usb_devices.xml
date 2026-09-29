@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Any USB device counts as a body part for now. Narrow this to the
+     real arm/track controller's vendor id once it exists. -->
+<resources>
+    <usb-device />
+</resources>
