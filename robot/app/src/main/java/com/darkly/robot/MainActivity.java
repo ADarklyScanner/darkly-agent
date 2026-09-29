@@ -12,6 +12,8 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -71,6 +73,10 @@ public class MainActivity extends Activity implements DeviceLink.Host {
     private Body body;
     private SensorHub senses;
     private DeviceLink link;
+    private LocalBrain localBrain;
+    private boolean wasOnline = false;
+    private boolean recognizerOffline = false;
+    private ConnectivityManager.NetworkCallback netCallback;
 
     private TextView face, status, logView;
     private ScrollView logScroll;
@@ -118,6 +124,7 @@ public class MainActivity extends Activity implements DeviceLink.Host {
         body = new Body(this);
         senses = new SensorHub(this);
         link = new DeviceLink(this, this);
+        localBrain = new LocalBrain(this);
         buildUi();
 
         tts = new TextToSpeech(this, st -> {
@@ -136,7 +143,9 @@ public class MainActivity extends Activity implements DeviceLink.Host {
         askPermissions();
         senses.start();
         link.start();
+        localBrain.start();
         startSensorPush();
+        watchNetwork();
 
         IntentFilter f = new IntentFilter();
         f.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
@@ -144,8 +153,9 @@ public class MainActivity extends Activity implements DeviceLink.Host {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(usbReceiver, f, Context.RECEIVER_EXPORTED);
         else registerReceiver(usbReceiver, f);
 
-        log("Robot online. " + body.summary());
-        if (!Prefs.configured(this)) ui.postDelayed(this::openSetup, 800);
+        wasOnline = Brain.online(this);
+        log("Robot awake. " + (wasOnline ? "Internet: yes." : "Internet: none, running on my own brain.") + " " + body.summary());
+        if (!Prefs.onboarded(this)) ui.postDelayed(this::firstRun, 800);
         ui.post(tick);
     }
 
@@ -162,7 +172,11 @@ public class MainActivity extends Activity implements DeviceLink.Host {
         try { unregisterReceiver(usbReceiver); } catch (Exception ignored) {}
         senses.stop();
         link.stop();
+        localBrain.stop();
         pushingSensors = false;
+        if (netCallback != null) try {
+            ((ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)).unregisterNetworkCallback(netCallback);
+        } catch (Exception ignored) {}
         if (recognizer != null) recognizer.destroy();
         if (tts != null) tts.shutdown();
         work.shutdownNow();
@@ -290,13 +304,13 @@ public class MainActivity extends Activity implements DeviceLink.Host {
     }
 
     private void refreshStatus() {
+        boolean online = Brain.online(this);
         String brainLine;
-        if (!Prefs.configured(this)) brainLine = "Brain: not set up (tap Setup)";
-        else if (lastSource == Brain.Source.ENGINE) brainLine = "Brain: Darkly engine";
-        else if (lastSource == Brain.Source.LOCAL) brainLine = "Brain: on-phone model (engine unreachable)";
-        else if (lastSource == Brain.Source.NONE) brainLine = "Brain: none reachable";
-        else brainLine = "Brain: Darkly engine (not asked yet)";
-        String linkLine = !Prefs.configured(this) ? "Link: off"
+        if (online && Prefs.configured(this)) brainLine = "Brain: Darkly engine" + (lastSource == Brain.Source.LOCAL ? " (last reply came from offline brain)" : "");
+        else if (online) brainLine = "Brain: offline brain (add the passcode in Setup to use the engine)";
+        else brainLine = "Brain: offline brain (no internet)";
+        brainLine += "\n" + localBrain.describe();
+        String linkLine = !online ? "Link: waiting for internet" : !Prefs.configured(this) ? "Link: off"
             : link.isRegistered() ? "Link: connected" : "Link: trying" + (link.lastError().isEmpty() ? "" : " (" + link.lastError() + ")");
         String ears = listening ? "listening" : Prefs.alwaysListen(this) ? "ears on" : "ears off";
         status.setText(brainLine + "\n" + linkLine + " · " + ears + "\n" + body.summary() + "\n" + senses.shortLine());
@@ -372,9 +386,16 @@ public class MainActivity extends Activity implements DeviceLink.Host {
     // ---------------------------------------------------------------- hearing
 
     private void ensureRecognizer() {
-        if (recognizer != null) return;
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) { log("This phone has no speech recognizer available."); return; }
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        boolean wantOffline = !Brain.online(this);
+        if (recognizer != null && recognizerOffline == wantOffline) return;
+        if (recognizer != null) { recognizer.destroy(); recognizer = null; }
+        recognizerOffline = wantOffline;
+        if (wantOffline && Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
+            recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this);
+        } else {
+            if (!SpeechRecognizer.isRecognitionAvailable(this)) { log("This phone has no speech recognizer available."); return; }
+            recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        }
         recognizer.setRecognitionListener(new RecognitionListener() {
             @Override public void onReadyForSpeech(Bundle b) { listening = true; setFace(); refreshStatus(); }
             @Override public void onBeginningOfSpeech() {}
@@ -383,6 +404,8 @@ public class MainActivity extends Activity implements DeviceLink.Host {
             @Override public void onEndOfSpeech() {}
             @Override public void onError(int error) {
                 listening = false; setFace();
+                if (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED || error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE)
+                    log("Can't hear offline yet: the phone needs its offline English speech pack (Settings > Samsung/Google voice input > offline languages). Typing still works.");
                 // Silence and "didn't catch that" are normal; just go back to listening.
                 if (Prefs.alwaysListen(MainActivity.this)) ui.postDelayed(MainActivity.this::resumeListening, 1200);
             }
@@ -405,7 +428,7 @@ public class MainActivity extends Activity implements DeviceLink.Host {
         Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US");
-        i.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false);
+        i.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, recognizerOffline);
         listening = true;
         setFace();
         recognizer.startListening(i);
@@ -462,13 +485,45 @@ public class MainActivity extends Activity implements DeviceLink.Host {
         catch (Exception e) { return "?"; }
     }
 
+    private void watchNetwork() {
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (cm == null) return;
+        netCallback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onAvailable(Network n) { ui.postDelayed(MainActivity.this::networkChanged, 2500); }
+            @Override public void onLost(Network n) { ui.postDelayed(MainActivity.this::networkChanged, 1000); }
+        };
+        try { cm.registerDefaultNetworkCallback(netCallback); } catch (Exception ignored) {}
+    }
+
+    private void networkChanged() {
+        boolean now = Brain.online(this);
+        if (now == wasOnline) { refreshStatus(); return; }
+        wasOnline = now;
+        if (now) log(Prefs.configured(this) ? "Internet's back. Thinking with the engine again." : "Internet's back. Add the passcode in Setup and I'll use the engine.");
+        else log("Lost the internet. Running on my own brain.");
+        refreshStatus();
+    }
+
+    /** First launch: the one-time steps that make it boot into the robot. */
+    private void firstRun() {
+        new AlertDialog.Builder(this)
+            .setTitle("One-time setup")
+            .setMessage("1. Tap \"Make it home\" and pick Darkly Robot, set as default. After that the phone boots straight into me.\n\n" +
+                "2. Optional: tap Setup later and add your Darkly passcode. Without it I still work, on my own offline brain.\n\n" +
+                "My offline brain unpacks itself the first time (a few minutes). Leave me on the charger.")
+            .setCancelable(false)
+            .setPositiveButton("Make it home", (d, w) -> { Prefs.setOnboarded(this); openHomeSettings(); })
+            .setNeutralButton("Later", (d, w) -> { Prefs.setOnboarded(this); hideSystemBars(); })
+            .show();
+    }
+
     private void startSensorPush() {
         pushingSensors = true;
         Thread t = new Thread(() -> {
             try { Thread.sleep(10000); } catch (InterruptedException ignored) {}
             while (pushingSensors) {
                 try {
-                    if (Prefs.configured(this)) {
+                    if (Prefs.configured(this) && Brain.online(this)) {
                         Map<String, String> h = new HashMap<>();
                         h.put("X-Agent-Passcode", Prefs.passcode(this));
                         Http.request("POST", Prefs.server(this) + "/sensor-reading",

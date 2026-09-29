@@ -57,6 +57,9 @@ public final class Prefs {
             .apply();
     }
 
+    public static boolean onboarded(Context c) { return p(c).getBoolean("onboarded", false); }
+    public static void setOnboarded(Context c) { p(c).edit().putBoolean("onboarded", true).apply(); }
+
     public static void setListen(Context c, boolean on) { p(c).edit().putBoolean("listen", on).apply(); }
 
     private static String trimSlash(String s) {

@@ -63,7 +63,7 @@ public final class DeviceLink {
     private void loop() {
         while (running.get()) {
             try {
-                if (!Prefs.configured(ctx)) { sleep(5000); continue; }
+                if (!Prefs.configured(ctx) || !Brain.online(ctx)) { registered = false; sleep(5000); continue; }
                 if (!registered) register();
                 if (registered) poll();
                 lastError = "";

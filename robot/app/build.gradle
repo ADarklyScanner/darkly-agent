@@ -14,7 +14,25 @@ android {
         minSdk 26
         targetSdk 34
         versionCode buildNumber
-        versionName "0.1." + buildNumber
+        versionName "0.2." + buildNumber
+        // The S22 is arm64; the bundled model runner is built for arm64 only.
+        ndk { abiFilters 'arm64-v8a' }
+    }
+
+    // The model runner (llama-server, built by CI into src/main/jniLibs) has to be
+    // unpacked onto disk so it can be executed as a process.
+    packaging {
+        jniLibs { useLegacyPackaging true }
+    }
+
+    // The model is stored uncompressed so it can be copied out quickly.
+    androidResources {
+        noCompress 'gguf'
+    }
+
+    // Full build: -PbrainDir=/path/with/brain.gguf puts the offline brain inside the APK.
+    if (project.hasProperty('brainDir')) {
+        sourceSets.main.assets.srcDirs += [project.property('brainDir')]
     }
 
     // One fixed key, kept in the repo, so each new build updates the installed

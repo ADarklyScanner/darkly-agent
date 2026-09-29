@@ -1,7 +1,9 @@
 name: Robot APK
 
-# Builds the Darkly Robot Android app and publishes it as a release the phone
-# can download directly: https://github.com/ADarklyScanner/darkly-agent/releases/tag/robot-latest
+# Builds the Darkly Robot Android app and publishes it at
+# https://github.com/ADarklyScanner/darkly-agent/releases/tag/robot-latest
+#   DarklyRobot.apk       full build: app + offline brain (llama-server + 3B model), works with no internet
+#   DarklyRobot-lite.apk  same app without the model, for quick updates over an existing install
 
 on:
   push:
@@ -18,10 +20,17 @@ concurrency:
   group: robot-apk
   cancel-in-progress: true
 
+env:
+  LLAMA_TAG: b11249
+  MODEL_URL: https://huggingface.co/QuantFactory/Llama-3.2-3B-Instruct-abliterated-GGUF/resolve/main/Llama-3.2-3B-Instruct-abliterated.Q4_0.gguf
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/node_modules "$AGENT_TOOLSDIRECTORY" || true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-java@v4
@@ -33,15 +42,57 @@ jobs:
         with:
           gradle-version: "8.14.3"
 
-      - name: Build APK
+      - name: Cache the model
+        uses: actions/cache@v4
+        with:
+          path: /tmp/brain
+          key: brain-llama32-3b-abliterated-q4_0
+
+      - name: Build
         id: build
         run: |
           set +e
-          gradle -p robot assembleRelease --no-daemon --stacktrace > build.log 2>&1
-          code=$?
-          tail -n 80 build.log
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          exit $code
+          : > build.log
+          step() { echo "=== $1" | tee -a build.log; }
+          run() { "$@" >> build.log 2>&1; }
+          fail() { echo "FAILED: $1" | tee -a build.log; echo "code=1" >> "$GITHUB_OUTPUT"; tail -n 120 build.log; exit 1; }
+
+          step "llama-server for Android arm64 ($LLAMA_TAG)"
+          run git clone --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp /tmp/llama || fail "clone llama.cpp"
+          NDK="$ANDROID_NDK_LATEST_HOME"
+          FLAGS="-march=armv8.2-a+dotprod+fp16"
+          run cmake -S /tmp/llama -B /tmp/llama/out \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DGGML_OPENMP=OFF -DGGML_NATIVE=OFF \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON \
+            -DCMAKE_C_FLAGS="$FLAGS" -DCMAKE_CXX_FLAGS="$FLAGS" || fail "configure llama.cpp"
+          run cmake --build /tmp/llama/out --target llama-server -j 4 || fail "compile llama-server"
+          BIN=$(find /tmp/llama/out -type f -name llama-server | head -1)
+          [ -n "$BIN" ] || fail "llama-server binary not found"
+          mkdir -p robot/app/src/main/jniLibs/arm64-v8a
+          cp "$BIN" robot/app/src/main/jniLibs/arm64-v8a/libllamaserver.so
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" robot/app/src/main/jniLibs/arm64-v8a/libllamaserver.so
+          ls -la robot/app/src/main/jniLibs/arm64-v8a >> build.log
+
+          step "lite APK"
+          run gradle -p robot assembleRelease --no-daemon --stacktrace || fail "lite APK"
+          cp robot/app/build/outputs/apk/release/app-release.apk DarklyRobot-lite.apk
+
+          step "model"
+          mkdir -p /tmp/brain
+          if [ ! -s /tmp/brain/brain.gguf ]; then
+            run curl -fL --retry 3 "$MODEL_URL" -o /tmp/brain/brain.gguf || fail "download model"
+          fi
+          ls -la /tmp/brain >> build.log
+
+          step "full APK (with offline brain)"
+          run gradle -p robot assembleRelease --no-daemon --stacktrace -PbrainDir=/tmp/brain || fail "full APK"
+          cp robot/app/build/outputs/apk/release/app-release.apk DarklyRobot.apk
+          ls -la DarklyRobot*.apk | tee -a build.log
+          echo "code=0" >> "$GITHUB_OUTPUT"
+          tail -n 40 build.log
 
       # Build logs go to a branch so they can be read without Actions access.
       - name: Save build log
@@ -58,14 +109,11 @@ jobs:
             git worktree add --detach /tmp/log
             cd /tmp/log && git checkout --orphan robot-ci-log && git rm -rf . >/dev/null
           fi
-          cp /tmp/build.log build.log
+          tail -c 900000 /tmp/build.log > build.log
           echo "run=${{ github.run_number }} sha=${{ github.sha }} result=${{ steps.build.outputs.code }}" > status.txt
           git add build.log status.txt
           git commit -m "Robot build ${{ github.run_number }}: exit ${{ steps.build.outputs.code }}" || true
           git push origin robot-ci-log
-
-      - name: Rename APK
-        run: cp robot/app/build/outputs/apk/release/app-release.apk DarklyRobot.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -76,5 +124,9 @@ jobs:
           prerelease: true
           body: |
             Latest Darkly Robot build (run ${{ github.run_number }}, commit ${{ github.sha }}).
-            On the S22: download DarklyRobot.apk below and install it.
-          files: DarklyRobot.apk
+
+            **DarklyRobot.apk** — the full robot, offline brain included (about 2 GB). Transfer it to the S22 and install it.
+            **DarklyRobot-lite.apk** — same app without the model, for updating a phone that already has the full build.
+          files: |
+            DarklyRobot.apk
+            DarklyRobot-lite.apk

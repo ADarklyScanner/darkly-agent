@@ -183,12 +183,18 @@ gave it credit for. Specifics, not just the seven listed there:
   approval on its own screen, and pushes light/motion/pressure/steps/battery
   to `/sensor-reading` every minute. It talks to `/chat` on the main "chat"
   slot, prefixing each message with its body/sensor state. If the server is
-  unreachable it falls back to a llama-server on the phone
-  (`127.0.0.1:8080`) with the owner's base prompt, and labels every reply
-  with which brain produced it. USB devices are detected and reported, but
+  unreachable or the phone is offline it uses its own offline brain: a
+  llama-server compiled by CI for arm64 and shipped in the APK as
+  `libllamaserver.so`, run as a child process on `127.0.0.1:8089` with the
+  3B model (bundled in the full APK, unpacked once into app storage), then a
+  Termux llama-server on `127.0.0.1:8080` as a last resort. Every reply is
+  labelled with which brain produced it. USB devices are detected and reported, but
   no motor driver exists yet. No server changes were needed for any of this.
   Built by `.github/workflows/robot-apk.yml` (logs pushed to branch
-  `robot-ci-log`, APK published at release tag `robot-latest`).
+  `robot-ci-log`; `DarklyRobot.apk` (full, ~2 GB with the model) and
+  `DarklyRobot-lite.apk` (no model, for updates) at release tag `robot-latest`).
+  Planned: Wi-Fi broadcast (own hotspot / LAN control), which the owner says
+  is crucial later.
 
 ## 4. The chosen direction: extend, don't replace
 
