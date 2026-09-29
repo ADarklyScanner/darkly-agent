@@ -1,3 +1,309 @@
+=== llama-server for Android arm64 (b11249)
+Cloning into '/tmp/llama'...
+Note: switching to '6d78fb0727fdd8fbae15b6b5e9e0c0951a750d69'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+-- The C compiler identification is Clang 21.0.0
+-- The CXX compiler identification is Clang 21.0.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/local/lib/android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/clang - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/local/lib/android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- llama.cpp version: 0.5.0-dev
+CMAKE_BUILD_TYPE=Release
+-- Found Git: /usr/bin/git (found version "2.55.0")
+-- The ASM compiler identification is Clang with GNU-like command-line
+-- Found assembler: /usr/local/lib/android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/clang
+-- Setting GGML_NATIVE_DEFAULT to OFF
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Failed
+-- Check if compiler accepts -pthread
+-- Check if compiler accepts -pthread - yes
+-- Found Threads: TRUE
+-- Warning: ccache not found - consider installing it for faster compilation or disable this warning with GGML_CCACHE=OFF
+-- CMAKE_SYSTEM_PROCESSOR: aarch64
+-- GGML_SYSTEM_ARCH: ARM
+-- Including CPU backend
+-- ARM detected
+-- Performing Test GGML_COMPILER_SUPPORTS_FP16_FORMAT_I3E
+-- Performing Test GGML_COMPILER_SUPPORTS_FP16_FORMAT_I3E - Failed
+-- Checking for ARM features using flags:
+-- Performing Test HAVE_DOTPROD
+-- Performing Test HAVE_DOTPROD - Success
+-- Performing Test HAVE_SVE
+-- Performing Test HAVE_SVE - Failed
+-- Performing Test HAVE_MATMUL_INT8
+-- Performing Test HAVE_MATMUL_INT8 - Failed
+-- Performing Test HAVE_FMA
+-- Performing Test HAVE_FMA - Success
+-- Performing Test HAVE_FP16_VECTOR_ARITHMETIC
+-- Performing Test HAVE_FP16_VECTOR_ARITHMETIC - Success
+-- Performing Test HAVE_SME
+-- Performing Test HAVE_SME - Failed
+-- Adding CPU backend variant ggml-cpu:  
+-- ggml version: 0.25.3
+-- ggml commit:  6d78fb0
+-- Looking for pthread_create in pthreads
+-- Looking for pthread_create in pthreads - not found
+-- Looking for pthread_create in pthread
+-- Looking for pthread_create in pthread - not found
+-- Disabling MTMD_VIDEO because LLAMA_SUBPROCESS is OFF
+-- Generating embedded license file for target: llama-app
+-- Configuring done (10.7s)
+-- Generating done (0.1s)
+-- Build files have been written to: /tmp/llama/out
+[  1%] Building CXX object vendor/hash/CMakeFiles/vendor-hash.dir/hash.cpp.o
+[  1%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[  1%] Building CXX object vendor/cpp-httplib/CMakeFiles/cpp-httplib.dir/httplib.cpp.o
+[  2%] Building CXX object common/CMakeFiles/llama-common-base.dir/build-info.cpp.o
+[  2%] Linking CXX static library libllama-common-base.a
+[  2%] Building C object vendor/hash/CMakeFiles/vendor-hash.dir/xxhash/xxhash.c.o
+[  2%] Built target llama-common-base
+[  2%] Provisioning UI assets
+-- UI: downloading from b1: https://huggingface.co/buckets/ggml-org/llama-ui/resolve/b1/dist.tar.gz
+[  2%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+-- UI: download dist.tar.gz.sha256 from b1 failed: "HTTP response code said error"
+-- UI: downloading from latest: https://huggingface.co/buckets/ggml-org/llama-ui/resolve/latest/dist.tar.gz
+[  3%] Building CXX object vendor/hash/CMakeFiles/vendor-hash.dir/sha1/sha1.c.o
+[  3%] Building C object vendor/hash/CMakeFiles/vendor-hash.dir/sha256/sha256.c.o
+[  5%] Linking CXX static library libvendor-hash.a
+[  5%] Built target vendor-hash
+[  6%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[  6%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+-- UI: archive verified and extracted
+-- UI: HF download succeeded, stamp updated (ggml-org/llama-ui|b1, resolved: latest)
+[  6%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o
+-- UI: gzip compression applied (/tmp/llama/out/tools/ui/ui-gzip/_gzip)
+[  7%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[  7%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[  7%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[  8%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+-- UI: embedded 70 assets
+[  8%] Built target llama-ui-assets
+[ 10%] Building CXX object tools/ui/CMakeFiles/llama-ui.dir/ui.cpp.o
+[ 10%] Linking CXX static library libggml-base.a
+[ 10%] Built target ggml-base
+[ 11%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o
+[ 11%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o
+[ 11%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o
+[ 12%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o
+[ 12%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o
+[ 12%] Linking CXX static library libllama-ui.a
+[ 12%] Built target llama-ui
+[ 12%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o
+[ 14%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o
+[ 14%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o
+[ 15%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/tiled/tiled.cpp.o
+[ 15%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/tiled/tiled-kernel.cpp.o
+[ 15%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o
+[ 16%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o
+[ 16%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o
+[ 16%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o
+[ 17%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/llamafile/sgemm.cpp.o
+[ 17%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/quants.c.o
+[ 19%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/repack.cpp.o
+[ 19%] Linking CXX static library libcpp-httplib.a
+[ 19%] Built target cpp-httplib
+[ 19%] Linking CXX static library libggml-cpu.a
+[ 19%] Built target ggml-cpu
+[ 20%] Building CXX object ggml/src/CMakeFiles/ggml.dir/ggml-backend-dl.cpp.o
+[ 20%] Building CXX object ggml/src/CMakeFiles/ggml.dir/ggml-backend-reg.cpp.o
+[ 20%] Linking CXX static library libggml.a
+[ 20%] Built target ggml
+[ 20%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_9_cxx.cxx.o
+[ 21%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_8_cxx.cxx.o
+[ 21%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_7_cxx.cxx.o
+[ 21%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_6_cxx.cxx.o
+[ 23%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_5_cxx.cxx.o
+[ 23%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_4_cxx.cxx.o
+[ 24%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_3_cxx.cxx.o
+[ 24%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_2_cxx.cxx.o
+[ 24%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_1_cxx.cxx.o
+[ 25%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_0_cxx.cxx.o
+[ 25%] Building CXX object src/CMakeFiles/llama.dir/llama.cpp.o
+[ 25%] Building CXX object src/CMakeFiles/llama.dir/llama-adapter.cpp.o
+[ 26%] Building CXX object src/CMakeFiles/llama.dir/llama-arch.cpp.o
+[ 26%] Building CXX object src/CMakeFiles/llama.dir/llama-batch.cpp.o
+[ 28%] Building CXX object src/CMakeFiles/llama.dir/llama-chat.cpp.o
+[ 28%] Building CXX object src/CMakeFiles/llama.dir/llama-context.cpp.o
+[ 28%] Building CXX object src/CMakeFiles/llama.dir/llama-cparams.cpp.o
+[ 29%] Building CXX object src/CMakeFiles/llama.dir/llama-grammar.cpp.o
+[ 29%] Building CXX object src/CMakeFiles/llama.dir/llama-graph.cpp.o
+[ 29%] Building CXX object src/CMakeFiles/llama.dir/llama-hparams.cpp.o
+[ 30%] Building CXX object src/CMakeFiles/llama.dir/llama-impl.cpp.o
+[ 30%] Building CXX object src/CMakeFiles/llama.dir/llama-io.cpp.o
+[ 32%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache.cpp.o
+[ 32%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-iswa.cpp.o
+[ 32%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-dsa.cpp.o
+[ 33%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-dsa-iswa.cpp.o
+[ 33%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-msa.cpp.o
+[ 33%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-dsv4.cpp.o
+[ 34%] Building CXX object src/CMakeFiles/llama.dir/llama-memory.cpp.o
+[ 34%] Building CXX object src/CMakeFiles/llama.dir/llama-memory-hybrid.cpp.o
+[ 35%] Building CXX object src/CMakeFiles/llama.dir/llama-memory-hybrid-iswa.cpp.o
+[ 35%] Building CXX object src/CMakeFiles/llama.dir/llama-memory-hybrid-idx.cpp.o
+[ 35%] Building CXX object src/CMakeFiles/llama.dir/llama-memory-recurrent.cpp.o
+[ 37%] Building CXX object src/CMakeFiles/llama.dir/llama-mmap.cpp.o
+[ 37%] Building CXX object src/CMakeFiles/llama.dir/llama-model-loader.cpp.o
+[ 37%] Building CXX object src/CMakeFiles/llama.dir/llama-model-saver.cpp.o
+[ 38%] Building CXX object src/CMakeFiles/llama.dir/llama-model.cpp.o
+[ 38%] Building CXX object src/CMakeFiles/llama.dir/llama-quant.cpp.o
+[ 39%] Building CXX object src/CMakeFiles/llama.dir/llama-sampler.cpp.o
+[ 39%] Building CXX object src/CMakeFiles/llama.dir/llama-vocab.cpp.o
+[ 39%] Building CXX object src/CMakeFiles/llama.dir/unicode-data.cpp.o
+[ 41%] Building CXX object src/CMakeFiles/llama.dir/unicode.cpp.o
+[ 41%] Linking CXX static library libllama.a
+[ 41%] Built target llama
+[ 42%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/mtmd.cpp.o
+[ 42%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/parsers.cpp.o
+[ 42%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/mtmd-audio.cpp.o
+[ 43%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/cohere2moe.cpp.o
+[ 43%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/deepseek.cpp.o
+[ 43%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/functionary-v3-2.cpp.o
+[ 43%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/mtmd-image.cpp.o
+[ 44%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/gemma4.cpp.o
+[ 44%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/gigachat-v3.cpp.o
+[ 46%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/mtmd-helper.cpp.o
+[ 46%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/gpt-oss.cpp.o
+[ 47%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/kimi-k2.cpp.o
+[ 47%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/mtmd-helper-gen.cpp.o
+[ 47%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/kimi-k3.cpp.o
+[ 48%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/clip.cpp.o
+[ 48%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/cogvlm.cpp.o
+[ 48%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/conformer.cpp.o
+[ 50%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/ling3.cpp.o
+[ 50%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/lfm2.cpp.o
+[ 51%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/deepseek4v.cpp.o
+[ 51%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/minicpm5.cpp.o
+[ 51%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/dots3note.cpp.o
+[ 52%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/minimax-m3.cpp.o
+[ 52%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/ministral3.cpp.o
+[ 52%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/muse-glimmer.cpp.o
+[ 53%] Building CXX object common/CMakeFiles/llama-common.dir/parsers/qwen3-coder.cpp.o
+[ 53%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/dotsocr.cpp.o
+[ 53%] Building CXX object common/CMakeFiles/llama-common.dir/arg.cpp.o
+[ 55%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/exaone4_5.cpp.o
+[ 55%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/gemma4a.cpp.o
+[ 56%] Building CXX object common/CMakeFiles/llama-common.dir/chat-auto-parser-generator.cpp.o
+[ 56%] Building CXX object common/CMakeFiles/llama-common.dir/chat-auto-parser-helpers.cpp.o
+[ 57%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/gemma4v.cpp.o
+[ 57%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/gemma4ua.cpp.o
+[ 57%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/gemma4uv.cpp.o
+[ 57%] Building CXX object common/CMakeFiles/llama-common.dir/chat-diff-analyzer.cpp.o
+[ 58%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/glm4v.cpp.o
+[ 60%] Building CXX object common/CMakeFiles/llama-common.dir/chat-peg-parser.cpp.o
+[ 60%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/granite-speech.cpp.o
+[ 60%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/granite4-vision.cpp.o
+[ 61%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/hunyuanvl.cpp.o
+[ 61%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/internvl.cpp.o
+[ 61%] Building CXX object common/CMakeFiles/llama-common.dir/chat.cpp.o
+[ 62%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/kimivl.cpp.o
+[ 62%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/kimik25.cpp.o
+[ 62%] Building CXX object common/CMakeFiles/llama-common.dir/common.cpp.o
+[ 62%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/nemotron-v2-vl.cpp.o
+[ 64%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/muse-glimmer.cpp.o
+[ 64%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/llama4.cpp.o
+[ 64%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/llava.cpp.o
+[ 65%] Building CXX object common/CMakeFiles/llama-common.dir/console.cpp.o
+[ 66%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/minicpmv.cpp.o
+[ 66%] Building CXX object common/CMakeFiles/llama-common.dir/debug.cpp.o
+[ 66%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/paddleocr.cpp.o
+[ 67%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/pixtral.cpp.o
+[ 69%] Building CXX object common/CMakeFiles/llama-common.dir/download.cpp.o
+[ 69%] Building CXX object common/CMakeFiles/llama-common.dir/fit.cpp.o
+[ 69%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/qwen2vl.cpp.o
+[ 69%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/minimax-m3.cpp.o
+[ 70%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/qwen3vl.cpp.o
+[ 70%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/ling3vl.cpp.o
+[ 70%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/mimovl.cpp.o
+[ 70%] Building CXX object common/CMakeFiles/llama-common.dir/hf-cache.cpp.o
+[ 71%] Building CXX object common/CMakeFiles/llama-common.dir/imatrix-loader.cpp.o
+[ 73%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/qwen3a.cpp.o
+[ 73%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/mimo-audio.cpp.o
+[ 73%] Building CXX object common/CMakeFiles/llama-common.dir/json-schema-to-grammar.cpp.o
+[ 74%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/qwen3tts-spkenc.cpp.o
+[ 74%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/qwen3tts-gen.cpp.o
+[ 74%] Building CXX object common/CMakeFiles/llama-common.dir/json-schema.cpp.o
+[ 75%] Building CXX object common/CMakeFiles/llama-common.dir/json.cpp.o
+[ 75%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/pockettts-seanet.cpp.o
+[ 76%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/pockettts-spkenc.cpp.o
+[ 76%] Building CXX object common/CMakeFiles/llama-common.dir/llguidance.cpp.o
+[ 76%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/pockettts-gen.cpp.o
+[ 76%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/step3vl.cpp.o
+[ 78%] Building CXX object common/CMakeFiles/llama-common.dir/log.cpp.o
+[ 79%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/siglip.cpp.o
+[ 79%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/whisper-enc.cpp.o
+[ 79%] Building CXX object common/CMakeFiles/llama-common.dir/ngram-cache.cpp.o
+[ 80%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/deepseekocr.cpp.o
+[ 80%] Building CXX object common/CMakeFiles/llama-common.dir/ngram-map.cpp.o
+[ 80%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/deepseekocr2.cpp.o
+[ 80%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/mobilenetv5.cpp.o
+[ 82%] Building CXX object common/CMakeFiles/llama-common.dir/ngram-mod.cpp.o
+[ 83%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/youtuvl.cpp.o
+[ 83%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/yasa2.cpp.o
+[ 83%] Building CXX object common/CMakeFiles/llama-common.dir/peg-parser.cpp.o
+[ 83%] Building CXX object tools/mtmd/CMakeFiles/mtmd.dir/models/parakeet.cpp.o
+[ 84%] Building CXX object common/CMakeFiles/llama-common.dir/preset.cpp.o
+[ 84%] Building CXX object common/CMakeFiles/llama-common.dir/reasoning-budget.cpp.o
+[ 85%] Linking CXX static library libmtmd.a
+[ 85%] Built target mtmd
+[ 85%] Building CXX object common/CMakeFiles/llama-common.dir/sampling.cpp.o
+[ 87%] Building CXX object common/CMakeFiles/llama-common.dir/speculative.cpp.o
+[ 87%] Building CXX object common/CMakeFiles/llama-common.dir/subproc.cpp.o
+[ 87%] Building CXX object common/CMakeFiles/llama-common.dir/trie.cpp.o
+[ 88%] Building CXX object common/CMakeFiles/llama-common.dir/unicode.cpp.o
+[ 88%] Building CXX object common/CMakeFiles/llama-common.dir/jinja/lexer.cpp.o
+[ 89%] Building CXX object common/CMakeFiles/llama-common.dir/jinja/parser.cpp.o
+[ 89%] Building CXX object common/CMakeFiles/llama-common.dir/jinja/runtime.cpp.o
+[ 89%] Building CXX object common/CMakeFiles/llama-common.dir/jinja/value.cpp.o
+[ 91%] Building CXX object common/CMakeFiles/llama-common.dir/jinja/string.cpp.o
+[ 91%] Building CXX object common/CMakeFiles/llama-common.dir/jinja/caps.cpp.o
+[ 91%] Linking CXX static library libllama-common.a
+[ 91%] Built target llama-common
+[ 91%] Building CXX object tools/server/CMakeFiles/server-context.dir/server-chat.cpp.o
+[ 92%] Building CXX object tools/server/CMakeFiles/server-context.dir/server-task.cpp.o
+[ 92%] Building CXX object tools/server/CMakeFiles/server-context.dir/server-queue.cpp.o
+[ 92%] Building CXX object tools/server/CMakeFiles/server-context.dir/server-common.cpp.o
+[ 93%] Building CXX object tools/server/CMakeFiles/server-context.dir/server-context.cpp.o
+[ 93%] Building CXX object tools/server/CMakeFiles/server-context.dir/server-stream.cpp.o
+[ 93%] Building CXX object tools/server/CMakeFiles/server-context.dir/server-tools.cpp.o
+[ 94%] Building CXX object tools/server/CMakeFiles/server-context.dir/server-mcp.cpp.o
+[ 94%] Building CXX object tools/server/CMakeFiles/server-context.dir/server-schema.cpp.o
+[ 96%] Linking CXX static library libserver-context.a
+[ 96%] Built target server-context
+[ 97%] Building CXX object tools/server/CMakeFiles/llama-server-impl.dir/server.cpp.o
+[ 97%] Building CXX object tools/server/CMakeFiles/llama-server-impl.dir/server-http.cpp.o
+[ 97%] Building CXX object tools/server/CMakeFiles/llama-server-impl.dir/server-models.cpp.o
+[ 98%] Linking CXX static library libllama-server-impl.a
+[ 98%] Built target llama-server-impl
+[100%] Building CXX object tools/server/CMakeFiles/llama-server.dir/main.cpp.o
+[100%] Linking CXX executable ../../bin/llama-server
+[100%] Built target llama-server
+total 12588
+drwxr-xr-x 2 runner runner     4096 Sep 29 11:12 .
+drwxr-xr-x 3 runner runner     4096 Sep 29 11:12 ..
+-rwxr-xr-x 1 runner runner 12880760 Sep 29 11:12 libllamaserver.so
+=== lite APK
 
 Welcome to Gradle 8.14.3!
 
@@ -13,9 +319,9 @@ To honour the JVM settings for this build a single-use Daemon process will be fo
 Daemon will be stopped at the end of the build 
 > Task :app:preBuild UP-TO-DATE
 > Task :app:preReleaseBuild UP-TO-DATE
-> Task :app:generateReleaseResValues
-> Task :app:checkReleaseAarMetadata
 > Task :app:javaPreCompileRelease
+> Task :app:checkReleaseAarMetadata
+> Task :app:generateReleaseResValues
 > Task :app:mapReleaseSourceSetPaths
 > Task :app:generateReleaseResources
 > Task :app:packageReleaseResources
@@ -26,22 +332,23 @@ Daemon will be stopped at the end of the build
 > Task :app:processReleaseMainManifest
 > Task :app:processReleaseManifest
 > Task :app:extractProguardFiles
-> Task :app:processReleaseManifestForPackage
 > Task :app:mergeReleaseJniLibFolders
-> Task :app:mergeReleaseNativeLibs NO-SOURCE
-> Task :app:stripReleaseDebugSymbols NO-SOURCE
-> Task :app:extractReleaseNativeSymbolTables NO-SOURCE
-> Task :app:mergeReleaseNativeDebugMetadata NO-SOURCE
 > Task :app:checkReleaseDuplicateClasses
 > Task :app:desugarReleaseFileDependencies
 > Task :app:mergeReleaseStartupProfile
+> Task :app:mergeReleaseNativeLibs
+> Task :app:processReleaseManifestForPackage
 > Task :app:mergeReleaseArtProfile
+> Task :app:mergeExtDexRelease
 > Task :app:mergeReleaseShaders
 > Task :app:compileReleaseShaders NO-SOURCE
 > Task :app:generateReleaseAssets UP-TO-DATE
-> Task :app:mergeExtDexRelease
 > Task :app:mergeReleaseAssets
 > Task :app:compressReleaseAssets
+
+> Task :app:stripReleaseDebugSymbols
+Unable to strip the following libraries, packaging them as they are: libllamaserver.so.
+
 > Task :app:processReleaseResources
 > Task :app:extractReleaseVersionControlInfo
 
@@ -50,25 +357,27 @@ Note: /home/runner/work/darkly-agent/darkly-agent/robot/app/src/main/java/com/da
 Note: Recompile with -Xlint:deprecation for details.
 
 > Task :app:generateReleaseLintVitalReportModel
+> Task :app:extractReleaseNativeSymbolTables
 > Task :app:dexBuilderRelease
-> Task :app:processReleaseJavaRes NO-SOURCE
+> Task :app:mergeReleaseNativeDebugMetadata NO-SOURCE
 > Task :app:mergeReleaseGlobalSynthetics
+> Task :app:processReleaseJavaRes NO-SOURCE
 > Task :app:mergeReleaseJavaResource
 > Task :app:collectReleaseDependencies
-> Task :app:optimizeReleaseResources
-> Task :app:sdkReleaseDependencyData
 > Task :app:mergeDexRelease
-> Task :app:validateSigningRelease
+> Task :app:sdkReleaseDependencyData
 > Task :app:compileReleaseArtProfile
+> Task :app:validateSigningRelease
 > Task :app:writeReleaseAppMetadata
 > Task :app:writeReleaseSigningConfigVersions
+> Task :app:optimizeReleaseResources
 > Task :app:packageRelease
 > Task :app:createReleaseApkListingFileRedirect
 > Task :app:lintVitalAnalyzeRelease
 > Task :app:lintVitalReportRelease
 > Task :app:lintVitalRelease
 > Task :app:assembleRelease
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/build-1790679721820.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/build-1790680369427.json
 
 [Incubating] Problems report is available at: file:///home/runner/work/darkly-agent/darkly-agent/robot/build/reports/problems/problems-report.html
 
@@ -78,5 +387,84 @@ You can use '--warning-mode all' to show the individual deprecation warnings and
 
 For more on this, please refer to https://docs.gradle.org/8.14.3/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
 
-BUILD SUCCESSFUL in 54s
-43 actionable tasks: 43 executed
+BUILD SUCCESSFUL in 37s
+46 actionable tasks: 46 executed
+=== model
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100  1164  100  1164    0     0  15288      0 --:--:-- --:--:-- --:--:-- 15315
+  0 1828M    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0  0 1828M    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0  0 1828M    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0  3 1828M    3 71.2M    0     0  21.1M      0  0:01:26  0:00:03  0:01:23 33.4M  5 1828M    5  108M    0     0  25.3M      0  0:01:12  0:00:04  0:01:08 35.6M  7 1828M    7  140M    0     0  26.6M      0  0:01:08  0:00:05  0:01:03 34.7M 10 1828M   10  184M    0     0  29.3M      0  0:01:02  0:00:06  0:00:56 45.5M 11 1828M   11  216M    0     0  29.7M      0  0:01:01  0:00:07  0:00:54 44.2M 14 1828M   14  263M    0     0  31.7M      0  0:00:57  0:00:08  0:00:49 39.0M 16 1828M   16  304M    0     0  32.7M      0  0:00:55  0:00:09  0:00:46 39.1M 18 1828M   18  330M    0     0  30.8M      0  0:00:59  0:00:10  0:00:49 34.9M 19 1828M   19  348M    0     0  30.8M      0  0:00:59  0:00:11  0:00:48 32.7M 19 1828M   19  355M    0     0  28.9M      0  0:01:03  0:00:12  0:00:51 27.7M 20 1828M   20  377M    0     0  27.6M      0  0:01:06  0:00:13  0:00:53 21.2M 22 1828M   22  402M    0     0  28.1M      0  0:01:04  0:00:14  0:00:50 19.6M 24 1828M   24  449M    0     0  29.4M      0  0:01:02  0:00:15  0:00:47 26.1M 26 1828M   26  489M    0     0  30.0M      0  0:01:00  0:00:16  0:00:44 28.2M 28 1828M   28  527M    0     0  30.5M      0  0:00:59  0:00:17  0:00:42 34.3M 31 1828M   31  566M    0     0  31.0M      0  0:00:58  0:00:18  0:00:40 40.8M 31 1828M   31  582M    0     0  29.4M      0  0:01:01  0:00:19  0:00:42 32.9M 35 1828M   35  646M    0     0  31.7M      0  0:00:57  0:00:20  0:00:37 38.9M 38 1828M   38  701M    0     0  32.9M      0  0:00:55  0:00:21  0:00:34 42.4M 40 1828M   40  743M    0     0  33.3M      0  0:00:54  0:00:22  0:00:32 43.2M 43 1828M   43  789M    0     0  33.8M      0  0:00:53  0:00:23  0:00:30 44.4M 45 1828M   45  838M    0     0  34.4M      0  0:00:53  0:00:24  0:00:29 56.0M 48 1828M   48  889M    0     0  35.1M      0  0:00:51  0:00:25  0:00:26 49.1M 50 1828M   50  918M    0     0  34.9M      0  0:00:52  0:00:26  0:00:26 43.5M 52 1828M   52  965M    0     0  35.3M      0  0:00:51  0:00:27  0:00:24 44.3M 54 1828M   54  996M    0     0  35.2M      0  0:00:51  0:00:28  0:00:23 41.5M 56 1828M   56 1040M    0     0  35.5M      0  0:00:51  0:00:29  0:00:22 40.6M 59 1828M   59 1083M    0     0  35.7M      0  0:00:51  0:00:30  0:00:21 38.7M 61 1828M   61 1121M    0     0  35.7M      0  0:00:51  0:00:31  0:00:20 39.7M 63 1828M   63 1154M    0     0  35.4M      0  0:00:51  0:00:32  0:00:19 35.8M 63 1828M   63 1170M    0     0  35.1M      0  0:00:52  0:00:33  0:00:19 34.6M 66 1828M   66 1217M    0     0  35.5M      0  0:00:51  0:00:34  0:00:17 35.4M 68 1828M   68 1246M    0     0  35.3M      0  0:00:51  0:00:35  0:00:16 32.6M 70 1828M   70 1286M    0     0  35.4M      0  0:00:51  0:00:36  0:00:15 33.3M 72 1828M   72 1317M    0     0  35.3M      0  0:00:51  0:00:37  0:00:14 34.5M 73 1828M   73 1350M    0     0  35.1M      0  0:00:52  0:00:38  0:00:14 35.1M 75 1828M   75 1375M    0     0  34.5M      0  0:00:52  0:00:39  0:00:13 28.8M 76 1828M   76 1396M    0     0  34.6M      0  0:00:52  0:00:40  0:00:12 29.8M 77 1828M   77 1420M    0     0  34.4M      0  0:00:53  0:00:41  0:00:12 27.0M 79 1828M   79 1454M    0     0  34.3M      0  0:00:53  0:00:42  0:00:11 27.2M 80 1828M   80 1478M    0     0  34.0M      0  0:00:53  0:00:43  0:00:10 25.6M 83 1828M   83 1522M    0     0  34.3M      0  0:00:53  0:00:44  0:00:09 32.5M 84 1828M   84 1546M    0     0  34.1M      0  0:00:53  0:00:45  0:00:08 30.1M 86 1828M   86 1589M    0     0  34.3M      0  0:00:53  0:00:46  0:00:07 33.9M 88 1828M   88 1624M    0     0  34.3M      0  0:00:53  0:00:47  0:00:06 34.0M 91 1828M   91 1670M    0     0  34.5M      0  0:00:52  0:00:48  0:00:04 38.6M 93 1828M   93 1711M    0     0  34.7M      0  0:00:52  0:00:49  0:00:03 37.7M 95 1828M   95 1745M    0     0  34.7M      0  0:00:52  0:00:50  0:00:02 39.7M 98 1828M   98 1798M    0     0  35.0M      0  0:00:52  0:00:51  0:00:01 41.0M100 1828M  100 1828M    0     0  35.1M      0  0:00:51  0:00:51 --:--:-- 43.2M
+total 1872272
+drwxr-xr-x  2 runner runner       4096 Sep 29 11:13 .
+drwxrwxrwt 16 root   root         4096 Sep 29 11:13 ..
+-rw-r--r--  1 runner runner 1917190464 Sep 29 11:14 brain.gguf
+=== full APK (with offline brain)
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.14.3/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preReleaseBuild UP-TO-DATE
+> Task :app:javaPreCompileRelease UP-TO-DATE
+> Task :app:checkReleaseAarMetadata UP-TO-DATE
+> Task :app:generateReleaseResValues UP-TO-DATE
+> Task :app:mapReleaseSourceSetPaths UP-TO-DATE
+> Task :app:generateReleaseResources UP-TO-DATE
+> Task :app:mergeReleaseResources UP-TO-DATE
+> Task :app:packageReleaseResources UP-TO-DATE
+> Task :app:parseReleaseLocalResources UP-TO-DATE
+> Task :app:createReleaseCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksRelease UP-TO-DATE
+> Task :app:processReleaseMainManifest UP-TO-DATE
+> Task :app:processReleaseManifest UP-TO-DATE
+> Task :app:processReleaseManifestForPackage UP-TO-DATE
+> Task :app:processReleaseResources UP-TO-DATE
+> Task :app:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :app:extractProguardFiles UP-TO-DATE
+> Task :app:generateReleaseLintVitalReportModel
+> Task :app:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :app:mergeReleaseNativeLibs UP-TO-DATE
+> Task :app:stripReleaseDebugSymbols UP-TO-DATE
+> Task :app:extractReleaseNativeSymbolTables UP-TO-DATE
+> Task :app:mergeReleaseNativeDebugMetadata NO-SOURCE
+> Task :app:checkReleaseDuplicateClasses UP-TO-DATE
+> Task :app:dexBuilderRelease UP-TO-DATE
+> Task :app:desugarReleaseFileDependencies UP-TO-DATE
+> Task :app:mergeReleaseStartupProfile UP-TO-DATE
+> Task :app:mergeExtDexRelease UP-TO-DATE
+> Task :app:mergeDexRelease UP-TO-DATE
+> Task :app:mergeReleaseArtProfile UP-TO-DATE
+> Task :app:mergeReleaseGlobalSynthetics UP-TO-DATE
+> Task :app:compileReleaseArtProfile UP-TO-DATE
+> Task :app:mergeReleaseShaders UP-TO-DATE
+> Task :app:compileReleaseShaders NO-SOURCE
+> Task :app:generateReleaseAssets UP-TO-DATE
+> Task :app:lintVitalAnalyzeRelease
+> Task :app:mergeReleaseAssets
+> Task :app:extractReleaseVersionControlInfo UP-TO-DATE
+> Task :app:processReleaseJavaRes NO-SOURCE
+> Task :app:mergeReleaseJavaResource UP-TO-DATE
+> Task :app:optimizeReleaseResources UP-TO-DATE
+> Task :app:collectReleaseDependencies UP-TO-DATE
+> Task :app:sdkReleaseDependencyData UP-TO-DATE
+> Task :app:validateSigningRelease UP-TO-DATE
+> Task :app:writeReleaseAppMetadata UP-TO-DATE
+> Task :app:writeReleaseSigningConfigVersions UP-TO-DATE
+> Task :app:lintVitalReportRelease
+> Task :app:lintVitalRelease
+> Task :app:compressReleaseAssets
+> Task :app:packageRelease
+> Task :app:createReleaseApkListingFileRedirect UP-TO-DATE
+> Task :app:assembleRelease
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/build-1790680458302.json
+
+[Incubating] Problems report is available at: file:///home/runner/work/darkly-agent/darkly-agent/robot/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.14.3/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 35s
+46 actionable tasks: 7 executed, 39 up-to-date
+-rw-r--r-- 1 runner runner    7318517 Sep 29 11:13 DarklyRobot-lite.apk
+-rw-r--r-- 1 runner runner 1924509092 Sep 29 11:14 DarklyRobot.apk
