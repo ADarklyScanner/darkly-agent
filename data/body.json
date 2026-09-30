@@ -1,0 +1,43 @@
+{
+  "_help": "Her body. Ports on the ESP32: M1-M3 = DC motors, S1-S4 = servos, D1 = on/off switch (LED, buzzer, relay). Set installed:true when the part is physically plugged in. You can also just tell her and she edits this herself.",
+  "robotName": "Nessari",
+  "bodyDescription": "A small tank under a foot tall. Rubber tracks, a phone for a head, two tiny arms that can lift a few ounces at most. Cannot reach tables, doorknobs, or anything useful.",
+  "tracks": {
+    "installed": false,
+    "left": "M1",
+    "right": "M2",
+    "speed": 0.7,
+    "turnSpeed": 0.6,
+    "invertLeft": false,
+    "invertRight": false,
+    "maxSeconds": 5
+  },
+  "parts": [
+    {
+      "name": "left arm",
+      "type": "servo",
+      "port": "S1",
+      "installed": false,
+      "what": "Tiny arm on her left side. Lifts a few ounces at most.",
+      "actions": {
+        "up": 160,
+        "down": 20,
+        "middle": 90,
+        "wave": [[150, 300], [90, 300], [150, 300], [90, 300], [20, 400]]
+      }
+    },
+    {
+      "name": "right arm",
+      "type": "servo",
+      "port": "S2",
+      "installed": false,
+      "what": "Tiny arm on her right side. Lifts a few ounces at most.",
+      "actions": {
+        "up": 20,
+        "down": 160,
+        "middle": 90,
+        "wave": [[30, 300], [90, 300], [30, 300], [90, 300], [160, 400]]
+      }
+    }
+  ]
+}

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0b0612">
+<title>Nessari</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ FACE (home screen) ============ -->
+<main id="faceView">
+  <div id="chips">
+    <span class="chip" id="chipBrain">brain …</span>
+    <span class="chip" id="chipBody">body …</span>
+    <span class="chip" id="chipBatt">🔋 …</span>
+  </div>
+  <button id="openPanel" class="ghost" aria-label="Open control panel">Panel</button>
+
+  <svg id="face" viewBox="0 0 200 140" aria-label="Robot face">
+    <g id="eyes">
+      <line id="browL" x1="40" y1="22" x2="72" y2="22" />
+      <line id="browR" x1="128" y1="22" x2="160" y2="22" />
+      <rect id="eyeL" x="42" y="32" width="28" height="36" rx="10" />
+      <rect id="eyeR" x="130" y="32" width="28" height="36" rx="10" />
+    </g>
+    <path id="mouth" d="M75 100 Q100 110 125 100" />
+  </svg>
+
+  <div id="caption"><div id="heard"></div><div id="said"></div></div>
+
+  <button id="micBtn" aria-label="Talk">🎤</button>
+</main>
+
+<!-- ============ STOP (always on top) ============ -->
+<button id="stopBtn" aria-label="Stop all motors">STOP</button>
+
+<!-- ============ CONTROL PANEL ============ -->
+<section id="panel" hidden>
+  <header id="panelHead">
+    <nav id="tabs">
+      <button data-tab="status" class="on">Status</button>
+      <button data-tab="talk">Talk</button>
+      <button data-tab="body">Body</button>
+      <button data-tab="sensors">Sensors</button>
+      <button data-tab="files">Files</button>
+      <button data-tab="logs">Logs</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+    <button id="closePanel" class="ghost">Face</button>
+  </header>
+
+  <div class="tab" id="tab-status">
+    <div class="grid" id="statusGrid"></div>
+    <h3>Body inventory</h3>
+    <pre id="bodyReport"></pre>
+  </div>
+
+  <div class="tab" id="tab-talk" hidden>
+    <div id="transcript"></div>
+    <form id="typeForm"><input id="typeBox" placeholder="Type to her instead of talking" autocomplete="off"><button>Send</button></form>
+  </div>
+
+  <div class="tab" id="tab-body" hidden>
+    <div class="row">
+      <button id="btnUsb">Connect USB</button>
+      <button id="btnBle">Connect Bluetooth</button>
+      <button id="btnDisconnect" class="ghost">Disconnect</button>
+    </div>
+    <p id="linkInfo" class="muted"></p>
+    <h3>Drive (hold)</h3>
+    <div id="dpad">
+      <span></span><button data-drive="forward">▲</button><span></span>
+      <button data-drive="left">◀</button><button data-drive="stop">■</button><button data-drive="right">▶</button>
+      <span></span><button data-drive="back">▼</button><span></span>
+    </div>
+    <h3>Parts</h3>
+    <div id="partsList"></div>
+    <p class="muted">To add a part, plug it into a free port and tell her what it is ("motor three is a crane that lifts the hook"). Or edit <b>body.json</b> in Files.</p>
+  </div>
+
+  <div class="tab" id="tab-sensors" hidden>
+    <video id="cam" autoplay playsinline muted></video>
+    <div class="row"><button id="btnCam">Camera on</button><button id="btnSnap" class="ghost">Test look</button></div>
+    <pre id="sensorDump"></pre>
+  </div>
+
+  <div class="tab" id="tab-files" hidden>
+    <div id="filePath" class="muted"></div>
+    <div id="fileList"></div>
+    <div id="fileEditor" hidden>
+      <div class="row"><b id="fileName"></b><span class="grow"></span><button id="fileSave">Save</button><button id="fileClose" class="ghost">Close</button></div>
+      <textarea id="fileText" spellcheck="false"></textarea>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-logs" hidden>
+    <div class="row"><button id="logsRefresh">Refresh</button></div>
+    <div id="logList"></div>
+  </div>
+
+  <div class="tab" id="tab-settings" hidden>
+    <label>Brain <select id="setBrain"><option value="auto">Auto (Claude, Nessari when offline)</option><option value="claude">Claude only</option><option value="local">Nessari offline only</option></select></label>
+    <label>Listening <select id="setListen"><option value="push">Tap the mic to talk</option><option value="always">Always listening</option></select></label>
+    <label>Wake word (always-listening only, blank = answer everything) <input id="setWake" placeholder="nessari"></label>
+    <label>Voice <select id="setVoice"></select></label>
+    <label>Speed <input id="setRate" type="range" min="0.6" max="1.6" step="0.05"></label>
+    <label>Pitch <input id="setPitch" type="range" min="0.5" max="1.8" step="0.05"></label>
+    <label>Camera <select id="setFacing"><option value="user">Front (same side as the face)</option><option value="environment">Back</option></select></label>
+    <label class="check"><input id="setTipStop" type="checkbox"> Stop motors if she tips over</label>
+    <div class="row"><button id="btnFull">Full screen</button><button id="btnTestVoice" class="ghost">Test voice</button><button id="btnForget" class="ghost">Clear conversation</button></div>
+  </div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>
