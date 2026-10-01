@@ -24,6 +24,12 @@ pkg install -y unzip && unzip -o "$(find ~/storage/shared -iname 'darkly-robot*.
 
 Then run `robot`. The first time, Chrome asks for microphone and camera. Say yes.
 
+Offline brain: put `Llama-3.2-3B-Instruct-abliterated.Q4_0.gguf` (or any .gguf) in the phone's Download folder
+or in `~/models`. She finds it by herself.
+
+To have her face pop up on its own after a restart, either run `robot-dedicate` (it does this for you) or go to
+Settings > Apps > Termux > **Appear on top** > Allow.
+
 Your Claude key is saved in `~/.robot-key`. To change it, run `nano ~/.robot-key`.
 
 ## Give the whole phone to her

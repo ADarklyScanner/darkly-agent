@@ -26,10 +26,12 @@ echo "== Stopping Android from killing her brain =="
 A device_config set_sync_disabled_for_tests persistent
 A device_config put activity_manager max_phantom_processes 2147483647
 A settings put global settings_enable_monitor_phantom_procs false
-for p in com.termux com.termux.api com.android.chrome; do
+for p in com.termux com.termux.api com.termux.boot com.android.chrome; do
   A dumpsys deviceidle whitelist +$p >/dev/null
   A cmd appops set $p RUN_ANY_IN_BACKGROUND allow
 done
+# Lets Termux open her face on screen by itself after the phone boots
+A appops set com.termux SYSTEM_ALERT_WINDOW allow
 
 echo "== Screen and speed =="
 A settings put global stay_on_while_plugged_in 7          # screen stays on while charging

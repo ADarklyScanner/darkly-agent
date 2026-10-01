@@ -24,7 +24,7 @@ if [ -z "$MODEL" ] || [ ! -f "$MODEL" ]; then
   done < <(find "$HOME/models" "$HOME/llama.cpp/models" "$HOME/storage/shared/Download" -maxdepth 2 -name '*.gguf' 2>/dev/null)
 fi
 
-if pgrep -f llama-server >/dev/null; then
+if pgrep -x llama-server >/dev/null; then
   echo "Offline brain already running."
 elif [ -n "$LLAMA" ] && [ -n "$MODEL" ]; then
   # Personality adapter (LoRA) named in data/config.json as "localLora". Only works with the base model it was trained on.
@@ -34,17 +34,17 @@ elif [ -n "$LLAMA" ] && [ -n "$MODEL" ]; then
   if [ -n "$LORA" ] && [ -f "$LORA" ]; then EXTRA=(--lora "$LORA"); echo "Personality: $(basename "$LORA")"; fi
   echo "Offline brain: $(basename "$MODEL")"
   # S22: 4 fast cores. Whole context kept in RAM.
-  nohup "$LLAMA" -m "$MODEL" "${EXTRA[@]}" --host 127.0.0.1 --port 8080 -t 4 -c 4096 --no-webui \
+  nohup "$LLAMA" -m "$MODEL" "${EXTRA[@]}" --host 127.0.0.1 --port 8080 -t 4 -c 4096 \
     > "$LOGS/llama.log" 2>&1 &
 else
   echo "No offline brain (need llama-server and a .gguf in ~/models). Claude-only for now."
 fi
 
 # ---------- server + face ----------
-if pgrep -f "node.*robot/server.js" >/dev/null; then
+if pgrep -f "node $DIR/server.js" >/dev/null; then
   echo "Brain server already running."
 else
-  cd "$DIR" && nohup node server.js > "$LOGS/server.log" 2>&1 &
+  nohup node "$DIR/server.js" > "$LOGS/server.log" 2>&1 &
   sleep 2
 fi
 # Open the face in Chrome specifically. A fresh Galaxy defaults to Samsung Internet,

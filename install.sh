@@ -5,10 +5,17 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HOME/robot"
 BIN="$PREFIX/bin"
 
-echo "== Installing packages =="
-pkg update -y >/dev/null 2>&1 || true
-pkg install -y nodejs-lts termux-api android-tools >/dev/null 2>&1 || pkg install -y nodejs termux-api android-tools
-command -v llama-server >/dev/null 2>&1 || [ -x "$HOME/llama.cpp/build/bin/llama-server" ] || pkg install -y llama-cpp || true
+echo "== Installing packages (a few minutes on a fresh phone) =="
+# Never stop to ask about config files, so it can't sit frozen on a hidden question.
+export DEBIAN_FRONTEND=noninteractive
+KEEP=(-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+pkg update -y || true
+pkg upgrade "${KEEP[@]}" || true
+pkg install "${KEEP[@]}" nodejs-lts termux-api android-tools procps \
+  || pkg install "${KEEP[@]}" nodejs termux-api android-tools procps
+command -v llama-server >/dev/null 2>&1 || [ -x "$HOME/llama.cpp/build/bin/llama-server" ] \
+  || pkg install "${KEEP[@]}" llama-cpp \
+  || echo "(Couldn't install the offline brain program. Claude still works.)"
 
 echo "== Copying robot to $DEST =="
 mkdir -p "$DEST"
@@ -31,7 +38,7 @@ cat > "$HOME/.termux/boot/start-robot" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 termux-wake-lock
 sleep 8
-robot
+/data/data/com.termux/files/usr/bin/robot
 EOF
 chmod +x "$HOME/.termux/boot/start-robot"
 
