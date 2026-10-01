@@ -2,6 +2,13 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-01 · v0.10 · Sturdier
+- Offline brain talks while it thinks: each sentence is spoken as soon as it's written, instead of waiting for the whole reply.
+- New robot-doctor command: checks the server, offline brain, memory, Termux:API, storage, boot setup and tests every Claude and Gemini key, then says what to fix.
+- Her server and offline brain restart themselves if they crash.
+- If her server stops, her face says so and tells you to type "robot"; she says "I'm back" when it returns.
+- STOP also cuts off speech that's still queued.
+
 ## 2026-10-01 · v0.9 · The big trick update
 - Trick Book: 44 built-in tricks (possessed, deal with it, dramatic death, magic trick, fortune teller, roast, beatbox, countdown and more). She can list them, do one at random, and invent and save her own tricks.
 - Games: Simon Says on her face, reaction-time test, staring contest, red light green light with the camera, color hunt, clap-back.

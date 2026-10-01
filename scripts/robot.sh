@@ -43,17 +43,21 @@ elif [ -n "$LLAMA" ] && [ -n "$MODEL" ]; then
   if [ -n "$LORA" ] && [ -f "$LORA" ]; then EXTRA=(--lora "$LORA"); echo "Personality: $(basename "$LORA")"; fi
   echo "Offline brain: $(basename "$MODEL")"
   # S22: 4 fast cores. Whole context kept in RAM.
-  nohup "$LLAMA" -m "$MODEL" "${EXTRA[@]}" --host 127.0.0.1 --port 8080 -t 4 -c 4096 \
+  # restarts the offline brain if it crashes (up to 5 times, so a model that can't fit doesn't loop forever)
+  nohup bash -c 'for i in 1 2 3 4 5; do "$0" "$@"; [ -f "'"$DIR"'/data/.stopping" ] && break; sleep 5; done' \
+    "$LLAMA" -m "$MODEL" "${EXTRA[@]}" --host 127.0.0.1 --port 8080 -t 4 -c 4096 \
     > "$LOGS/llama.log" 2>&1 &
 else
   echo "No offline brain (need llama-server and a .gguf in ~/models). Claude-only for now."
 fi
 
 # ---------- server + face ----------
+rm -f "$DIR/data/.stopping"
 if pgrep -f "node $DIR/server.js" >/dev/null; then
   echo "Brain server already running."
 else
-  nohup node "$DIR/server.js" > "$LOGS/server.log" 2>&1 &
+  # runs inside a loop that restarts it if it ever crashes
+  nohup bash "$DIR/server-loop.sh" >> "$LOGS/server.log" 2>&1 &
   sleep 2
 fi
 # Open the face in Chrome specifically. A fresh Galaxy defaults to Samsung Internet,

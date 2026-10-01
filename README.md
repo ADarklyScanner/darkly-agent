@@ -22,7 +22,7 @@ No internet? If you copied `darkly-robot.zip` onto the phone instead:
 pkg install -y unzip && unzip -o "$(find ~/storage/shared -iname 'darkly-robot*.zip' | head -1)" -d ~ && bash ~/darkly-robot/install.sh
 ```
 
-Then run `robot`. The first time, Chrome asks for microphone and camera. Say yes.
+Then run `robot`. If anything seems wrong, run `robot-doctor`: it checks everything and says what to fix. The first time, Chrome asks for microphone and camera. Say yes.
 
 Offline brain: put `Llama-3.2-3B-Instruct-abliterated.Q4_0.gguf` (or any .gguf) in the phone's Download folder
 or in `~/models`. She finds it by herself.

@@ -34,6 +34,7 @@ ln -sf "$DEST/robot-stop.sh" "$BIN/robot-stop"
 ln -sf "$DEST/robot-dedicate.sh" "$BIN/robot-dedicate"
 ln -sf "$DEST/robot-undedicate.sh" "$BIN/robot-undedicate"
 ln -sf "$DEST/robot-update.sh" "$BIN/robot-update"
+ln -sf "$DEST/robot-doctor.sh" "$BIN/robot-doctor"
 
 # Start automatically when the phone boots (needs the Termux:Boot app)
 mkdir -p "$HOME/.termux/boot"
@@ -70,6 +71,7 @@ echo "Done. Commands:"
 echo "  robot             start her (brain + face)"
 echo "  robot-stop        shut her down"
 echo "  robot-update      get the newest version from GitHub and restart her"
+echo "  robot-doctor      check everything and say what's wrong"
 echo "  robot-dedicate    give the whole phone to the robot (turns off other apps)"
 echo "  robot-undedicate  undo that"
 echo

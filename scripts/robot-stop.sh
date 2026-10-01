@@ -1,4 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
+touch "$HOME/robot/data/.stopping"          # tells the restart loops not to bring her back
+pkill -f "robot/server-loop.sh"
 pkill -f "node $HOME/robot/server.js" && echo "Server stopped."
 pkill -x llama-server && echo "Offline brain stopped."
 sleep 1

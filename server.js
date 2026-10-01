@@ -419,6 +419,19 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { text: j.choices?.[0]?.message?.content || "" });
     }
 
+    // ---- offline brain, streamed: words arrive as they're generated so she can start talking sooner ----
+    if (p === "/api/local-stream" && req.method === "POST") {
+      const body = await readBody(req);
+      const r = await timedFetch(config().localUrl + "/v1/chat/completions", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: body.messages, max_tokens: body.max_tokens || 300, temperature: 0.8, stream: true, cache_prompt: true })
+      }, 300000);
+      if (!r.ok || !r.body) return send(res, 502, { error: "Local brain error " + r.status });
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
+      for await (const chunk of r.body) res.write(chunk);
+      return res.end();
+    }
+
     // ---- files ----
     if (p === "/api/files" && req.method === "GET") {
       const target = safePath(url.searchParams.get("path") || "");

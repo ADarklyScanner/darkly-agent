@@ -887,9 +887,72 @@ async function askGemini(userText) {
   return "";
 }
 
+// Speaks pieces of text one after another without cutting off what's already playing.
+let appendChain = Promise.resolve();
+function speakAppend(text) {
+  text = text.trim(); if (!text) return appendChain;
+  const tok = speakToken;                                   // STOP bumps speakToken: skip anything queued before it
+  appendChain = appendChain.then(() => new Promise(res => {
+    if (tok !== speakToken) return res();
+    $("#said").textContent = ($("#said").dataset.stream === "1" ? $("#said").textContent + " " : "") + text;
+    $("#said").dataset.stream = "1";
+    if (settings.muted || !("speechSynthesis" in window)) return setTimeout(res, 200 + text.length * 40);
+    const u = new SpeechSynthesisUtterance(text);
+    const v = voices.find(v => v.voiceURI === settings.voice); if (v) u.voice = v;
+    const vs = VOICE_STYLES[settings.voiceStyle] || VOICE_STYLES.normal;
+    u.rate = clamp(settings.rate * vs.rate, 0.3, 3); u.pitch = clamp(settings.pitch * vs.pitch, 0, 2); u.volume = vs.volume ?? 1;
+    u.onboundary = () => Face.kick();
+    u.onend = u.onerror = res; speakingNow.push(u);
+    talking = true; Face.setTalking(true); stopListening(true);
+    speechSynthesis.speak(u);
+    setTimeout(res, 3000 + text.length * 150);                // never hang if the engine goes quiet
+  }));
+  return appendChain;
+}
+function endAppend() {
+  return appendChain.then(() => { $("#said").dataset.stream = ""; talking = false; Face.setTalking(false); speakingNow = []; resumeListening(); });
+}
+
+// Strip command tags, mood tags and any tag-like junk; also hide an unfinished "[..." still arriving.
+function cleanLocal(t) {
+  return takeMood(t.replace(/\[(drive|part|stop|song|sfx|vibrate|effect)(?::[^\]]*)?\]/gi, ""))
+    .replace(/\[[a-z _-]{2,20}(?::[^\]\n]{0,40})?\]/gi, "").replace(/\[[^\]]*$/, "").replace(/\s{2,}/g, " ");
+}
+
+// Offline brain with streaming: speaks each sentence as soon as it's written.
+async function askLocalStreaming(msgs) {
+  const r = await fetch("/api/local-stream", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: msgs, max_tokens: 220 }) });
+  if (!r.ok || !r.body) throw new Error("offline brain didn't answer (" + r.status + ")");
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let buf = "", full = "", spoken = 0;
+  const pump = final => {
+    const clean = cleanLocal(full);
+    const rest = clean.slice(spoken);
+    const m = final ? rest.length : (() => { const re = /[.!?…]+["')\]]*\s/g; let last = -1, x; while ((x = re.exec(rest))) last = x.index + x[0].length; return last; })();
+    if (m > 0) { speakAppend(rest.slice(0, m)); spoken += m; }
+  };
+  $("#heard").textContent = "";
+  for (;;) {
+    const { value, done } = await reader.read(); if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim(); if (data === "[DONE]") continue;
+      try { full += JSON.parse(data).choices?.[0]?.delta?.content || ""; } catch {}
+    }
+    pump(false);
+  }
+  pump(true);
+  return full;
+}
+
 async function askLocal(userText) {
   const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + "\n" + quickSenses() }];
-  const { text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) });
+  let text;
+  try { text = await askLocalStreaming(msgs); localSpoke = true; }
+  catch (e) { ({ text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) })); }
   const cmds = [];
   const allowMove = !autoTurn || settings.autoMove;
   const clean = text.replace(/\[(drive|part|stop|song|sfx|vibrate|effect)(?::([^\]:]+))?(?::([^\]:]+))?\]/gi, (_, k, a, b) => { cmds.push([k.toLowerCase(), a?.trim(), b?.trim()]); return ""; });
@@ -918,6 +981,7 @@ async function ask(userText, opts = {}) {
   if (!opts.quiet) { transcriptLine("me", userText); logEvent("heard", { text: userText }); lastTalk = Date.now(); }
   window.Face?.poke();
   let reply = "", brain = "", failed = false;
+  localSpoke = false;
   const started = Date.now();
   try {
     // Brain order comes from Settings. Each online brain is tried in turn; offline is last.
@@ -964,8 +1028,10 @@ async function ask(userText, opts = {}) {
   history = history.slice(-60);
   saveConversation();
   busy = false;
-  if (reply) await speak(reply);
+  if (localSpoke && !failed) { await endAppend(); $("#said").textContent = reply; }      // already said it while streaming
+  else if (reply) await speak(reply);
 }
+let localSpoke = false;
 
 /* ================= personality builder ================= */
 // Personality lives in data/personality.json (the builder's settings) and is
@@ -1434,8 +1500,16 @@ function refreshChips() {
   $("#chipBatt").textContent = battery ? `🔋 ${Math.round(battery.level * 100)}%${battery.charging ? "⚡" : ""}` : "🔋 ?";
 }
 
+let serverFails = 0;
 async function refreshStatus() {
-  try { status = await api("/api/status"); } catch { status = { online: false, local: false, hasKey: false }; }
+  try {
+    status = await api("/api/status");
+    if (serverFails >= 2) { $("#said").textContent = "I'm back."; setFaceState("offline", false); logEvent("boot", { detail: "server came back" }); }
+    serverFails = 0;
+  } catch {
+    status = { online: false, local: false, hasKey: false };
+    if (++serverFails === 2) { setMood("confused"); setFaceState("offline", true); $("#said").textContent = "My brain server stopped. Open Termux and type: robot"; }
+  }
   refreshChips(); if (!$("#panel").hidden && !$("#tab-status").hidden) renderStatus();
 }
 setInterval(refreshStatus, 15000);
