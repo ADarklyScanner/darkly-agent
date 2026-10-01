@@ -41,7 +41,7 @@ function apiKeys() {
     try {
       for (const line of fs.readFileSync(f, "utf8").split(/\r?\n/)) {
         const k = line.trim();
-        if (k && !k.startsWith("#") && !keys.includes(k)) keys.push(k);
+        if (/^sk-ant-\S{20,}$/.test(k) && !keys.includes(k)) keys.push(k);   // only real-looking keys; stray text is ignored
       }
     } catch {}
   }
@@ -54,7 +54,7 @@ function geminiKeys() {
   try {
     for (const line of fs.readFileSync(path.join(os.homedir(), ".robot-gemini-key"), "utf8").split(/\r?\n/)) {
       const k = line.trim();
-      if (k && !k.startsWith("#") && !keys.includes(k)) keys.push(k);
+      if (/^[\w-]{30,}$/.test(k) && !keys.includes(k)) keys.push(k);         // only real-looking keys; stray text is ignored
     }
   } catch {}
   return keys;
