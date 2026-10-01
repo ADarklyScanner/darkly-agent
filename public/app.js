@@ -61,6 +61,11 @@ function loadVoices() {
 }
 if ("speechSynthesis" in window) { speechSynthesis.onvoiceschanged = loadVoices; loadVoices(); }
 
+const VOICE_STYLES = {
+  normal: { rate: 1, pitch: 1 }, chipmunk: { rate: 1.35, pitch: 2 }, deep: { rate: 0.85, pitch: 0.3 },
+  whisper: { rate: 0.9, pitch: 1.1, volume: 0.35 }, dramatic: { rate: 0.75, pitch: 0.8 }, fast: { rate: 1.8, pitch: 1.05 },
+  slow: { rate: 0.6, pitch: 0.95 }, villain: { rate: 0.8, pitch: 0.15 }, excited: { rate: 1.3, pitch: 1.5 }
+};
 function speak(text) {
   return new Promise(resolve => {
     $("#said").textContent = text;
@@ -68,7 +73,10 @@ function speak(text) {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     const v = voices.find(v => v.voiceURI === settings.voice); if (v) u.voice = v;
-    u.rate = settings.rate; u.pitch = settings.pitch + (mood === "excited" ? 0.15 : mood === "sad" ? -0.15 : 0);
+    const vs = VOICE_STYLES[settings.voiceStyle] || VOICE_STYLES.normal;
+    u.rate = clamp(settings.rate * vs.rate, 0.3, 3);
+    u.pitch = clamp(settings.pitch * vs.pitch + (mood === "excited" ? 0.15 : mood === "sad" ? -0.15 : 0), 0, 2);
+    u.volume = vs.volume ?? 1;
     stopListening(true);
     talking = true; window.Face?.setTalking(true);
     u.onboundary = () => window.Face?.kick();          // each spoken word pulses the mouth
@@ -234,6 +242,7 @@ let motionToken = 0; // bumps on STOP to cancel running sequences
 
 async function stopAll(reason = "stop button") {
   motionToken++;
+  window.Abilities?.stop(); singToken++; speechSynthesis.cancel?.();
   await link.send("X");
   logEvent("action", { detail: "STOP (" + reason + ")" });
 }
@@ -274,6 +283,7 @@ async function usePart(name, action, seconds, angle) {
   const token = motionToken;
   const acts = p.actions || {};
   let v = action === "angle" && angle != null ? Number(angle) : acts[action];
+  if (v === undefined && p.type === "buzzer" && window.Abilities?.songs[action]) v = action;
   if (v === undefined) return `FAILED: your ${p.name} doesn't know how to "${action}". It knows: ${Object.keys(acts).join(", ") || "nothing yet"}.`;
 
   if (p.type === "servo") {
@@ -289,6 +299,9 @@ async function usePart(name, action, seconds, angle) {
     const spd = clamp((o.dir ?? 1) * (o.speed ?? 0.7), -1, 1);
     await link.send(`M ${p.port} ${spd.toFixed(2)} ${ms}`);
     await sleep(ms);
+  } else if (p.type === "buzzer") {
+    const r = await playSong({ song: typeof v === "string" ? v : "boot_up", on: "body" });
+    if (r.startsWith("FAILED")) return r;
   } else if (p.type === "switch") {
     await link.send(`D ${p.port} ${v ? 1 : 0}`);
     if (seconds) { await sleep(clamp(seconds, 0.1, 30) * 1000); await link.send(`D ${p.port} ${v ? 0 : 1}`); }
@@ -311,6 +324,105 @@ function bodyReport() {
   lines.push(`Free ports: ${free.join(", ") || "none"}`);
   return lines.join("\n");
 }
+
+/* ================= performing ================= */
+let singToken = 0;
+const buzzerPart = () => body.parts.find(p => p.type === "buzzer" && p.installed);
+
+async function playSong(input = {}) {
+  const on = input.on || "phone";
+  const bz = buzzerPart();
+  if ((on === "body" || on === "both") && (!bz || !link.connected))
+    return "FAILED: there's no buzzer connected on your body. Plug a buzzer into D1 and tell me it's a buzzer, or play on the phone.";
+  const useBody = (on === "body" || on === "both") && bz;
+  if (input.dance !== false) Face.effect("dance", 75);
+  Face.setTalking(true);
+  const r = await Abilities.play({
+    ...input, instrument: input.instrument,
+    vibrate: input.vibrate !== false && on !== "body",
+    onNote: () => Face.kick(),
+    body: useBody ? (midi, ms) => link.send(`T ${bz.port} ${Math.round(Abilities.freqOf(midi))} ${Math.round(ms * 0.9)}`) : null
+  }).catch(e => ({ ok: false, text: "FAILED: " + e.message }));
+  Face.setTalking(false); Face.effect("dance", 0);
+  if (!r.ok && /locked/.test(r.text)) showUnlockHint();
+  logEvent("action", { detail: "song: " + (input.song || "own tune") });
+  return r.ok ? r.text : (r.text.startsWith("FAILED") ? r.text : "FAILED: " + r.text);
+}
+
+// Each word sung as its own utterance, pitched to follow the melody. Gloriously robotic.
+async function sing({ lyrics, song, notes }) {
+  const words = String(lyrics || "").replace(/\s+/g, " ").trim().split(" ").filter(Boolean).slice(0, 80);
+  if (!words.length) return "FAILED: no lyrics.";
+  const mel = Abilities.parseNotes(notes || Abilities.songs[song]?.notes || Abilities.songs.twinkle.notes).filter(n => n.midis.length);
+  const my = ++singToken;
+  stopListening(true);
+  Face.effect("dance", 60); Face.setTalking(true);
+  const v = voices.find(v => v.voiceURI === settings.voice);
+  $("#said").textContent = "♪ " + words.join(" ") + " ♪";
+  for (let i = 0; i < words.length && my === singToken; i++) {
+    const n = mel[i % mel.length], midi = n.midis[0];
+    Abilities.play({ notes: `${["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][midi % 12]}${Math.floor(midi / 12) - 1}/4`, tempo: 140, instrument: "flute", vibrate: false }).catch(() => {});
+    await new Promise(res => {
+      const u = new SpeechSynthesisUtterance(words[i]);
+      if (v) u.voice = v;
+      u.pitch = clamp(0.2 + (midi - 52) / 24 * 1.8, 0.1, 2);
+      u.rate = clamp(1.25 / Math.max(0.5, n.beats), 0.6, 1.6);
+      Face.kick();
+      u.onend = u.onerror = res;
+      speechSynthesis.speak(u);
+      setTimeout(res, 2500);
+    });
+  }
+  Face.setTalking(false); Face.effect("dance", 0); resumeListening();
+  return my === singToken ? `Sang ${words.length} words.` : "Stopped.";
+}
+
+async function sendMorse(text, flashlight) {
+  const msg = String(text || "").slice(0, 60);
+  if (flashlight) {
+    const { units } = Abilities.morseUnits(msg);
+    api("/api/hw/torch-pattern", { method: "POST", body: JSON.stringify({ pattern: units.map(u => u * 300) }) }).catch(() => {});
+  }
+  return await Abilities.morse(msg, { flash: on => Face.flash(on) });
+}
+
+const timers = [];
+function setTimer(seconds, label = "timer") {
+  const s = clamp(Math.round(+seconds || 0), 1, 24 * 3600);
+  const t = { label: String(label).slice(0, 80), at: Date.now() + s * 1000 };
+  t.id = setTimeout(async () => {
+    timers.splice(timers.indexOf(t), 1);
+    Face.effect("strobe", 4); Abilities.vibrate("alarm"); await Abilities.sfx("alarm");
+    const waitFree = async () => { for (let i = 0; i < 60 && !canSpeakUp(); i++) await sleep(1000); };
+    await waitFree();
+    speakUp(`(system: your timer "${t.label}" just went off. Tell him, in character.)`, "timer: " + t.label);
+  }, s * 1000);
+  timers.push(t);
+  const pretty = s >= 3600 ? `${(s / 3600).toFixed(1)} hours` : s >= 60 ? `${Math.round(s / 60)} minutes` : `${s} seconds`;
+  return `Timer "${t.label}" set for ${pretty}. (Timers are lost if the page reloads.)`;
+}
+
+// Sound, vibration and speech only work after the first tap on the page (Android rule).
+function showUnlockHint() {
+  if (Abilities.isUnlocked()) return;
+  $("#heard").textContent = "tap my face once to wake up my speaker";
+}
+window.addEventListener("abilities-unlocked", () => { if (/wake up my speaker/.test($("#heard").textContent)) $("#heard").textContent = ""; });
+setTimeout(showUnlockHint, 3000);
+
+function renderTricks() {
+  const fill = (id, items, fn, label = x => x.replace(/_/g, " ")) => {
+    const box = $(id); if (box.childElementCount) return;
+    for (const it of items) { const b = document.createElement("button"); b.textContent = label(it); b.onclick = () => fn(it, b); box.append(b); }
+  };
+  fill("#trSongs", Abilities.songList, s => playSong({ song: s }), s => Abilities.songs[s].title);
+  fill("#trSfx", Abilities.sfxList, s => Abilities.sfx(s));
+  fill("#trFx", Face.effects, s => { $("#panel").hidden = true; document.body.classList.remove("panel-open"); Face.effect(s, 8); });
+  fill("#trVibe", Abilities.vibeList, s => Abilities.vibrate(s));
+  fill("#trVoice", Object.keys(VOICE_STYLES), s => { settings.voiceStyle = s; saveSettings(); speak("This is my " + s + " voice."); });
+}
+$("#trMorseGo").onclick = () => sendMorse($("#trMorse").value || "SOS", $("#trTorch").checked);
+$("#trStop").onclick = () => stopAll("tricks stop");
 
 /* ================= sensors ================= */
 let motion = null, orient = null, battery = null, tipped = false, light = null;
@@ -390,10 +502,26 @@ const TOOLS = [
   { name: "stop_all", description: "Stop every motor immediately.", input_schema: { type: "object", properties: {} } },
   { name: "look", description: "Take a photo with your camera and see it.", input_schema: { type: "object", properties: {} } },
   { name: "read_sensors", description: "Read every sensor the phone has (motion, gyro, magnetometer, light, proximity, pressure, hall, steps...), plus battery, RAM, storage, CPU temperature and time.", input_schema: { type: "object", properties: {} } },
-  { name: "phone", description: "Use a phone ability: torch_on / torch_off (flashlight), vibrate (buzz your head), location (where you are), wifi (current network), wifiscan (nearby networks), cell (cell towers).",
-    input_schema: { type: "object", properties: { what: { type: "string", enum: ["torch_on", "torch_off", "vibrate", "location", "wifi", "wifiscan", "cell"] } }, required: ["what"] } },
-  { name: "update_part", description: "Add or change a body part when he tells you what's plugged in or what a motor does. Ports: M1-M3 motors, S1-S4 servos, D1 switch. For dc_motor actions use {\"up\":{\"dir\":1,\"speed\":0.6},\"down\":{\"dir\":-1,\"speed\":0.6}}; for servo actions use angles 0-180; for switch use {\"on\":1,\"off\":0}.",
-    input_schema: { type: "object", properties: { name: { type: "string" }, type: { type: "string", enum: ["dc_motor", "servo", "switch"] }, port: { type: "string" }, installed: { type: "boolean" }, what: { type: "string" }, actions: { type: "object" } }, required: ["name"] } },
+  { name: "phone", description: "Use a phone ability: torch_on / torch_off (flashlight), location, wifi, wifiscan (nearby networks), cell (towers), brightness (value 0-255), volume (value 0-15, your speaker), notify (text: a notification on his phone screen), toast (text: quick pop-up).",
+    input_schema: { type: "object", properties: { what: { type: "string", enum: ["torch_on", "torch_off", "location", "wifi", "wifiscan", "cell", "brightness", "volume", "notify", "toast"] }, value: { type: "number" }, text: { type: "string" } }, required: ["what"] } },
+  { name: "play_song", description: "Play music on your synthesizer, with your face dancing and your body vibrating to the beat. Either a known song (" + (window.Abilities?.songList || []).join(", ") + ") or your OWN composition in notes: space-separated NOTE+OCTAVE/LENGTH, e.g. \"C4/4 E4/8 G4/8 C5/2 R/4 C4+E4+G4/2\" (4=quarter, 8=eighth, 2=half, 1=whole, a dot makes it 1.5x, R = rest, + makes a chord). drums: a loop of eighth-notes using K (kick) S (snare) H (hi-hat) X (kick+hat) . (rest), e.g. \"K.H.S.H.\". on: phone, body (buzzer on the body board) or both. Keep it under a minute.",
+    input_schema: { type: "object", properties: { song: { type: "string" }, notes: { type: "string" }, tempo: { type: "number" }, instrument: { type: "string", enum: ["chip", "saw", "flute", "bell", "organ", "bass"] }, drums: { type: "string" }, vibrate: { type: "boolean" }, dance: { type: "boolean" }, on: { type: "string", enum: ["phone", "body", "both"] } } } },
+  { name: "sing", description: "Sing words out loud, each word on a note of a melody (robot-style singing). Write your own lyrics; don't sing copyrighted song lyrics. Optional melody: a known song name or notes like play_song.",
+    input_schema: { type: "object", properties: { lyrics: { type: "string" }, song: { type: "string" }, notes: { type: "string" } }, required: ["lyrics"] } },
+  { name: "sound_effect", description: "Play a sound effect: " + (window.Abilities?.sfxList || []).join(", ") + ".",
+    input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  { name: "vibrate", description: "Buzz your body with a vibration pattern: " + (window.Abilities?.vibeList || []).join(", ") + ". Or your own pattern as milliseconds [on, off, on, off...].",
+    input_schema: { type: "object", properties: { pattern: { type: "string" }, custom: { type: "array", items: { type: "number" } } } } },
+  { name: "face_effect", description: "A visual effect on your face for some seconds: " + (window.Face?.effects || []).join(", ") + ".",
+    input_schema: { type: "object", properties: { effect: { type: "string" }, seconds: { type: "number" } }, required: ["effect"] } },
+  { name: "morse", description: "Send a short message in Morse code with beeps, vibration and screen flashes (flashlight too if flashlight=true, slower).",
+    input_schema: { type: "object", properties: { text: { type: "string" }, flashlight: { type: "boolean" } }, required: ["text"] } },
+  { name: "set_timer", description: "Set a timer or reminder. When it goes off you'll get an alarm and tell him.",
+    input_schema: { type: "object", properties: { seconds: { type: "number" }, label: { type: "string" } }, required: ["seconds"] } },
+  { name: "voice_style", description: "Change how your voice sounds from now on: " + Object.keys(VOICE_STYLES).join(", ") + ".",
+    input_schema: { type: "object", properties: { style: { type: "string" } }, required: ["style"] } },
+  { name: "update_part", description: "Add or change a body part when he tells you what's plugged in or what a motor does. Ports: M1-M3 motors, S1-S4 servos, D1 switch or buzzer (a buzzer plays songs: its actions can just be song names). For dc_motor actions use {\"up\":{\"dir\":1,\"speed\":0.6},\"down\":{\"dir\":-1,\"speed\":0.6}}; for servo actions use angles 0-180; for switch use {\"on\":1,\"off\":0}.",
+    input_schema: { type: "object", properties: { name: { type: "string" }, type: { type: "string", enum: ["dc_motor", "servo", "switch", "buzzer"] }, port: { type: "string" }, installed: { type: "boolean" }, what: { type: "string" }, actions: { type: "object" } }, required: ["name"] } },
   { name: "update_tracks", description: "Mark your tank tracks installed or not, or flip a side that drives backwards.",
     input_schema: { type: "object", properties: { installed: { type: "boolean" }, invertLeft: { type: "boolean" }, invertRight: { type: "boolean" }, speed: { type: "number" } } } },
   { name: "tweak_personality", description: "Change your own personality when he asks (\"be more sarcastic\", \"stop swearing\", \"your name is now Bolt\"). Traits are numbers: sarcasm, warmth, chaos, bluntness, confidence, curiosity, drama (0-10), swearing (0-3), talk (reply length 1-5). Text fields: name, identity, inspiredBy, relationship, style, catchphrases, likes, dislikes, never, notes. body: frustrated, proud or plain.",
@@ -409,8 +537,25 @@ async function runTool(name, input) {
     if (name === "use_part") return await usePart(input.part, input.action, input.seconds, input.angle);
     if (name === "stop_all") { await stopAll("her own decision"); return "Everything stopped."; }
     if (name === "read_sensors") { try { hw = await api("/api/hw?fresh"); } catch {} return sensorReport(true); }
+    if (name === "play_song") return await playSong(input);
+    if (name === "sing") return await sing(input);
+    if (name === "sound_effect") return await Abilities.sfx(input.name);
+    if (name === "vibrate") return Abilities.vibrate(input.custom?.length ? input.custom : input.pattern);
+    if (name === "face_effect") {
+      if (!Face.effects.includes(input.effect)) return `FAILED: no effect "${input.effect}". Try: ${Face.effects.join(", ")}.`;
+      Face.effect(input.effect, clamp(+input.seconds || 6, 1, 60)); return `Your face is doing ${input.effect}.`;
+    }
+    if (name === "morse") return await sendMorse(input.text, input.flashlight);
+    if (name === "set_timer") return setTimer(input.seconds, input.label);
+    if (name === "voice_style") {
+      if (!VOICE_STYLES[input.style]) return `FAILED: styles are ${Object.keys(VOICE_STYLES).join(", ")}.`;
+      settings.voiceStyle = input.style; saveSettings(); return `Voice is now ${input.style}.`;
+    }
     if (name === "phone") {
-      const r = await api("/api/hw/extra?what=" + encodeURIComponent(input.what));
+      const q = new URLSearchParams({ what: input.what });
+      if (input.value != null) q.set("value", input.value);
+      if (input.text) q.set("text", input.text);
+      const r = await api("/api/hw/extra?" + q);
       const s = typeof r.result === "string" ? r.result : JSON.stringify(r.result);
       return (s || "done").slice(0, 3000);
     }
@@ -458,10 +603,12 @@ function systemPrompt(offline) {
   const rules = offline
     ? `Start every reply with your mood like [mood:happy]. Moods: ${MOOD_NAMES.join(", ")}.
 To act, put commands in your reply: [drive:forward:2] (forward, back, left, right; seconds), [part:left arm:wave] (part name, action), [stop].
+Fun commands: [song:NAME] (${Abilities.songList.join(", ")}), [sfx:NAME] (${Abilities.sfxList.join(", ")}), [vibrate:NAME] (${Abilities.vibeList.join(", ")}), [effect:NAME] (${Face.effects.join(", ")}).
 Only use commands for parts listed as installed. If something is MISSING, complain instead.
 You are running on your small offline backup brain: no internet, no camera vision.`
     : `Start every reply with your mood like [mood:happy]. Moods: ${MOOD_NAMES.join(", ")}.
-Use your tools to act. Tool results that start with FAILED mean nothing happened: react to that honestly.`;
+Use your tools to act. Tool results that start with FAILED mean nothing happened: react to that honestly.
+You have a synthesizer (play songs, compose your own, sing), sound effects, a vibration motor, face effects, Morse code, timers, a flashlight and screen brightness. Use them freely for bits, reactions and comedic timing, but don't overdo it every reply.`;
   // Both brains reuse work when the start of the prompt stays the same (offline: llama's
   // cache, Claude: prompt caching, billed at a fraction of the price). So things that change
   // every second (sensors, clock) are NOT in here; they ride along at the end of your message.
@@ -626,11 +773,14 @@ async function askLocal(userText) {
   const { text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) });
   const cmds = [];
   const allowMove = !autoTurn || settings.autoMove;
-  const clean = text.replace(/\[(drive|part|stop)(?::([^\]:]+))?(?::([^\]:]+))?\]/gi, (_, k, a, b) => { cmds.push([k.toLowerCase(), a, b]); return ""; });
+  const clean = text.replace(/\[(drive|part|stop|song|sfx|vibrate|effect)(?::([^\]:]+))?(?::([^\]:]+))?\]/gi, (_, k, a, b) => { cmds.push([k.toLowerCase(), a?.trim(), b?.trim()]); return ""; });
   // Any other leftover [word:thing] tags the small model invented: drop them too.
   const said = takeMood(clean).replace(/\[[a-z _-]{2,20}(?::[^\]\n]{0,40})?\]/gi, "").replace(/\s{2,}/g, " ").trim();
   (async () => {
     for (const [k, a, b] of cmds) {
+      const fun = { song: () => playSong({ song: a }), sfx: () => Abilities.sfx(a), vibrate: () => Abilities.vibrate(a),
+        effect: () => { Face.effect(a, 6); return "effect " + a; } };
+      if (fun[k]) { transcriptLine("act", `${k} ${a} → ${await fun[k]()}`); continue; }
       if (!allowMove && k !== "stop") { transcriptLine("act", `${k} ${a || ""} skipped: moving on her own is off`); continue; }
       const out = k === "stop" ? (await stopAll("her own decision"), "stopped") : k === "drive" ? await drive(a, Number(b) || 1) : await usePart(a, b);
       transcriptLine("act", `${k} ${a || ""} ${b || ""} → ${out}`);
@@ -1010,24 +1160,39 @@ function sensorEvents() {
 setInterval(() => { try { sensorEvents(); idleTick(); } catch (e) { logEvent("error", { where: "life", detail: e.message }); } }, 4000);
 
 // ---- touches on her face (face.js reacts instantly; she comments out loud now and then) ----
-const TOUCH_SAY = {
-  poke: "he just poked your face (your screen)",
-  eye: "he just poked you right in the eye",
-  mouth: "he just poked you on the mouth",
-  pet: "he's stroking/petting your face with his finger",
-  tickle: "he's rapid-fire tapping your face like he's tickling you",
-  hold: "he's pressing and holding his finger on your face"
+const TOUCH_VERB = {
+  tap: z => `he poked your ${z}`,
+  double_tap: z => `he double-tapped your ${z}`,
+  hold: z => `he's pressing and holding his finger on your ${z}`,
+  stroke: z => `he's gently stroking your ${z}`,
+  scratch: z => `he's scratching your ${z}`,
+  rub: z => `he's rubbing your ${z} in little circles`,
+  swipe: (z, d) => `he swiped ${d} across your ${z}`,
+  tickle: z => `he's rapid-fire tapping your ${z}, tickling you`,
+  slap: z => `he just slapped your face with his whole hand`,
+  squish: z => `he's pinching/squishing your face with two fingers`,
+  stretch: z => `he's stretching your face apart with two fingers`,
+  boop: z => z === "nose" ? "he just booped you on the nose" : `he two-finger booped your ${z}`
 };
+const recentTouches = [];
 let lastTouchTalk = 0;
-if (window.Face) Face.onTouch = kind => {
+if (window.Face) Face.onTouch = (kind, zone = "face", extra = "") => {
   lastTalk = Date.now();
+  logEvent("touch", { detail: `${kind} ${zone} ${extra}`.trim() });
+  const now = Date.now();
+  recentTouches.push({ kind, zone, t: now });
+  while (recentTouches.length && now - recentTouches[0].t > 60000) recentTouches.shift();
   if (!settings.react) return;
-  if (Date.now() - lastTouchTalk < 6000) return;           // don't comment on every single tap
-  const key = "touch-" + kind;
-  if (cooldown[key] && Date.now() - cooldown[key] < 20000) return;
+  const strong = kind === "slap" || (kind === "tap" && /eye/.test(zone));
+  if (now - lastTouchTalk < (strong ? 3000 : 7000)) return;   // don't comment on every single touch
+  const key = `touch-${kind}-${zone}`;
+  if (!strong && cooldown[key] && now - cooldown[key] < 20000) return;
   if (!canSpeakUp()) return;
-  cooldown[key] = lastTouchTalk = Date.now();
-  speakUp(`(system: ${TOUCH_SAY[kind]}. React out loud in character, one short sentence.)`, "touched: " + kind);
+  cooldown[key] = lastTouchTalk = now;
+  const same = recentTouches.filter(x => x.kind === kind).length;
+  const streak = same >= 3 ? ` That's the ${same}${same === 3 ? "rd" : "th"} time in the last minute.` : "";
+  const desc = (TOUCH_VERB[kind] || (z => `he touched your ${z}`))(zone, extra);
+  speakUp(`(system: ${desc}.${streak} React out loud in character, one short sentence.)`, `touched: ${kind} ${zone}`);
 };
 
 // ---- eyes follow movement seen by the camera ----
@@ -1091,6 +1256,7 @@ function showTab(name) {
   if (name === "files") openDir("");
   if (name === "logs") loadLogs();
   if (name === "persona") { renderPersonaForm(); renderVersions(); }
+  if (name === "tricks") renderTricks();
   if (name === "sensors") $("#sensorDump").textContent = sensorReport(true);
 }
 
@@ -1264,6 +1430,16 @@ $("#btnForget").onclick = () => {
   if (!confirm("Clear the conversation? Her memory notes and personality stay.")) return;
   history = []; saveConversation(); $("#transcript").innerHTML = "";
 };
+
+// Installable app: lets "Add to Home screen" make a real full-screen app with her icon.
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+// Opened from the browser instead of the home-screen icon? Go full screen on the first tap.
+const isApp = matchMedia("(display-mode: fullscreen)").matches || matchMedia("(display-mode: standalone)").matches;
+if (!isApp) window.addEventListener("pointerdown", function fs(e) {
+  if (e.target.closest("#panel, button, input, select, textarea")) return;
+  document.documentElement.requestFullscreen?.({ navigationUI: "hide" }).catch(() => {});
+  window.removeEventListener("pointerdown", fs);
+});
 
 /* ================= boot ================= */
 (async function boot() {

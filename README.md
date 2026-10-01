@@ -68,9 +68,33 @@ most apps off, the S22's 8 GB can usually hold an 8B Q4 model, which means her N
 fit instead of only a 3B model. To force a specific model, add `"localModel": "~/models/name.gguf"`
 to `data/config.json`.
 
+## Things she can do
+
+Just ask her, or use Panel > **Tricks** to trigger anything yourself for videos.
+
+- **Music:** a built-in synthesizer with instruments (chip, saw, flute, bell, organ, bass) and drums. She knows public-domain
+  songs (Twinkle, Ode to Joy, Happy Birthday, The Entertainer, Für Elise, Jingle Bells, Saints...) and some of her own,
+  and she can compose new ones. Her face dances and the phone vibrates to the beat.
+- **Singing:** she sings her own lyrics word by word on a melody, robot style.
+- **Sound effects:** drumroll, rimshot, airhorn, laser, sad trombone, boing, coin, explosion, applause, fart and more.
+- **Vibration:** heartbeat, purr, SOS, laugh, knock (shave and a haircut), earthquake, or any custom pattern.
+- **Face effects:** disco, rainbow, dance, dizzy, heart eyes, sunglasses ("deal with it"), laser eyes, glitch storm, sparkle.
+- **Morse code:** beeps, vibration and screen flashes, and the real flashlight if you ask.
+- **Timers**, **voice styles** (chipmunk, villain, whisper, dramatic...), screen **brightness**, speaker **volume**, **notifications**.
+- **Body buzzer:** put a piezo buzzer on D1, tell her "D1 is a buzzer", and she can play songs through her body too.
+
+Android only allows sound and vibration after the first tap on the page, so tap her face once after she starts.
+
+## Touching her face
+
+Her face knows where you touch (eyes, eyebrows, forehead, top of head, nose, cheeks, mouth, chin, sides) and how:
+tap, double tap, press and hold, stroke, scratch, rub in circles, swipe, tickle (4 quick taps), boop (two-finger tap
+or a tap on the nose), squish (pinch), stretch (spread), slap (whole hand). Each one gets an instant face reaction,
+and she comments out loud now and then. Scratching her chin makes her purr.
+
 ## Make the face the home screen
 
-1. In Chrome, open `http://127.0.0.1:3000`, then choose ⋮ > **Add to Home screen** > **Install**.
+1. In Chrome, open `http://127.0.0.1:3000`, then choose ⋮ > **Add to Home screen** > **Install**. She gets her own icon and opens full screen, with no browser bar.
 2. Settings > Display > Screen timeout: longest (`robot-dedicate` keeps it on while charging).
 3. To lock the phone to her face, use Settings > Security > Other security settings > **Pin windows**.
 4. In the Panel's Settings tab, tap **Full screen**.

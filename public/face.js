@@ -39,6 +39,9 @@
   let trans = null;                         // { until, props }
   let ext = null;                           // { x, y, until } where something outside wants her to look
   let shakeUntil = 0, ripples = [];
+  // show effects: disco, rainbow, dance, dizzy, heart_eyes, shades, laser_eyes, glitch_storm, sparkle, strobe
+  let fx = { name: null, until: 0 }, flashOn = false;
+  const fxOn = n => fx.name === n && nowMs() < fx.until;
   const nowMs = () => performance.now();
 
   // ---------- eyes: where they look, blinking ----------
@@ -139,6 +142,11 @@
     for (const key of Object.keys(BASE)) {
       cur[key] = key === "hue" ? lerpHue(cur.hue, target.hue, k) : lerp(cur[key], target[key], k);
     }
+    if (fxOn("disco")) cur.hue = (t * 160) % 360;
+    if (fxOn("rainbow")) cur.hue = (t * 45) % 360;
+    if (fxOn("glitch_storm")) cur.glitch = 3;
+    if (fxOn("sparkle")) cur.sparkle = 1.5;
+    if (fxOn("dizzy")) ext = { x: Math.cos(t * 7) * 0.85, y: Math.sin(t * 7) * 0.6, until: nowMs() + 120 };
     st.listening = lerp(st.listening, st._listening ? 1 : 0, k);
     st.thinking = lerp(st.thinking, st._thinking ? 1 : 0, k);
     st.offline = lerp(st.offline, st._offline ? 1 : 0, k);
@@ -266,7 +274,8 @@
   function eye(side, t) {
     const ex = side * 0.42 * U, ey = -0.12 * U, r = 0.25 * U;
     const inner = -side;                         // direction toward the middle of the face
-    const bl = side < 0 ? blink.L : blink.R;
+    let bl = side < 0 ? blink.L : blink.R;
+    if (eyeShut.side === side && nowMs() < eyeShut.until) bl = 1;
     const open = cur.open * (1 - bl) * (st._thinking ? 0.9 : 1);
     ctx.save(); ctx.translate(ex, ey);
 
@@ -291,7 +300,8 @@
     // eyeball
     ctx.save(); ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.clip();
     ctx.fillStyle = "#06020b"; ctx.fillRect(-r, -r, 2 * r, 2 * r);
-    const px = look.x * r * 0.38, py = look.y * r * 0.32;
+    const crossed = nowMs() < crossUntil;
+    const px = crossed ? -side * r * 0.4 : look.x * r * 0.38, py = crossed ? r * 0.05 : look.y * r * 0.32;
     const ig = ctx.createRadialGradient(px, py, r * 0.05, px, py, r * 1.05);
     ig.addColorStop(0, col(25, 1)); ig.addColorStop(0.45, col(0, 0.95)); ig.addColorStop(0.85, col(-30, 0.9)); ig.addColorStop(1, "rgba(0,0,0,1)");
     ctx.fillStyle = ig; ctx.beginPath(); ctx.arc(px * 0.6, py * 0.6, r * 0.95, 0, TAU); ctx.fill();
@@ -509,35 +519,99 @@
     ctx.save();
     const shk = now < shakeUntil ? U * 0.025 : 0;
     ctx.translate(CX + rand(-shk, shk), CY + Math.sin(t * 0.9) * U * 0.012 - st.thinking * U * 0.02 + rand(-shk, shk));
+    if (fxOn("dance") || fxOn("disco")) {
+      ctx.translate(Math.sin(t * 4.2) * U * 0.06, -Math.abs(Math.sin(t * 8.4)) * U * 0.06);
+      ctx.rotate(Math.sin(t * 4.2) * 0.09);
+    }
+    if (fxOn("dizzy")) ctx.rotate(Math.sin(t * 3) * 0.12);
     ctx.rotate(tiltIn.x * 0.05 + Math.sin(t * 0.5) * 0.012 + cur.skew * 0.02);
     const breathe = 1 + Math.sin(t * 1.1) * 0.01;
     ctx.scale(breathe, breathe);
     hud(t);
     cheeks(t);
     eye(-1, t); eye(1, t);
+    if (fxOn("heart_eyes")) hearts(t);
+    if (fxOn("laser_eyes")) lasers(t);
     brows();
+    if (fxOn("shades")) shades(t);
     mouth(t);
     extras(t);
     ctx.restore();
+    if (flashOn) { ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fillRect(0, 0, W, H); }
+    if (fxOn("strobe") && Math.floor(t * 3) % 2) { ctx.fillStyle = col(30, 0.3); ctx.fillRect(0, 0, W, H); }
     touchRipples(dt);
     overlays(t);
     glitch(t);
     requestAnimationFrame(frame);
   }
 
-  // ---------- touches on her face ----------
-  const REACT = {   // instant face reactions, no brain needed
-    poke:   { ms: 450,  props: { open: 1, low: 0, pupil: 0.3, browY: -0.8, mouth: -0.1 }, shake: 0 },
-    eye:    { ms: 900,  props: { open: 0.05, low: 0.5, browY: 0.7, browA: 0.9, mouth: -0.7, vents: 0.6 }, shake: 250 },
-    mouth:  { ms: 600,  props: { open: 0.95, browY: -0.6, mouth: -0.3, skew: 0.5, question: 0.6 }, shake: 0 },
-    pet:    { ms: 1600, props: { open: 0.35, low: 0.55, browY: -0.4, browA: -0.2, mouth: 0.8, blush: 1, spin: 0.6 }, shake: 0 },
-    tickle: { ms: 1500, props: { open: 0.3, low: 0.6, browY: -0.7, mouth: 1, blush: 0.8, sparkle: 1 }, shake: 900 },
-    hold:   { ms: 1200, props: { open: 0.95, pupil: 0.6, browY: -0.3, browAsym: 0.6, mouth: 0.1, question: 0.5 }, shake: 0 }
+  // ---------- effect drawings ----------
+  function heart(x, y, s) {
+    ctx.beginPath(); ctx.moveTo(x, y + s * 0.35);
+    ctx.bezierCurveTo(x - s * 1.1, y - s * 0.4, x - s * 0.45, y - s * 1.15, x, y - s * 0.45);
+    ctx.bezierCurveTo(x + s * 0.45, y - s * 1.15, x + s * 1.1, y - s * 0.4, x, y + s * 0.35); ctx.fill();
+  }
+  function hearts(t) {
+    const s = U * 0.22 * (1 + 0.12 * Math.sin(t * 9));
+    ctx.save(); ctx.shadowColor = "rgba(255,40,120,1)"; ctx.shadowBlur = U * 0.1; ctx.fillStyle = "#ff3d8b";
+    for (const side of [-1, 1]) heart(side * 0.42 * U, -0.12 * U + s * 0.25, s);
+    ctx.restore();
+  }
+  function lasers(t) {
+    ctx.save(); ctx.lineCap = "round";
+    for (const side of [-1, 1]) {
+      const x0 = side * 0.42 * U, y0 = -0.12 * U, x1 = side * 1.6 * U + Math.sin(t * 3) * U * 0.6, y1 = 2.4 * U;
+      ctx.shadowColor = "red"; ctx.shadowBlur = U * 0.12;
+      ctx.strokeStyle = `rgba(255,30,30,${0.6 + 0.4 * Math.random()})`; ctx.lineWidth = U * 0.05;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      ctx.strokeStyle = "rgba(255,230,230,0.9)"; ctx.lineWidth = U * 0.015; ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function shades(t) {
+    ctx.save(); const y = -0.15 * U;
+    ctx.fillStyle = "#050505"; ctx.strokeStyle = "#222"; ctx.lineWidth = 3;
+    for (const side of [-1, 1]) {
+      ctx.beginPath(); ctx.roundRect(side * 0.42 * U - 0.3 * U, y - 0.16 * U, 0.6 * U, 0.3 * U, [U * 0.03, U * 0.03, U * 0.14, U * 0.14]);
+      ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(side * 0.42 * U - 0.2 * U, y - 0.1 * U); ctx.lineTo(side * 0.42 * U - 0.08 * U, y + 0.04 * U); ctx.stroke();
+      ctx.strokeStyle = "#222"; ctx.lineWidth = 3;
+    }
+    ctx.fillStyle = "#050505"; ctx.fillRect(-0.13 * U, y - 0.13 * U, 0.26 * U, 0.05 * U);
+    ctx.font = `bold ${Math.round(U * 0.07)}px ui-monospace, monospace`; ctx.textAlign = "center";
+    ctx.fillStyle = col(30, 0.8); ctx.fillText("DEAL WITH IT", 0, 0.78 * U);
+    ctx.restore();
+  }
+
+  // ---------- touches on her face: WHERE (zone) and HOW (gesture) ----------
+  // Instant face reactions per gesture. Props are mood numbers held for `ms`.
+  const REACT = {
+    tap:        { ms: 450,  props: { open: 1, low: 0, pupil: 0.3, browY: -0.8, mouth: -0.1 } },
+    double_tap: { ms: 600,  props: { open: 1, low: 0, pupil: 0.25, browY: -1, mouth: -0.3, question: 0.6 }, shake: 150 },
+    eye:        { ms: 900,  props: { open: 0.05, low: 0.5, browY: 0.7, browA: 0.9, mouth: -0.7, vents: 0.6 }, shake: 250, vib: [120] },
+    hold:       { ms: 1200, props: { open: 0.95, pupil: 0.6, browY: -0.3, browAsym: 0.6, mouth: 0.1, question: 0.5 } },
+    stroke:     { ms: 1600, props: { open: 0.35, low: 0.55, browY: -0.4, browA: -0.2, mouth: 0.8, blush: 1, spin: 0.6 } },
+    scratch:    { ms: 1800, props: { open: 0.15, low: 0.7, browY: -0.6, browA: -0.4, mouth: 1, blush: 1, sparkle: 0.6 }, vib: "purr" },
+    rub:        { ms: 1800, props: { open: 0.4, low: 0.5, browY: -0.3, mouth: 0.6, blush: 0.7, spin: 2 } },
+    tickle:     { ms: 1500, props: { open: 0.3, low: 0.6, browY: -0.7, mouth: 1, blush: 0.8, sparkle: 1 }, shake: 900, vib: "laugh" },
+    slap:       { ms: 1300, props: { hue: 0, open: 0.55, tilt: 1, low: 0.1, browY: 0.7, browA: 1, mouth: -0.9, vents: 1, glitch: 0.6 }, shake: 600, vib: [250] },
+    squish:     { ms: 1200, props: { open: 0.15, low: 0.4, browY: 0.4, browAsym: -0.4, mouth: -0.2, mouthW: 0.6, question: 0.4 }, shake: 200 },
+    stretch:    { ms: 1000, props: { open: 1, low: 0, pupil: 0.2, browY: -1, mouth: -0.4, mouthW: 1.25 } },
+    boop:       { ms: 1100, props: { open: 0.9, browY: -0.6, mouth: 0.5, blush: 0.5 }, cross: true },
+    swipe:      { ms: 500,  props: { open: 1, browY: -0.4, mouth: -0.2 } },
+    eye_close:  { ms: 1500, props: { browA: 0.4, mouth: -0.3 } },
+    chin:       { ms: 2000, props: { open: 0.1, low: 0.75, browY: -0.6, mouth: 1, blush: 1, sparkle: 0.8, tilt: -0.3 }, vib: "purr" },
+    head_pat:   { ms: 1700, props: { open: 0.2, low: 0.65, browY: -0.5, mouth: 0.9, blush: 0.9 } },
+    knock:      { ms: 700,  props: { open: 1, browY: -0.9, browAsym: 0.5, mouth: -0.2, question: 1 } }
   };
+  let crossUntil = 0, eyeShut = { side: 0, until: 0 };
   function react(kind) {
     const r = REACT[kind]; if (!r) return;
     trans = { until: nowMs() + r.ms, props: r.props };
     if (r.shake) shakeUntil = nowMs() + r.shake;
+    if (r.cross) crossUntil = nowMs() + r.ms;
+    if (r.vib && window.Abilities) Abilities.vibrate(r.vib);
     if (kind === "eye") { blink.L = blink.R = 1; }
     lastActivity = nowMs();
   }
@@ -545,41 +619,117 @@
     ext = { x: clamp((x - CX) / (U * 0.9), -1, 1), y: clamp((y - CY) / (U * 0.9), -1, 1), until: nowMs() + ms };
   }
 
-  canvas.style.touchAction = "none";
-  let g = null, taps = [];
+  // Zones are named from HER point of view: the eye on your left is her right eye.
+  function zoneAt(x, y) {
+    const fx = (x - CX) / U, fy = (y - CY) / U, her = fx < 0 ? "right" : "left";
+    if (Math.hypot(Math.abs(fx) - 0.42, fy + 0.12) < 0.33) return her + " eye";
+    if (fy < -1.15) return "top of your head";
+    if (fy < -0.62) return "forehead";
+    if (fy < -0.38 && Math.abs(fx) > 0.12 && Math.abs(fx) < 0.75) return her + " eyebrow";
+    if (Math.abs(fx) < 0.16 && fy < 0.28) return "nose";
+    if (Math.abs(fx) < 0.46 && fy >= 0.28 && fy < 0.62) return "mouth";
+    if (Math.abs(fx) < 0.55 && fy >= 0.62 && fy < 1.05) return "chin";
+    if (fy >= 1.05) return "neck";
+    if (Math.abs(fx) > 0.95) return "side of your head (" + her + ")";
+    return her + " cheek";
+  }
+
+  const ptrs = new Map();                   // active fingers
+  let gest = null, taps = [];
   canvas.addEventListener("pointerdown", e => {
-    g = { x: e.clientX, y: e.clientY, t: nowMs(), dist: 0, lx: e.clientX, ly: e.clientY, held: false };
+    canvas.setPointerCapture?.(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY });
     ripples.push({ x: e.clientX, y: e.clientY, life: 0 });
     lookAtScreen(e.clientX, e.clientY);
-    g.timer = setTimeout(() => { if (g && g.dist < 25) { g.held = true; react("hold"); Face.onTouch?.("hold"); } }, 700);
+    if (!gest) {
+      gest = { t: nowMs(), x: e.clientX, y: e.clientY, path: [[e.clientX, e.clientY, nowMs()]], dist: 0, maxP: 1, big: false,
+        rev: 0, lastDx: 0, lastDy: 0, ang: 0, lastA: null, minX: e.clientX, maxX: e.clientX, minY: e.clientY, maxY: e.clientY,
+        pinch0: null, pinch1: null, live: null };
+      gest.timer = setTimeout(() => {
+        if (gest && gest.maxP === 1 && gest.dist < 25) { gest.held = true; react("hold"); Face.onTouch?.("hold", zoneAt(gest.x, gest.y)); }
+      }, 650);
+    }
+    gest.maxP = Math.max(gest.maxP, ptrs.size);
+    if ((e.width || 0) > 70 || (e.height || 0) > 70) gest.big = true;      // a whole palm
+    if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; gest.pinch0 = Math.hypot(a.x - b.x, a.y - b.y); }
   });
   canvas.addEventListener("pointermove", e => {
-    if (!g) return;
-    g.dist += Math.hypot(e.clientX - g.lx, e.clientY - g.ly); g.lx = e.clientX; g.ly = e.clientY;
+    const p = ptrs.get(e.pointerId); if (!p || !gest) return;
+    const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
+    if (ptrs.size >= 2) { const [a, b] = [...ptrs.values()]; gest.pinch1 = Math.hypot(a.x - b.x, a.y - b.y); return; }
+    gest.dist += Math.hypot(dx, dy);
+    gest.path.push([e.clientX, e.clientY, nowMs()]);
+    gest.minX = Math.min(gest.minX, e.clientX); gest.maxX = Math.max(gest.maxX, e.clientX);
+    gest.minY = Math.min(gest.minY, e.clientY); gest.maxY = Math.max(gest.maxY, e.clientY);
+    // direction reversals (scratching is lots of quick back-and-forth)
+    const big = Math.abs(dx) > Math.abs(dy);
+    if (big && Math.abs(dx) > 3) { if (gest.lastDx && Math.sign(dx) !== Math.sign(gest.lastDx)) gest.rev++; gest.lastDx = dx; }
+    if (!big && Math.abs(dy) > 3) { if (gest.lastDy && Math.sign(dy) !== Math.sign(gest.lastDy)) gest.rev++; gest.lastDy = dy; }
+    // how far it went around in a circle (rubbing)
+    const cx = (gest.minX + gest.maxX) / 2, cy = (gest.minY + gest.maxY) / 2, a = Math.atan2(e.clientY - cy, e.clientX - cx);
+    if (gest.lastA != null) { let d = a - gest.lastA; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; gest.ang += d; }
+    gest.lastA = a;
     lookAtScreen(e.clientX, e.clientY, 800);
-    if (g.dist > 80 && !g.petting) { g.petting = true; react("pet"); }
-    if (g.petting) trans && (trans.until = nowMs() + 600);
+    // live feedback while the finger is still moving
+    const live = Math.abs(gest.ang) > Math.PI * 1.6 ? "rub" : gest.rev >= 5 ? "scratch" : gest.dist > 90 ? "stroke" : null;
+    if (live && gest.live !== live) { gest.live = live; react(zoneAt(gest.x, gest.y) === "chin" && live === "scratch" ? "chin" : live); }
+    if (gest.live && trans) trans.until = nowMs() + 500;
   });
   const end = e => {
-    if (!g) return;
-    clearTimeout(g.timer);
-    const gg = g; g = null;
-    if (gg.held) return;
-    if (gg.petting) { taps = []; Face.onTouch?.("pet"); return; }
-    // a tap: where?
-    const t = nowMs(); taps = taps.filter(x => t - x < 1200); taps.push(t);
-    if (taps.length >= 4) { taps = []; react("tickle"); Face.onTouch?.("tickle"); return; }
-    const ex = U * 0.42, ey = CY - 0.12 * U, er = U * 0.33;
-    let kind = "poke";
-    if (Math.hypot(gg.x - (CX - ex), gg.y - ey) < er || Math.hypot(gg.x - (CX + ex), gg.y - ey) < er) kind = "eye";
-    else if (Math.abs(gg.x - CX) < U * 0.4 && Math.abs(gg.y - (CY + 0.45 * U)) < U * 0.14) kind = "mouth";
-    react(kind); Face.onTouch?.(kind);
+    ptrs.delete(e.pointerId);
+    if (!gest || ptrs.size > 0) return;      // wait until every finger is up
+    clearTimeout(gest.timer);
+    const g2 = gest; gest = null;
+    if (g2.held) return;
+    const dur = nowMs() - g2.t, zone = zoneAt(g2.x, g2.y);
+    const [lx, ly] = g2.path[g2.path.length - 1];
+    const net = Math.hypot(lx - g2.x, ly - g2.y), boxW = g2.maxX - g2.minX, boxH = g2.maxY - g2.minY;
+    let kind, extra = "";
+
+    if (g2.maxP >= 3 || g2.big) kind = "slap";
+    else if (g2.maxP === 2) {
+      const ratio = g2.pinch0 && g2.pinch1 ? g2.pinch1 / g2.pinch0 : 1;
+      kind = ratio < 0.75 ? "squish" : ratio > 1.35 ? "stretch" : "boop";
+    }
+    else if (g2.dist < 22) {
+      // taps only chain when they're quick (under ~0.4s apart) and in the same spot
+      const t = nowMs(), prev = taps[taps.length - 1];
+      if (prev && (t - prev.t > 400 || Math.hypot(prev.x - g2.x, prev.y - g2.y) > 90)) taps = [];
+      taps.push({ t, x: g2.x, y: g2.y });
+      if (taps.length >= 4) { taps = []; kind = "tickle"; }
+      else if (taps.length >= 2 && Math.hypot(taps[taps.length - 2].x - g2.x, taps[taps.length - 2].y - g2.y) < 60 && t - taps[taps.length - 2].t < 380) kind = "double_tap";
+      else kind = "tap";
+    }
+    else if (Math.abs(g2.ang) > Math.PI * 1.6) kind = "rub";
+    else if (g2.rev >= 4 && Math.max(boxW, boxH) < U * 0.6) kind = "scratch";
+    else if (net / g2.dist > 0.75 && net / Math.max(dur, 1) > 0.7) {
+      kind = "swipe";
+      extra = Math.abs(lx - g2.x) > Math.abs(ly - g2.y) ? (lx > g2.x ? "right" : "left") : (ly > g2.y ? "down" : "up");
+    }
+    else kind = "stroke";
+    if (kind !== "tap" && kind !== "double_tap") taps = [];
+
+    // the visual reaction depends on where, too
+    let visual = kind;
+    if (kind === "tap" && /eye$/.test(zone)) visual = "eye";
+    if (kind === "tap" && zone === "nose") { visual = "boop"; kind = "boop"; window.Abilities?.sfx("boop"); }
+    if (kind === "tap" && /forehead|top of/.test(zone)) visual = "knock";
+    if (kind === "swipe" && /eye$/.test(zone) && extra === "down") { visual = "eye_close"; eyeShut = { side: zone.startsWith("right") ? -1 : 1, until: nowMs() + 1500 }; }
+    if (kind === "swipe") ext = { x: { left: -1, right: 1 }[extra] || 0, y: { up: -1, down: 1 }[extra] || 0, until: nowMs() + 700 };
+    if ((kind === "scratch" || kind === "stroke") && zone === "chin") visual = "chin";
+    if ((kind === "stroke" || kind === "rub") && /top of|forehead/.test(zone)) visual = "head_pat";
+    if (kind === "slap") window.Abilities?.sfx("rimshot");
+    react(visual);
+    Face.onTouch?.(kind, zone, extra);
   };
   canvas.addEventListener("pointerup", end);
   canvas.addEventListener("pointercancel", end);
 
   window.Face = {
     react,
+    effect(name, seconds = 6) { fx = { name, until: nowMs() + Math.min(seconds, 60) * 1000 }; lastActivity = nowMs(); },
+    flash(on) { flashOn = !!on; },
+    effects: ["disco", "rainbow", "dance", "dizzy", "heart_eyes", "shades", "laser_eyes", "glitch_storm", "sparkle", "strobe"],
     // something outside (the camera tracker) wants her to look at x,y in -1..1 (right / down positive)
     lookAt(x, y, ms = 700) { if (!g) ext = { x: clamp(x, -1, 1), y: clamp(y, -1, 1), until: nowMs() + ms }; },
     onTouch: null,

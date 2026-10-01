@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="theme-color" content="#0b0612">
 <title>Nessari</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -40,6 +44,7 @@
       <button data-tab="talk">Talk</button>
       <button data-tab="body">Body</button>
       <button data-tab="persona">Personality</button>
+      <button data-tab="tricks">Tricks</button>
       <button data-tab="sensors">Sensors</button>
       <button data-tab="files">Files</button>
       <button data-tab="logs">Logs</button>
@@ -105,6 +110,18 @@
     <pre id="pPreview"></pre>
   </div>
 
+  <div class="tab" id="tab-tricks" hidden>
+    <p class="muted">Tap to make her do it. Or just ask her ("play something", "do a drumroll", "put your shades on", "sing about my cat").</p>
+    <h3>Songs</h3><div class="tricks" id="trSongs"></div>
+    <h3>Sound effects</h3><div class="tricks" id="trSfx"></div>
+    <h3>Face effects</h3><div class="tricks" id="trFx"></div>
+    <h3>Vibration</h3><div class="tricks" id="trVibe"></div>
+    <h3>Morse code</h3>
+    <div class="row"><input id="trMorse" placeholder="Message to send" class="grow"><button id="trMorseGo">Send</button><label class="check" style="margin:0"><input id="trTorch" type="checkbox"> flashlight</label></div>
+    <h3>Voice</h3><div class="tricks" id="trVoice"></div>
+    <div class="row"><button id="trStop" class="ghost">Stop everything</button></div>
+  </div>
+
   <div class="tab" id="tab-sensors" hidden>
     <video id="cam" autoplay playsinline muted></video>
     <div class="row"><button id="btnCam">Camera on</button><button id="btnSnap" class="ghost">Test look</button></div>
@@ -156,6 +173,7 @@
   </div>
 </section>
 
+<script src="abilities.js"></script>
 <script src="face.js"></script>
 <script src="app.js"></script>
 </body>

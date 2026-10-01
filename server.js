@@ -268,7 +268,13 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/hw/extra") {
       // on-demand phone abilities through Termux:API
       const what = url.searchParams.get("what");
+      const num = (min, max) => String(Math.round(Math.min(max, Math.max(min, Number(url.searchParams.get("value")) || 0))));
+      const text = String(url.searchParams.get("text") || "").slice(0, 300);
       const cmds = {
+        brightness: ["termux-brightness", [num(0, 255)], 4000],
+        volume: ["termux-volume", ["music", num(0, 15)], 4000],
+        notify: ["termux-notification", ["--title", "Nessari", "--content", text || "Hey.", "--id", "nessari"], 5000],
+        toast: ["termux-toast", [text || "Hey."], 4000],
         location: ["termux-location", ["-p", "network", "-r", "once"], 20000],
         wifi: ["termux-wifi-connectioninfo", [], 5000],
         wifiscan: ["termux-wifi-scaninfo", [], 10000],
@@ -282,6 +288,23 @@ const server = http.createServer(async (req, res) => {
       const out = await run(c[0], c[1], c[2]);
       if (out === null) return send(res, 503, { error: "Termux:API not installed or permission missing" });
       return send(res, 200, { what, result: parseJson(out) ?? out.trim() ?? "ok" });
+    }
+
+    // Flashlight blink pattern: [on, off, on, off...] in ms. The torch is slow to switch, so ~250ms is the shortest blink.
+    if (p === "/api/hw/torch-pattern" && req.method === "POST") {
+      const body = await readBody(req);
+      const pat = (Array.isArray(body.pattern) ? body.pattern : []).slice(0, 120).map(n => Math.min(3000, Math.max(0, Number(n) || 0)));
+      if (pat.reduce((a, b) => a + b, 0) > 45000) return send(res, 400, { error: "Pattern too long (45s max)" });
+      send(res, 200, { ok: true });                          // answer now, blink in the background
+      (async () => {
+        for (let i = 0; i < pat.length; i++) {
+          if (i % 2 === 0 && pat[i] > 0) await run("termux-torch", ["on"], 3000);
+          if (i % 2 === 1 || pat[i] > 0) { await new Promise(r => setTimeout(r, Math.max(0, pat[i] - 150))); }
+          if (i % 2 === 0 && pat[i] > 0) await run("termux-torch", ["off"], 3000);
+        }
+        await run("termux-torch", ["off"], 3000);
+      })();
+      return;
     }
 
     // ---- online brain: Claude ----

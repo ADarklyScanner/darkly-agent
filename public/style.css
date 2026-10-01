@@ -80,3 +80,7 @@ input[type=range]{width:100%}
 .trait .top{display:flex;justify-content:space-between;color:var(--ink);font-size:.95rem}
 .trait .top span{color:var(--glow);font-size:.85rem}
 .trait .ends{display:flex;justify-content:space-between;color:var(--muted);font-size:.75rem}
+
+.tricks{display:flex;flex-wrap:wrap;gap:6px}
+.tricks button{padding:8px 10px;font-size:.85rem}
+.tricks button.on{border-color:var(--glow);color:var(--glow)}

@@ -13,6 +13,8 @@
 //   M <port> <speed -1..1> <ms>   run motor for ms (max 10000), then stop
 //   S <port> <angle 0..180>       move servo
 //   D <port> <0|1>                switch output
+//   T <port> <freq Hz> <ms>       tone on a D port (piezo buzzer), freq 0 = silence
+//   Q                             status: Q <uptime s> <motor speeds> <watchdog ok>
 // Safety: if nothing arrives for 1500 ms, all motors stop ("STOPPED watchdog").
 
 #include <ESP32Servo.h>
@@ -22,12 +24,14 @@
 
 // ---------------- pins ----------------
 const int STBY = 4;                       // TB6612 standby (both chips can share it)
-struct Motor { const char* name; int pwm, in1, in2; unsigned long until; bool running; };
+// Motors ramp toward their target speed (soft start) so gears and batteries don't get slammed.
+struct Motor { const char* name; int pwm, in1, in2; unsigned long until; bool running; float cur, tgt; };
 Motor motors[] = {
-  {"M1", 5, 6, 7, 0, false},
-  {"M2", 15, 16, 17, 0, false},
-  {"M3", 8, 9, 10, 0, false},
+  {"M1", 5, 6, 7, 0, false, 0, 0},
+  {"M2", 15, 16, 17, 0, false, 0, 0},
+  {"M3", 8, 9, 10, 0, false, 0, 0},
 };
+const float RAMP_PER_MS = 0.004;          // full speed in ~250 ms
 const int NM = sizeof(motors) / sizeof(motors[0]);
 
 struct ServoPort { const char* name; int pin; Servo s; bool attached; };
@@ -67,16 +71,18 @@ void reply(const String& s) {
 }
 
 // ---------------- hardware ----------------
-void motorSet(Motor& m, float speed) {
+void motorOut(Motor& m, float speed) {
   speed = constrain(speed, -1.0f, 1.0f);
+  m.cur = speed;
   int duty = (int)(fabs(speed) * 255);
   digitalWrite(m.in1, speed > 0 ? HIGH : LOW);
   digitalWrite(m.in2, speed < 0 ? HIGH : LOW);
   ledcWrite(m.pwm, duty);
-  m.running = duty > 0;
 }
-void stopAll() {
-  for (int i = 0; i < NM; i++) { motorSet(motors[i], 0); motors[i].until = 0; }
+void motorSet(Motor& m, float speed) { m.tgt = constrain(speed, -1.0f, 1.0f); m.running = m.tgt != 0 || m.cur != 0; }
+void stopAll() {   // safety stop is instant, no ramp
+  for (int i = 0; i < NM; i++) { motors[i].tgt = 0; motorOut(motors[i], 0); motors[i].running = false; motors[i].until = 0; }
+  for (int i = 0; i < ND; i++) noTone(switches[i].pin);
 }
 Motor* findMotor(const String& n) { for (int i = 0; i < NM; i++) if (n.equalsIgnoreCase(motors[i].name)) return &motors[i]; return nullptr; }
 ServoPort* findServo(const String& n) { for (int i = 0; i < NS; i++) if (n.equalsIgnoreCase(servos[i].name)) return &servos[i]; return nullptr; }
@@ -106,7 +112,19 @@ void handle(String line) {
   }
 
   if (cmd == 'H') return;                                   // heartbeat, silent
-  if (cmd == 'P') { reply("HELLO darkly-body 1 " + portList()); return; }
+  if (cmd == 'P') { reply("HELLO darkly-body 2 " + portList() + " TONE,RAMP"); return; }
+  if (cmd == 'Q') {
+    String q = "Q " + String(millis() / 1000);
+    for (int i = 0; i < NM; i++) q += " " + String(motors[i].name) + "=" + String(motors[i].cur, 2);
+    reply(q); return;
+  }
+  if (cmd == 'T' && n >= 4) {
+    Switch* d = findSwitch(w[1]);
+    if (!d) { reply("ERR no buzzer port " + w[1]); return; }
+    long f = w[2].toInt(); unsigned long ms = min((unsigned long)max(0L, w[3].toInt()), (unsigned long)5000);
+    if (f <= 0) noTone(d->pin); else tone(d->pin, constrain(f, 20, 20000), ms);
+    return;                                  // no OK: songs send these fast
+  }
   if (cmd == 'X') { stopAll(); reply("OK"); return; }
 
   if (cmd == 'M' && n >= 4) {
@@ -179,15 +197,29 @@ void setup() {
   BLEDevice::startAdvertising();
 
   lastMsg = millis();
-  reply("HELLO darkly-body 1 " + portList());
+  reply("HELLO darkly-body 2 " + portList() + " TONE,RAMP");
 }
+
+unsigned long lastRamp = 0;
 
 void loop() {
   while (Serial.available()) { char c = Serial.read(); feed(usbBuf, &c, 1); }
 
   unsigned long now = millis();
   for (int i = 0; i < NM; i++) {
-    if (motors[i].running && motors[i].until && (long)(now - motors[i].until) >= 0) { motorSet(motors[i], 0); motors[i].until = 0; }
+    if (motors[i].until && (long)(now - motors[i].until) >= 0) { motors[i].tgt = 0; motors[i].until = 0; }
+  }
+  // soft start / soft stop
+  unsigned long dtr = now - lastRamp;
+  if (dtr >= 5) {
+    lastRamp = now;
+    for (int i = 0; i < NM; i++) {
+      Motor& m = motors[i];
+      if (m.cur == m.tgt) { m.running = m.cur != 0; continue; }
+      float step = RAMP_PER_MS * dtr, diff = m.tgt - m.cur;
+      motorOut(m, fabs(diff) <= step ? m.tgt : m.cur + (diff > 0 ? step : -step));
+      m.running = true;
+    }
   }
   if (!watchdogTripped && now - lastMsg > WATCHDOG_MS) {
     bool any = false; for (int i = 0; i < NM; i++) any |= motors[i].running;
