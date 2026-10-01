@@ -20,11 +20,13 @@ button.ghost{background:transparent}
 .chip{font-size:.75rem;padding:4px 8px;border-radius:999px;background:#1c1029;border:1px solid var(--line);color:var(--muted)}
 .chip.ok{color:var(--ok);border-color:#1f5a44}
 .chip.bad{color:var(--bad);border-color:#5a1f2a}
-#openPanel{position:absolute;top:calc(8px + env(safe-area-inset-top));right:10px}
+#faceBtns{position:absolute;top:calc(8px + env(safe-area-inset-top));right:10px;display:flex;gap:6px;z-index:1}
+#faceBtns button{padding:8px 10px;font-size:.85rem;background:rgba(20,10,30,.6)}
+#chips{top:calc(54px + env(safe-area-inset-top))}
 /* The face fills the whole screen; captions and the mic sit on top of it near the bottom */
 #face{position:absolute;inset:0;width:100%;height:100%;display:block;z-index:0}
 #faceView{justify-content:flex-end;padding-bottom:calc(28px + env(safe-area-inset-bottom))}
-#chips,#openPanel,#caption,#micBtn{z-index:1}
+#chips,#caption,#micBtn{z-index:1}
 #micBtn{position:relative}
 #caption{position:relative;min-height:4.5em;max-width:88vw;text-align:center;margin-top:10px;text-shadow:0 1px 6px #000}
 #heard{color:var(--muted);font-size:.95rem}

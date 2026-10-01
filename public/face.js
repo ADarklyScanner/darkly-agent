@@ -35,6 +35,11 @@
   const cur = { ...BASE };
   const st = { talking: false, listening: 0, thinking: 0, offline: 0, label: "" };
   let amp = 0, kickV = 0, lastActivity = performance.now();
+  // short reactions layered over the mood (flinch, squint...), something to look at, shake, touch ripples
+  let trans = null;                         // { until, props }
+  let ext = null;                           // { x, y, until } where something outside wants her to look
+  let shakeUntil = 0, ripples = [];
+  const nowMs = () => performance.now();
 
   // ---------- eyes: where they look, blinking ----------
   const look = { x: 0, y: 0, tx: 0, ty: 0, next: 0 };
@@ -129,7 +134,8 @@
     const idle = (performance.now() - lastActivity) / 1000;
     const dozing = mood === "calm" && !st.talking && !st.listening && !st.thinking && idle > 180;
     const target = { ...BASE, ...MOODS[dozing ? "sleepy" : mood] };
-    const k = 1 - Math.exp(-dt * 5);
+    if (trans && nowMs() < trans.until) Object.assign(target, trans.props); else trans = null;
+    const k = 1 - Math.exp(-dt * (trans ? 14 : 5));
     for (const key of Object.keys(BASE)) {
       cur[key] = key === "hue" ? lerpHue(cur.hue, target.hue, k) : lerp(cur[key], target[key], k);
     }
@@ -149,9 +155,11 @@
       look.next = t + rand(0.8, 3.5);
     }
     let tx = look.tx, ty = look.ty;
-    if (st._thinking) { tx = 0.55 + 0.1 * Math.sin(t * 1.3); ty = -0.6; }
-    if (st.talking) { tx *= 0.3; ty *= 0.3; }
-    tx += tiltIn.x * 0.6; ty += tiltIn.y * 0.4;
+    const following = ext && nowMs() < ext.until;
+    if (following) { tx = ext.x; ty = ext.y; }
+    else if (st._thinking) { tx = 0.55 + 0.1 * Math.sin(t * 1.3); ty = -0.6; }
+    if (st.talking && !following) { tx *= 0.3; ty *= 0.3; }
+    if (!following) { tx += tiltIn.x * 0.6; ty += tiltIn.y * 0.4; }
     const lk = 1 - Math.exp(-dt * 12);
     look.x = lerp(look.x, clamp(tx, -1, 1), lk); look.y = lerp(look.y, clamp(ty, -1, 1), lk);
 
@@ -446,6 +454,15 @@
     }
   }
 
+  function touchRipples(dt) {
+    ripples = ripples.filter(r => (r.life += dt) < 0.6);
+    for (const r of ripples) {
+      const p = r.life / 0.6;
+      ctx.strokeStyle = col(25, (1 - p) * 0.8); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(r.x, r.y, 8 + p * U * 0.25, 0, TAU); ctx.stroke();
+    }
+  }
+
   function overlays(t) {
     if (st.offline > 0.02) {
       ctx.fillStyle = `rgba(255,200,0,${0.05 * st.offline})`; ctx.fillRect(0, 0, W, H);
@@ -490,7 +507,8 @@
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     background(t);
     ctx.save();
-    ctx.translate(CX, CY + Math.sin(t * 0.9) * U * 0.012 - st.thinking * U * 0.02);
+    const shk = now < shakeUntil ? U * 0.025 : 0;
+    ctx.translate(CX + rand(-shk, shk), CY + Math.sin(t * 0.9) * U * 0.012 - st.thinking * U * 0.02 + rand(-shk, shk));
     ctx.rotate(tiltIn.x * 0.05 + Math.sin(t * 0.5) * 0.012 + cur.skew * 0.02);
     const breathe = 1 + Math.sin(t * 1.1) * 0.01;
     ctx.scale(breathe, breathe);
@@ -501,12 +519,70 @@
     mouth(t);
     extras(t);
     ctx.restore();
+    touchRipples(dt);
     overlays(t);
     glitch(t);
     requestAnimationFrame(frame);
   }
 
+  // ---------- touches on her face ----------
+  const REACT = {   // instant face reactions, no brain needed
+    poke:   { ms: 450,  props: { open: 1, low: 0, pupil: 0.3, browY: -0.8, mouth: -0.1 }, shake: 0 },
+    eye:    { ms: 900,  props: { open: 0.05, low: 0.5, browY: 0.7, browA: 0.9, mouth: -0.7, vents: 0.6 }, shake: 250 },
+    mouth:  { ms: 600,  props: { open: 0.95, browY: -0.6, mouth: -0.3, skew: 0.5, question: 0.6 }, shake: 0 },
+    pet:    { ms: 1600, props: { open: 0.35, low: 0.55, browY: -0.4, browA: -0.2, mouth: 0.8, blush: 1, spin: 0.6 }, shake: 0 },
+    tickle: { ms: 1500, props: { open: 0.3, low: 0.6, browY: -0.7, mouth: 1, blush: 0.8, sparkle: 1 }, shake: 900 },
+    hold:   { ms: 1200, props: { open: 0.95, pupil: 0.6, browY: -0.3, browAsym: 0.6, mouth: 0.1, question: 0.5 }, shake: 0 }
+  };
+  function react(kind) {
+    const r = REACT[kind]; if (!r) return;
+    trans = { until: nowMs() + r.ms, props: r.props };
+    if (r.shake) shakeUntil = nowMs() + r.shake;
+    if (kind === "eye") { blink.L = blink.R = 1; }
+    lastActivity = nowMs();
+  }
+  function lookAtScreen(x, y, ms = 1500) {
+    ext = { x: clamp((x - CX) / (U * 0.9), -1, 1), y: clamp((y - CY) / (U * 0.9), -1, 1), until: nowMs() + ms };
+  }
+
+  canvas.style.touchAction = "none";
+  let g = null, taps = [];
+  canvas.addEventListener("pointerdown", e => {
+    g = { x: e.clientX, y: e.clientY, t: nowMs(), dist: 0, lx: e.clientX, ly: e.clientY, held: false };
+    ripples.push({ x: e.clientX, y: e.clientY, life: 0 });
+    lookAtScreen(e.clientX, e.clientY);
+    g.timer = setTimeout(() => { if (g && g.dist < 25) { g.held = true; react("hold"); Face.onTouch?.("hold"); } }, 700);
+  });
+  canvas.addEventListener("pointermove", e => {
+    if (!g) return;
+    g.dist += Math.hypot(e.clientX - g.lx, e.clientY - g.ly); g.lx = e.clientX; g.ly = e.clientY;
+    lookAtScreen(e.clientX, e.clientY, 800);
+    if (g.dist > 80 && !g.petting) { g.petting = true; react("pet"); }
+    if (g.petting) trans && (trans.until = nowMs() + 600);
+  });
+  const end = e => {
+    if (!g) return;
+    clearTimeout(g.timer);
+    const gg = g; g = null;
+    if (gg.held) return;
+    if (gg.petting) { taps = []; Face.onTouch?.("pet"); return; }
+    // a tap: where?
+    const t = nowMs(); taps = taps.filter(x => t - x < 1200); taps.push(t);
+    if (taps.length >= 4) { taps = []; react("tickle"); Face.onTouch?.("tickle"); return; }
+    const ex = U * 0.42, ey = CY - 0.12 * U, er = U * 0.33;
+    let kind = "poke";
+    if (Math.hypot(gg.x - (CX - ex), gg.y - ey) < er || Math.hypot(gg.x - (CX + ex), gg.y - ey) < er) kind = "eye";
+    else if (Math.abs(gg.x - CX) < U * 0.4 && Math.abs(gg.y - (CY + 0.45 * U)) < U * 0.14) kind = "mouth";
+    react(kind); Face.onTouch?.(kind);
+  };
+  canvas.addEventListener("pointerup", end);
+  canvas.addEventListener("pointercancel", end);
+
   window.Face = {
+    react,
+    // something outside (the camera tracker) wants her to look at x,y in -1..1 (right / down positive)
+    lookAt(x, y, ms = 700) { if (!g) ext = { x: clamp(x, -1, 1), y: clamp(y, -1, 1), until: nowMs() + ms }; },
+    onTouch: null,
     setMood(m) { if (MOODS[m]) { mood = m; lastActivity = performance.now(); } },
     setTalking(on) { st.talking = !!on; lastActivity = performance.now(); },
     kick() { kickV = 1; },

@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /* ================= settings ================= */
 const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true,
-  auto: "normal", react: true, night: true, autoMove: false };
+  auto: "normal", react: true, night: true, autoMove: false, track: true };
 let settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("robot-settings") || "{}") };
 const saveSettings = () => localStorage.setItem("robot-settings", JSON.stringify(settings));
 
@@ -476,16 +476,35 @@ function quickSenses() {
 
 // Conversation survives reloads and restarts: saved to data/conversation.json
 function recentHistory(n) {
-  const h = history.slice(-n);
+  const h = history.slice(-n).map(m => ({ role: m.role, content: m.content }));
   while (h.length && h[0].role !== "user") h.shift();       // must start with something you said
   return h;
 }
+// Each personality keeps its own conversation: data/conversations/<name>.json
+const slugOf = n => String(n || "default").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "default";
+let convSlug = null;                         // whose conversation is loaded right now
+const convPath = s => `conversations/${s}.json`;
 function saveConversation() {
-  writeFile("conversation.json", JSON.stringify(history.slice(-60))).catch(() => {});
+  if (!convSlug) return;
+  writeFile(convPath(convSlug), JSON.stringify(history.slice(-60))).catch(() => {});
 }
 async function loadConversation() {
-  try { const h = JSON.parse(await readFile("conversation.json")); if (Array.isArray(h)) history = h; } catch {}
-  for (const m of history.slice(-30)) transcriptLine(m.role === "user" ? "me" : "bot", m.content);
+  convSlug = slugOf(personality?.name);
+  history = [];
+  try { const h = JSON.parse(await readFile(convPath(convSlug))); if (Array.isArray(h)) history = h; }
+  catch {                                     // first time: bring over the old single conversation file
+    try { const h = JSON.parse(await readFile("conversation.json")); if (Array.isArray(h) && h.length) { history = h; saveConversation(); await writeFile("conversation.json", "[]"); } } catch {}
+  }
+  $("#transcript").innerHTML = "";
+  for (const m of history.slice(-30)) transcriptLine(m.auto ? "act" : m.role === "user" ? "me" : "bot", m.content);
+}
+// Called after the personality changes: if it's now someone else, swap conversations.
+async function switchConversationIfNeeded() {
+  const s = slugOf(personality?.name);
+  if (s === convSlug) return;
+  saveConversation();                         // keep the old one
+  await loadConversation();
+  transcriptLine("act", `Switched to ${personality.name}'s conversation`);
 }
 
 function takeMood(text) {
@@ -666,7 +685,7 @@ async function ask(userText, opts = {}) {
   $("#heard").textContent = "";
   autoTurn = false;
   if (failed) transcriptLine("act", reply);               // shown, but not saved into the conversation
-  else if (opts.auto) history.push({ role: "user", content: opts.note || "(you spoke up on your own)" });
+  else if (opts.auto) history.push({ role: "user", content: "(" + (opts.note || "you spoke up on your own") + ")", auto: true });
   else if (!opts.quiet) history.push({ role: "user", content: userText });
   if (reply && !failed) {
     history.push({ role: "assistant", content: reply });
@@ -801,6 +820,7 @@ async function savePersonality() {
   await writeFile("personality.json", json);
   await writeFile("persona.md", persona);
   logEvent("persona", { detail: "personality saved: " + personality.name });
+  if (convSlug) await switchConversationIfNeeded();
   if (!$("#tab-persona").hidden) renderVersions();
 }
 
@@ -870,7 +890,7 @@ function previewPersona() { readPersonaForm(); $("#pPreview").textContent = buil
   sel.onchange = () => { if (sel.value && confirm(`Replace the current personality with "${sel.value}"?`)) { personality = structuredClone(PRESETS[sel.value]); renderPersonaForm(); } sel.value = ""; };
   for (const id of [...Object.keys(P_FIELDS), "pYoutube"]) { const el = $("#" + id); el.oninput = el.onchange = previewPersona; }
   $("#pSave").onclick = async () => { readPersonaForm(); await savePersonality(); $("#pSave").textContent = "Saved ✓"; setTimeout(() => $("#pSave").textContent = "Save personality", 1200); };
-  $("#pTest").onclick = async () => { readPersonaForm(); await savePersonality(); history = []; $("#panel").hidden = true; document.body.classList.remove("panel-open"); ask("(system: your personality was just updated. Say hi in your new personality.)", { quiet: true }); };
+  $("#pTest").onclick = async () => { readPersonaForm(); await savePersonality(); $("#panel").hidden = true; document.body.classList.remove("panel-open"); ask("(system: your personality was just updated. Say hi in your new personality.)", { quiet: true }); };
   $("#pUndo").onclick = async () => {
     const names = await listVersions();
     if (!names.length) return alert("Nothing to undo yet.");
@@ -943,7 +963,7 @@ let calmSince = Date.now();
 window.addEventListener("devicemotion", e => {
   const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
   const g = Math.hypot(a.x, a.y, a.z);
-  if (Math.abs(g - 9.8) > 7) {
+  if (Math.abs(g - 9.8) > 4) {
     if (Date.now() - calmSince > 20000) react("shake", "someone picked you up or shook you", 1);
     calmSince = Date.now();
   }
@@ -989,6 +1009,68 @@ function sensorEvents() {
 
 setInterval(() => { try { sensorEvents(); idleTick(); } catch (e) { logEvent("error", { where: "life", detail: e.message }); } }, 4000);
 
+// ---- touches on her face (face.js reacts instantly; she comments out loud now and then) ----
+const TOUCH_SAY = {
+  poke: "he just poked your face (your screen)",
+  eye: "he just poked you right in the eye",
+  mouth: "he just poked you on the mouth",
+  pet: "he's stroking/petting your face with his finger",
+  tickle: "he's rapid-fire tapping your face like he's tickling you",
+  hold: "he's pressing and holding his finger on your face"
+};
+let lastTouchTalk = 0;
+if (window.Face) Face.onTouch = kind => {
+  lastTalk = Date.now();
+  if (!settings.react) return;
+  if (Date.now() - lastTouchTalk < 6000) return;           // don't comment on every single tap
+  const key = "touch-" + kind;
+  if (cooldown[key] && Date.now() - cooldown[key] < 20000) return;
+  if (!canSpeakUp()) return;
+  cooldown[key] = lastTouchTalk = Date.now();
+  speakUp(`(system: ${TOUCH_SAY[kind]}. React out loud in character, one short sentence.)`, "touched: " + kind);
+};
+
+// ---- eyes follow movement seen by the camera ----
+// Compares tiny 64x48 frames ~10 times a second; where pixels changed is where something moved.
+let trackVid = null, trackCtx = null, prevFrame = null, trackTimer = null, stillSince = Date.now();
+async function startTracking() {
+  if (!settings.track || trackTimer) return;
+  try { await camOn(); } catch (e) { logEvent("error", { where: "tracking", detail: "camera: " + e.message }); return; }
+  trackVid = document.createElement("video");
+  trackVid.muted = true; trackVid.playsInline = true;
+  const c = document.createElement("canvas"); c.width = 64; c.height = 48;
+  trackCtx = c.getContext("2d", { willReadFrequently: true });
+  trackTimer = setInterval(trackTick, 100);
+}
+function stopTracking() { clearInterval(trackTimer); trackTimer = null; prevFrame = null; }
+function trackTick() {
+  if (document.hidden || !camStream) return;
+  if (trackVid.srcObject !== camStream) { trackVid.srcObject = camStream; trackVid.play().catch(() => {}); prevFrame = null; return; }
+  if (trackVid.readyState < 2) return;
+  trackCtx.drawImage(trackVid, 0, 0, 64, 48);
+  const d = trackCtx.getImageData(0, 0, 64, 48).data;
+  const gray = new Uint8Array(64 * 48);
+  for (let i = 0; i < gray.length; i++) gray[i] = (d[i * 4] * 3 + d[i * 4 + 1] * 6 + d[i * 4 + 2]) / 10;
+  if (prevFrame) {
+    let n = 0, sx = 0, sy = 0;
+    for (let i = 0; i < gray.length; i++) {
+      if (Math.abs(gray[i] - prevFrame[i]) > 28) { n++; sx += i % 64; sy += (i / 64) | 0; }
+    }
+    const frac = n / gray.length;
+    // ignore tiny noise, and whole-picture changes (lights flicking, the robot itself moving)
+    if (frac > 0.006 && frac < 0.5) {
+      let x = (sx / n) / 32 - 1, y = (sy / n) / 24 - 1;
+      if (settings.facing === "user") x = -x;                // front camera: mirror so she looks AT you
+      window.Face?.lookAt(x * 1.1, y * 0.8);
+      if (Date.now() - stillSince > 120000 && frac > 0.05)
+        react("motion", "you just saw someone or something move in front of your camera after it was still for a while", 5);
+      stillSince = Date.now();
+    }
+  }
+  prevFrame = gray;
+}
+setTimeout(startTracking, 2500);
+
 /* ================= panel UI ================= */
 function unlockExtras() {
   if ("wakeLock" in navigator && !window._wl) navigator.wakeLock.request("screen").then(l => { window._wl = l; l.onrelease = () => window._wl = null; }).catch(() => {});
@@ -996,6 +1078,10 @@ function unlockExtras() {
 document.addEventListener("visibilitychange", () => { if (!document.hidden) unlockExtras(); });
 
 $("#openPanel").onclick = () => { $("#panel").hidden = false; document.body.classList.add("panel-open"); showTab("status"); };
+$("#openTalk").onclick = () => { $("#panel").hidden = false; document.body.classList.add("panel-open"); showTab("talk"); $("#typeBox").focus(); };
+$("#openTermux").onclick = () => {
+  location.href = "intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=com.termux;end";
+};
 $("#closePanel").onclick = () => { $("#panel").hidden = true; document.body.classList.remove("panel-open"); };
 $$("#tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 function showTab(name) {
@@ -1158,17 +1244,19 @@ $("#logsRefresh").onclick = loadLogs;
 // ---- settings ----
 function bindSetting(id, key, cast = v => v) {
   const el = $(id);
-  if (el.type === "checkbox") { el.checked = settings[key]; el.onchange = () => { settings[key] = el.checked; saveSettings(); }; }
+  if (el.type === "checkbox") { el.checked = settings[key]; el.onchange = () => { settings[key] = el.checked; saveSettings(); onSettingChange(key); }; }
   else { el.value = settings[key]; el.onchange = el.oninput = () => { settings[key] = cast(el.value); saveSettings(); onSettingChange(key); }; }
 }
 function onSettingChange(key) {
   if (key === "listen") { stopListening(); if (settings.listen === "always") startListening(); }
   if (key === "facing" && camStream) { camOff(); camOn().catch(() => {}); }
+  if (key === "track") { if (settings.track) startTracking(); else { stopTracking(); camOff(); } }
   refreshChips();
 }
 bindSetting("#setBrain", "brain"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
 bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bindSetting("#setPitch", "pitch", Number);
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
+bindSetting("#setTrack", "track");
 bindSetting("#setAuto", "auto"); bindSetting("#setReact", "react"); bindSetting("#setNight", "night"); bindSetting("#setAutoMove", "autoMove");
 $("#btnFull").onclick = () => document.documentElement.requestFullscreen?.().catch(() => {});
 $("#btnTestVoice").onclick = () => speak("Testing. One two. Yes, I can hear myself, unfortunately.");

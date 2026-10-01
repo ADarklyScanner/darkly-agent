@@ -16,7 +16,11 @@
     <span class="chip" id="chipBody">body …</span>
     <span class="chip" id="chipBatt">🔋 …</span>
   </div>
-  <button id="openPanel" class="ghost" aria-label="Open control panel">Panel</button>
+  <div id="faceBtns">
+    <button id="openTermux" class="ghost" aria-label="Open Termux">Termux</button>
+    <button id="openTalk" class="ghost" aria-label="Open chat">Chat</button>
+    <button id="openPanel" class="ghost" aria-label="Open control panel">Panel</button>
+  </div>
 
   <canvas id="face" aria-label="Robot face"></canvas>
 
@@ -143,7 +147,8 @@
       <option value="normal">Sometimes (every 5–12 min)</option>
       <option value="chatty">A lot (every 2–5 min)</option>
     </select></label>
-    <label class="check"><input id="setReact" type="checkbox"> Reacts to things (picked up, charger, lights, battery, hand near her face)</label>
+    <label class="check"><input id="setReact" type="checkbox"> Reacts to things (touches, picked up, charger, lights, battery, someone walking in)</label>
+    <label class="check"><input id="setTrack" type="checkbox"> Eyes follow movement (keeps the camera on, uses more battery)</label>
     <label class="check"><input id="setNight" type="checkbox"> Quiet at night (11 PM – 7 AM)</label>
     <label class="check"><input id="setAutoMove" type="checkbox"> Lets her move her body on her own (careful near table edges)</label>
     <p class="muted">Every time she speaks up uses the online brain, so "A lot" costs more.</p>
