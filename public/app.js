@@ -502,7 +502,7 @@ Use your tools to act. Tool results that start with FAILED mean nothing happened
 function quickSenses() {
   const b = battery ? `battery ${Math.round(battery.level * 100)}%${battery.charging ? " charging" : ""}` : "";
   const t = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return `[senses] ${[b, tipped ? "you are TIPPED OVER" : "upright", "time " + t].filter(Boolean).join(", ")}`;
+  return `(Robot status, don't repeat this: ${[b, tipped ? "you are TIPPED OVER" : "upright", "time " + t].filter(Boolean).join(", ")})`;
 }
 
 // Conversation survives reloads and restarts: saved to data/conversation.json
@@ -523,7 +523,8 @@ function takeMood(text) {
   let m, out = text;
   const re = /\[mood:\s*([a-z]+)\s*\]/gi;
   while ((m = re.exec(text))) setMood(m[1].toLowerCase());
-  return out.replace(re, "").trim();
+  // Small models copy the bracket formats they see ([senses], [sense:upright]...). Never say those out loud.
+  return out.replace(re, "").replace(/\[\s*senses?\b[^\]\n]*\]/gi, "").replace(/\s{2,}/g, " ").trim();
 }
 
 // Prompt caching: Claude stores the unchanging start of each request (tools, personality,
@@ -637,7 +638,8 @@ async function askLocal(userText) {
   const { text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) });
   const cmds = [];
   const clean = text.replace(/\[(drive|part|stop)(?::([^\]:]+))?(?::([^\]:]+))?\]/gi, (_, k, a, b) => { cmds.push([k.toLowerCase(), a, b]); return ""; });
-  const said = takeMood(clean);
+  // Any other leftover [word:thing] tags the small model invented: drop them too.
+  const said = takeMood(clean).replace(/\[[a-z _-]{2,20}(?::[^\]\n]{0,40})?\]/gi, "").replace(/\s{2,}/g, " ").trim();
   (async () => {
     for (const [k, a, b] of cmds) {
       const out = k === "stop" ? (await stopAll("her own decision"), "stopped") : k === "drive" ? await drive(a, Number(b) || 1) : await usePart(a, b);

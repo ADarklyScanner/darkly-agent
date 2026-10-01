@@ -62,28 +62,33 @@ function geminiKeys() {
 let activeGemini = 0;
 const GEMINI_BASE = process.env.ROBOT_GEMINI_URL || "https://generativelanguage.googleapis.com/v1beta";
 
-// Pick Google's newest stable "flash" model (fast and cheap) unless config.json names one.
-let geminiModelCache = null;
-async function geminiModel(key) {
+// Gemini models to try, best first: newest stable Flash, older Flash versions, then Flash-Lite.
+// When one is overloaded ("high demand"), the next is tried. config.json "geminiModel" forces one.
+let geminiModelCache = null;          // first choice, shown on the Status tab
+let geminiModelList = null;
+async function geminiModels(key) {
   const cfg = config().geminiModel;
-  if (cfg && cfg !== "auto") return cfg;
-  if (geminiModelCache) return geminiModelCache;
-  let pick = "gemini-2.5-flash";
+  if (cfg && cfg !== "auto") return [cfg];
+  if (geminiModelList) return geminiModelList;
+  let list = [];
   try {
     const r = await timedFetch(`${GEMINI_BASE}/models?pageSize=200&key=${encodeURIComponent(key)}`, {}, 8000);
     const j = await r.json();
     const names = (j.models || [])
       .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
       .map(m => String(m.name).replace(/^models\//, ""));
-    const stable = names.map(n => [n, n.match(/^gemini-(\d+(?:\.\d+)?)-flash$/)]).filter(([, m]) => m)
-      .sort((a, b) => parseFloat(b[1][1]) - parseFloat(a[1][1]));
-    if (stable.length) pick = stable[0][0];
-    else if (names.includes("gemini-flash-latest")) pick = "gemini-flash-latest";
+    const byVersion = re => names.map(n => [n, n.match(re)]).filter(([, m]) => m)
+      .sort((a, b) => parseFloat(b[1][1]) - parseFloat(a[1][1])).map(([n]) => n);
+    list = [...byVersion(/^gemini-(\d+(?:\.\d+)?)-flash$/), ...byVersion(/^gemini-(\d+(?:\.\d+)?)-flash-lite$/)];
+    for (const alias of ["gemini-flash-latest", "gemini-flash-lite-latest"]) if (names.includes(alias) && !list.length) list.push(alias);
   } catch {}
-  geminiModelCache = pick;
-  log({ kind: "brain", detail: "Gemini model: " + pick });
-  return pick;
+  if (!list.length) list = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+  geminiModelList = list.slice(0, 4);
+  geminiModelCache = geminiModelList[0];
+  log({ kind: "brain", detail: "Gemini models: " + geminiModelList.join(", ") });
+  return geminiModelList;
 }
+const geminiBusy = status => status === 500 || status === 503 || status === 504;
 const geminiKeyProblem = (status, text) =>
   status === 401 || status === 403 || status === 429 || (status === 400 && /api key|API_KEY/i.test(text));
 
@@ -226,24 +231,29 @@ const server = http.createServer(async (req, res) => {
       if (!keys.length) return send(res, 400, { error: "No Gemini key. Put it in ~/.robot-gemini-key" });
       const body = await readBody(req);
       if (activeGemini >= keys.length) activeGemini = 0;
-      let r, text;
+      let r, text, done = false;
+      keyLoop:
       for (let tries = 0; tries < keys.length; tries++) {
         const i = (activeGemini + tries) % keys.length;
-        const model = await geminiModel(keys[i]);
-        const call = extra => timedFetch(`${GEMINI_BASE}/openai/chat/completions`, {
-          method: "POST",
-          headers: { authorization: "Bearer " + keys[i], "content-type": "application/json" },
-          body: JSON.stringify({ model, max_tokens: 1500, ...body, ...extra })
-        }, 90000);
-        r = await call({ reasoning_effort: "low" });            // keep thinking short: she's talking out loud
-        text = await r.text();
-        if (r.status === 400 && /reasoning/i.test(text)) { r = await call({}); text = await r.text(); }
-        if (r.ok) {
-          if (i !== activeGemini) { log({ kind: "key", detail: `Switched to Gemini key #${i + 1}` }); activeGemini = i; }
-          break;
+        const models = await geminiModels(keys[i]);
+        for (const [mi, model] of models.entries()) {
+          const call = extra => timedFetch(`${GEMINI_BASE}/openai/chat/completions`, {
+            method: "POST",
+            headers: { authorization: "Bearer " + keys[i], "content-type": "application/json" },
+            body: JSON.stringify({ model, max_tokens: 1500, ...body, ...extra })
+          }, 90000);
+          r = await call({ reasoning_effort: "low" });            // keep thinking short: she's talking out loud
+          text = await r.text();
+          if (r.status === 400 && /reasoning/i.test(text)) { r = await call({}); text = await r.text(); }
+          if (r.ok) {
+            if (i !== activeGemini) { log({ kind: "key", detail: `Switched to Gemini key #${i + 1}` }); activeGemini = i; }
+            if (mi > 0) log({ kind: "brain", detail: `Gemini ${models[0]} was busy; answered with ${model}` });
+            done = true; break keyLoop;
+          }
+          log({ kind: "error", where: "gemini", key: i + 1, model, status: r.status, detail: text.slice(0, 300) });
+          if (r.status === 404) { geminiModelList = null; continue; }   // model retired: try the next, re-pick later
+          if (!geminiBusy(r.status)) break;                             // not "busy": another model won't help
         }
-        log({ kind: "error", where: "gemini", key: i + 1, status: r.status, detail: text.slice(0, 300) });
-        if (r.status === 404) geminiModelCache = null;          // model retired: pick again next time
         if (!geminiKeyProblem(r.status, text)) break;
       }
       let errMsg = null;

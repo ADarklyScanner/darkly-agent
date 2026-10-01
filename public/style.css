@@ -50,11 +50,13 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--panel);border:1p
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}
 .stat b{display:block;font-size:1rem}
 .stat span{font-size:.72rem;color:var(--muted);text-transform:uppercase}
-#transcript{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+/* Talk tab: messages scroll, the type box stays below them and clear of the STOP button */
+#tab-talk{display:flex;flex-direction:column;overflow:hidden;padding-bottom:0}
+#transcript{display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;padding-bottom:8px}
 .line{padding:8px 12px;border-radius:12px;max-width:88%;background:var(--panel);border:1px solid var(--line)}
 .line.me{align-self:flex-end;background:#2a1740}
 .line.act{align-self:center;font-size:.8rem;color:var(--muted);background:transparent;border-style:dashed}
-#typeForm{display:flex;gap:8px;position:sticky;bottom:0;padding-top:6px;background:var(--bg)}
+#typeForm{display:flex;gap:8px;padding:8px 100px calc(16px + env(safe-area-inset-bottom)) 0;background:var(--bg);border-top:1px solid var(--line)}
 #typeBox,.tab input:not([type=checkbox]):not([type=range]),.tab select,textarea{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;width:100%}
 #dpad{display:grid;grid-template-columns:repeat(3,72px);gap:8px;justify-content:center;user-select:none}
 #dpad button{height:64px;font-size:1.4rem;touch-action:none}
