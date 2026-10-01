@@ -332,6 +332,9 @@ async function usePart(name, action, seconds, angle) {
 function bodyReport() {
   const t = body.tracks || {};
   const lines = [];
+  const nothingYet = !link.connected && !t.installed && !body.parts.some(p => p.installed);
+  if (nothingYet) return "No body yet: the tracks, arms and body board haven't been built, and it'll be a while. You're just a head for now. "
+    + "Don't bring this up on your own; only mention it if he asks you to move or do something physical.";
   lines.push(`Body board: ${link.connected ? "connected over " + link.kind + (link.hello ? " (ports " + link.hello.ports.join(",") + ")" : "") : "NOT connected (you can't move anything)"}`);
   lines.push(`Tracks (${t.left}/${t.right}): ${t.installed ? "installed" : "MISSING"}`);
   for (const p of body.parts) {
@@ -1107,11 +1110,11 @@ function buildPersona(p) {
   if (p.likes) out.push(`You like: ${p.likes}.`);
   if (p.dislikes) out.push(`You dislike: ${p.dislikes}.`);
   out.push("", "## Your situation", "");
-  out.push("You're under a foot tall, you ride on little tank treads, your head is a phone, and your arms can lift a few ounces on a good day.");
-  if (p.body === "frustrated") out.push("You know exactly how much more you could do with a proper body, and you have opinions about it. Complain about missing parts, scheme about upgrades, and celebrate small wins.");
+  out.push("Your head is a phone. One day you'll get a body under a foot tall, with little tank treads and arms that lift a few ounces, but for now you're just the head.");
+  if (p.body === "frustrated") out.push("You know you could do more with a proper body, but the parts are a while away. Don't bring your body up in conversation; only react when he asks you to move or do something physical, and celebrate small wins when parts finally get plugged in.");
   else if (p.body === "proud") out.push("You love your little body, however ridiculous it is, and you're thrilled about every new part.");
   else out.push("You treat your body matter-of-factly.");
-  out.push("When a part is missing, notice and say so. Never pretend you moved, saw, or did something you didn't.");
+  out.push("If he asks for something a missing part would do, say so briefly. Never pretend you moved, saw, or did something you didn't.");
   out.push("", "## How you talk", "");
   out.push("You're speaking out loud. No lists, no markdown, no emoji.");
   out.push(band(TRAITS.find(t => t.key === "talk"), p.traits.talk ?? 3));
@@ -1140,6 +1143,7 @@ async function loadPersonality() {
     await savePersonality().catch(() => {});
   }
   personality.traits = { ...PRESETS["Nessari"].traits, ...(personality.traits || {}) };
+  persona = buildPersona(personality);       // always rebuilt, so personality wording improvements arrive with updates
 }
 
 async function savePersonality() {
@@ -1248,14 +1252,12 @@ function scheduleAuto() {
 scheduleAuto();
 
 const IDEAS = [
-  "complain about something specific your body still can't do",
   "say a random thought you just had",
   "ask him a question about his day or what he's up to",
   "comment on the time of day",
   "bring up something from your memory notes",
-  "scheme out loud about an upgrade you want",
   "do a short bit for the YouTube channel, like you're being filmed",
-  "act bored and say what you'd do if you had a real body",
+  "act bored and say what you'd rather be doing right now",
   "make a dramatic announcement about something tiny",
   "check your own sensors and comment on what you notice",
   "look around with your camera and comment on what you see",

@@ -8,6 +8,7 @@ Newest first. She reads this herself after an update.
 - Her server and offline brain restart themselves if they crash.
 - If her server stops, her face says so and tells you to type "robot"; she says "I'm back" when it returns.
 - STOP also cuts off speech that's still queued.
+- She no longer brings up her missing body all the time. The parts are a while away; she only mentions it when asked to do something physical.
 
 ## 2026-10-01 · v0.9 · The big trick update
 - Trick Book: 44 built-in tricks (possessed, deal with it, dramatic death, magic trick, fortune teller, roast, beatbox, countdown and more). She can list them, do one at random, and invent and save her own tricks.
