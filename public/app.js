@@ -449,6 +449,9 @@ async function runTool(name, input) {
       const data = await snapshot();
       return [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data } }, { type: "text", text: "This is what your camera sees right now." }];
     }
+    for (const k of ["actions", "traits"]) {          // Gemini sends these as JSON text
+      if (typeof input[k] === "string") { try { input[k] = JSON.parse(input[k]); } catch { delete input[k]; } }
+    }
     if (name === "update_part") {
       if (input.port && !/^[MSD]\d{1,2}$/.test(input.port)) return "FAILED: ports look like M1, S2, D1.";
       let p = findPart(input.name);
@@ -575,6 +578,60 @@ async function askClaude(userText) {
   return "";
 }
 
+// ---- Gemini brain (OpenAI-style format through Google's compatible endpoint) ----
+// Gemini rejects object parameters with no listed fields, so those become JSON text.
+function geminiSchema(s) {
+  if (!s || s.type !== "object") return s;
+  const props = {};
+  for (const [k, v] of Object.entries(s.properties || {})) {
+    props[k] = v.type === "object" && !Object.keys(v.properties || {}).length
+      ? { type: "string", description: (v.description || k) + " (as JSON text)" }
+      : v;
+  }
+  return { ...s, properties: props };
+}
+const GEMINI_TOOLS = TOOLS.map(t => {
+  const f = { name: t.name, description: t.description };
+  if (Object.keys(t.input_schema.properties || {}).length) f.parameters = geminiSchema(t.input_schema);
+  return { type: "function", function: f };
+});
+
+async function askGemini(userText) {
+  const messages = [
+    { role: "system", content: systemPrompt(false) },
+    ...recentHistory(30),
+    { role: "user", content: `${userText}\n\n[senses]\n${sensorReport()}` }
+  ];
+  for (let round = 0; round < 6; round++) {
+    const r = await api("/api/gemini", { method: "POST", body: JSON.stringify({ messages, tools: GEMINI_TOOLS }) });
+    const msg = r.choices?.[0]?.message || {};
+    const text = (msg.content || "").trim();
+    const calls = msg.tool_calls || [];
+    if (text) { const said = takeMood(text); if (said && calls.length) { speak(said); transcriptLine("bot", said); } if (!calls.length) return said; }
+    if (!calls.length) return "";
+    messages.push({ role: "assistant", content: msg.content || "", tool_calls: calls });
+    const photos = [];
+    for (const [n, c] of calls.entries()) {
+      let input = {};
+      try { input = JSON.parse(c.function?.arguments || "{}"); } catch {}
+      transcriptLine("act", `${c.function?.name} ${JSON.stringify(input)}`);
+      const out = await runTool(c.function?.name, input);
+      let content = out;
+      if (Array.isArray(out)) {                                   // a photo: tools can't carry images here
+        const img = out.find(b => b.type === "image");
+        if (img) photos.push(img.source.data);
+        content = "Photo taken. It's attached in the next message.";
+      } else transcriptLine("act", out);
+      messages.push({ role: "tool", tool_call_id: c.id || `call_${round}_${n}`, content });
+    }
+    for (const data of photos) messages.push({ role: "user", content: [
+      { type: "text", text: "This is what your camera sees right now." },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64," + data } }
+    ] });
+  }
+  return "";
+}
+
 async function askLocal(userText) {
   const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + "\n" + quickSenses() }];
   const { text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) });
@@ -600,19 +657,25 @@ async function ask(userText, opts = {}) {
   let reply = "", brain = "", failed = false;
   const started = Date.now();
   try {
-    const useClaude = settings.brain === "claude" || (settings.brain === "auto" && status.hasKey && status.online && navigator.onLine);
-    if (settings.brain !== "local" && !useClaude && !opts.quiet) {
-      const why = !status.hasKey ? "no Claude key" : "no internet";
-      transcriptLine("act", `Using the offline brain (${why})`);
-    }
-    if (useClaude) {
-      $("#heard").textContent = "thinking…";
-      try { reply = await askClaude(userText); brain = "claude"; }
+    // Brain order comes from Settings. Each online brain is tried in turn; offline is last.
+    const online = status.online && navigator.onLine;
+    const order = { auto: ["gemini", "claude"], "auto-claude": ["claude", "gemini"], gemini: ["gemini"], claude: ["claude"], local: [] }[settings.brain] || ["gemini", "claude"];
+    const have = { gemini: status.geminiKeyCount > 0, claude: status.hasKey };
+    const NAMES = { gemini: "Gemini", claude: "Claude" };
+    const only = settings.brain === "gemini" || settings.brain === "claude";
+    for (const b of order) {
+      if (!have[b] || !online) continue;
+      $("#heard").textContent = `thinking (${NAMES[b]})…`;
+      try { reply = await (b === "gemini" ? askGemini : askClaude)(userText); brain = b; break; }
       catch (e) {
-        logEvent("error", { where: "claude", detail: e.message });
-        transcriptLine("act", "Claude didn't answer: " + e.message);
-        if (settings.brain === "claude") throw e;
+        logEvent("error", { where: b, detail: e.message });
+        transcriptLine("act", `${NAMES[b]} didn't answer: ${e.message}`);
+        if (only) throw e;
       }
+    }
+    if (!brain && order.length && !opts.quiet) {
+      const why = !online ? "no internet" : !order.some(b => have[b]) ? "no Gemini or Claude key" : "online brains failed";
+      transcriptLine("act", `Using the offline brain (${why})`);
     }
     if (!brain) {
       setFaceState("offline", true);
@@ -866,7 +929,9 @@ function transcriptLine(who, text) {
 $("#typeForm").onsubmit = e => { e.preventDefault(); const v = $("#typeBox").value.trim(); if (v) { $("#typeBox").value = ""; ask(v); } };
 
 function refreshChips() {
-  const brain = settings.brain === "local" ? "offline" : (status.online && status.hasKey ? "Claude" : status.local ? "offline" : "none");
+  const on = status.online, g = on && status.geminiKeyCount > 0, c = on && status.hasKey;
+  const firstOnline = { auto: g ? "Gemini" : c && "Claude", "auto-claude": c ? "Claude" : g && "Gemini", gemini: g && "Gemini", claude: c && "Claude" }[settings.brain];
+  const brain = settings.brain === "local" ? "offline" : (firstOnline || (status.local ? "offline" : "none"));
   $("#chipBrain").textContent = "brain: " + brain;
   $("#chipBrain").className = "chip " + (brain === "none" ? "bad" : "ok");
   $("#chipBody").textContent = link.connected ? "body: " + link.kind : "body: none";
@@ -884,6 +949,7 @@ function renderStatus() {
   const items = [
     ["Online brain", status.hasKey ? (status.online ? "Claude ready" : "no internet") : "no API key"],
     ["Claude key", status.keyCount ? `#${status.keyInUse} of ${status.keyCount}` : "none"],
+    ["Gemini key", status.geminiKeyCount ? `#${status.geminiKeyInUse} of ${status.geminiKeyCount}` : "none"],
     ["Cache savings", (() => { const t = cacheStats.read + cacheStats.written + cacheStats.fresh; return t ? Math.round(cacheStats.read / t * 100) + "% reused" : "—"; })()],
     ["Offline brain", status.local ? "Nessari running" : "not running"],
     ["Brain mode", settings.brain],

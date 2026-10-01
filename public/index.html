@@ -130,7 +130,13 @@
   </div>
 
   <div class="tab" id="tab-settings" hidden>
-    <label>Brain <select id="setBrain"><option value="auto">Auto (Claude, Nessari when offline)</option><option value="claude">Claude only</option><option value="local">Nessari offline only</option></select></label>
+    <label>Brain <select id="setBrain">
+      <option value="auto">Auto: Gemini, then Claude, then offline</option>
+      <option value="auto-claude">Auto: Claude, then Gemini, then offline</option>
+      <option value="gemini">Gemini only</option>
+      <option value="claude">Claude only</option>
+      <option value="local">Offline brain only</option>
+    </select></label>
     <label>Listening <select id="setListen"><option value="push">Tap the mic to talk</option><option value="always">Always listening</option></select></label>
     <label>Wake word (always-listening only, blank = answer everything) <input id="setWake" placeholder="nessari"></label>
     <label>Voice <select id="setVoice"></select></label>

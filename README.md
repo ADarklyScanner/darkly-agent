@@ -42,6 +42,11 @@ sk-ant-api03-...
 sk-ant-api03-...
 ```
 
+**Gemini:** put Gemini keys (from aistudio.google.com, they start with `AIza`) in `~/.robot-gemini-key`,
+one per line, same as Claude's. By default she tries Gemini first, then Claude, then the offline brain.
+Change the order in Settings > Brain. She picks Google's newest stable Flash model herself; to force one,
+add `"geminiModel": "name"` to `data/config.json`.
+
 **Cost:** she uses prompt caching. Her personality, tools and older chat are stored by Claude for a few
 minutes, and re-reading them costs about a tenth of the normal price. The Status tab shows how much is being reused.
 

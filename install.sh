@@ -58,6 +58,13 @@ if [ ! -s "$HOME/.robot-key" ]; then
   fi
 fi
 
+if [ ! -s "$HOME/.robot-gemini-key" ]; then
+  echo
+  echo "Optional: paste a Gemini API key (starts with AIza) to use Gemini first, or press Enter to skip:"
+  read -r GKEY || true
+  if [ -n "$GKEY" ]; then printf '%s\n' "$GKEY" > "$HOME/.robot-gemini-key"; chmod 600 "$HOME/.robot-gemini-key"; echo "Gemini key saved."; fi
+fi
+
 echo
 echo "Done. Commands:"
 echo "  robot             start her (brain + face)"

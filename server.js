@@ -47,6 +47,46 @@ function apiKeys() {
   }
   return keys;
 }
+// Gemini keys: ~/.robot-gemini-key, same format (one per line, # for labels).
+function geminiKeys() {
+  const keys = [];
+  if (process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY.trim());
+  try {
+    for (const line of fs.readFileSync(path.join(os.homedir(), ".robot-gemini-key"), "utf8").split(/\r?\n/)) {
+      const k = line.trim();
+      if (k && !k.startsWith("#") && !keys.includes(k)) keys.push(k);
+    }
+  } catch {}
+  return keys;
+}
+let activeGemini = 0;
+const GEMINI_BASE = process.env.ROBOT_GEMINI_URL || "https://generativelanguage.googleapis.com/v1beta";
+
+// Pick Google's newest stable "flash" model (fast and cheap) unless config.json names one.
+let geminiModelCache = null;
+async function geminiModel(key) {
+  const cfg = config().geminiModel;
+  if (cfg && cfg !== "auto") return cfg;
+  if (geminiModelCache) return geminiModelCache;
+  let pick = "gemini-2.5-flash";
+  try {
+    const r = await timedFetch(`${GEMINI_BASE}/models?pageSize=200&key=${encodeURIComponent(key)}`, {}, 8000);
+    const j = await r.json();
+    const names = (j.models || [])
+      .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+      .map(m => String(m.name).replace(/^models\//, ""));
+    const stable = names.map(n => [n, n.match(/^gemini-(\d+(?:\.\d+)?)-flash$/)]).filter(([, m]) => m)
+      .sort((a, b) => parseFloat(b[1][1]) - parseFloat(a[1][1]));
+    if (stable.length) pick = stable[0][0];
+    else if (names.includes("gemini-flash-latest")) pick = "gemini-flash-latest";
+  } catch {}
+  geminiModelCache = pick;
+  log({ kind: "brain", detail: "Gemini model: " + pick });
+  return pick;
+}
+const geminiKeyProblem = (status, text) =>
+  status === 401 || status === 403 || status === 429 || (status === 400 && /api key|API_KEY/i.test(text));
+
 let activeKey = 0;                 // index of the key currently in use
 const apiKey = () => apiKeys()[activeKey] || apiKeys()[0] || "";
 
@@ -174,8 +214,43 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/status") {
       const [online, local] = await Promise.all([checkOnline(), checkLocal()]);
       const keys = apiKeys();
+      const gkeys = geminiKeys();
       return send(res, 200, { online, local, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
+        geminiKeyCount: gkeys.length, geminiKeyInUse: gkeys.length ? Math.min(activeGemini, gkeys.length - 1) + 1 : 0, geminiModel: geminiModelCache,
         model: config().claudeModel, time: new Date().toISOString() });
+    }
+
+    // ---- online brain #2: Gemini (OpenAI-style chat format) ----
+    if (p === "/api/gemini" && req.method === "POST") {
+      const keys = geminiKeys();
+      if (!keys.length) return send(res, 400, { error: "No Gemini key. Put it in ~/.robot-gemini-key" });
+      const body = await readBody(req);
+      if (activeGemini >= keys.length) activeGemini = 0;
+      let r, text;
+      for (let tries = 0; tries < keys.length; tries++) {
+        const i = (activeGemini + tries) % keys.length;
+        const model = await geminiModel(keys[i]);
+        const call = extra => timedFetch(`${GEMINI_BASE}/openai/chat/completions`, {
+          method: "POST",
+          headers: { authorization: "Bearer " + keys[i], "content-type": "application/json" },
+          body: JSON.stringify({ model, max_tokens: 1500, ...body, ...extra })
+        }, 90000);
+        r = await call({ reasoning_effort: "low" });            // keep thinking short: she's talking out loud
+        text = await r.text();
+        if (r.status === 400 && /reasoning/i.test(text)) { r = await call({}); text = await r.text(); }
+        if (r.ok) {
+          if (i !== activeGemini) { log({ kind: "key", detail: `Switched to Gemini key #${i + 1}` }); activeGemini = i; }
+          break;
+        }
+        log({ kind: "error", where: "gemini", key: i + 1, status: r.status, detail: text.slice(0, 300) });
+        if (r.status === 404) geminiModelCache = null;          // model retired: pick again next time
+        if (!geminiKeyProblem(r.status, text)) break;
+      }
+      let errMsg = null;
+      if (!r.ok) { try { const j = JSON.parse(text); errMsg = (Array.isArray(j) ? j[0] : j)?.error?.message; } catch {} }
+      if (errMsg) return send(res, r.status, { error: errMsg });
+      res.writeHead(r.status, { "Content-Type": "application/json" });
+      return res.end(text);
     }
 
     // ---- every sensor + RAM/storage/CPU ----
