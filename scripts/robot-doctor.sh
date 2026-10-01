@@ -38,6 +38,15 @@ FREE=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)
 # --- Termux add-ons ---
 if timeout 6 termux-battery-status >/dev/null 2>&1; then ok "Termux:API works (sensors, flashlight, vibration)"
 else bad "Termux:API isn't answering" "Install Termux:API from F-Droid, open it once, and run: pkg install termux-api"; fi
+if command -v adb >/dev/null && adb devices 2>/dev/null | grep -q "device$"; then
+  SRC_T=$(adb shell pm list packages -i com.termux 2>/dev/null | grep "package:com.termux " | sed 's/.*installer=//')
+  SRC_A=$(adb shell pm list packages -i com.termux.api 2>/dev/null | grep "package:com.termux.api " | sed 's/.*installer=//')
+  if [ -n "$SRC_T" ] && [ -n "$SRC_A" ] && [ "$SRC_T" != "$SRC_A" ]; then
+    bad "Termux ($SRC_T) and Termux:API ($SRC_A) came from different stores" "That causes 'Error in termuxApiReceiver' popups. Uninstall Termux:API and reinstall it from the same place as Termux (F-Droid)."
+  fi
+fi
+echo "   (If 'Error in termuxApiReceiver' pops up: Settings > Apps > Termux:API > Permissions: allow everything it asks for,"
+echo "    Battery > Unrestricted, and 'Modify system settings' > Allow. Termux and Termux:API must both come from F-Droid.)"
 [ -f "$HOME/.termux/boot/start-robot" ] && ok "Starts on boot (needs the Termux:Boot app opened once)" \
   || warn "Not set to start on boot" "Run robot-update to recreate it, and install Termux:Boot from F-Droid."
 if [ -w "$HOME/storage/shared" ]; then ok "Can save photos and videos to the gallery"

@@ -17,19 +17,41 @@ const sh = (cmd, args, ms = 15000, binary = false) => new Promise(res => {
     (err, out, errOut) => res({ ok: !err, out: out || (binary ? Buffer.alloc(0) : ""), err: String(errOut || err?.message || "") }));
 });
 let serial = null;
-async function ensureAdb() {
+const FIXED = "127.0.0.1:5555";
+// Getting control of her own phone, in order of preference:
+//  1. already connected
+//  2. the fixed local port (set up below; survives Wireless debugging turning off and Wi-Fi drops, until a reboot)
+//  3. switch Wireless debugging on herself (Termux was given permission by robot-dedicate), find its port, connect,
+//     then switch the phone to the fixed local port so 2. works from then on.
+export async function ensureAdb() {
   const d = await sh("adb", ["devices"], 8000);
   if (!d.ok && /ENOENT|not found/i.test(d.err)) throw new Error("adb isn't installed. In Termux: pkg install android-tools");
   const live = d.out.split("\n").map(l => l.trim().split(/\s+/)).find(p => p[1] === "device");
   if (live) { serial = live[0]; return serial; }
-  // Wireless debugging's port changes every time it's turned on; find it automatically.
+  for (const l of d.out.split("\n")) { const [sr, st] = l.trim().split(/\s+/); if (/offline|unauthorized/.test(st || "")) await sh("adb", ["disconnect", sr], 4000); }   // stale leftovers
+  if (/connected/.test((await sh("adb", ["connect", FIXED], 6000)).out) && await ready(FIXED)) { serial = FIXED; return serial; }
+  let tls = await mdnsConnect();
+  if (!tls) {
+    await sh("settings", ["put", "global", "adb_wifi_enabled", "1"], 5000);     // works once robot-dedicate granted the permission
+    for (let i = 0; i < 6 && !tls; i++) { await new Promise(r => setTimeout(r, 1500)); tls = await mdnsConnect(); }
+  }
+  if (tls) {
+    await sh("adb", ["-s", tls, "tcpip", "5555"], 10000);                    // from now on: a fixed local port
+    for (let i = 0; i < 6; i++) {
+      await new Promise(r => setTimeout(r, 1200));
+      if (/connected/.test((await sh("adb", ["connect", FIXED], 6000)).out) && await ready(FIXED)) { serial = FIXED; return serial; }
+    }
+    serial = tls; return serial;
+  }
+  throw new Error("I can't reach my own phone controls. This is needed once after each restart: be on Wi-Fi or the hotspot, then run robot-dedicate (it pairs and gives me permission to turn Wireless debugging on myself next time).");
+}
+async function ready(s) { return /device/.test((await sh("adb", ["-s", s, "get-state"], 5000)).out); }
+async function mdnsConnect() {
   const m = await sh("adb", ["mdns", "services"], 8000);
   const hit = m.out.match(/_adb-tls-connect\._tcp\.?\s+([\d.]+:\d+)/) || m.out.match(/_adb-tls-connect[^\n]*?([\d.]+:\d+)/);
-  if (hit) {
-    const c = await sh("adb", ["connect", hit[1]], 10000);
-    if (/connected/.test(c.out)) { serial = hit[1]; return serial; }
-  }
-  throw new Error("I can't reach my own phone controls. Turn on Wireless debugging (Settings > Developer options), make sure Wi-Fi or the hotspot is on, then run robot-dedicate once to pair.");
+  if (!hit) return null;
+  const c = await sh("adb", ["connect", hit[1]], 10000);
+  return /connected/.test(c.out) && await ready(hit[1]) ? hit[1] : null;
 }
 const adb = (args, ms, binary) => sh("adb", ["-s", serial, ...args], ms, binary);
 const shell = (cmd, ms = 15000) => adb(["shell", cmd], ms);

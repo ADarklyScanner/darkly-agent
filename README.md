@@ -87,7 +87,7 @@ Android only allows sound and vibration after the first tap on the page, so tap 
 
 ## Tricks, games and the rest
 
-- **Trick Book:** 44 built-in tricks, plus any she invents and saves herself (marked ★ on the Tricks tab).
+- **Trick Book:** 47 built-in tricks, plus any she invents and saves herself (marked ★ on the Tricks tab).
   Say "do a trick" for a random one, or name one ("do the possessed thing", "fortune teller"). Ask "what tricks do you know?"
 - **Games:** Simon Says, reaction test, staring contest, red light green light, color hunt, clap-back, Twenty Questions, trivia, riddles, rock paper scissors.
 - **Claps:** clap twice and she listens; clap three times for a random trick.
@@ -97,13 +97,15 @@ Android only allows sound and vibration after the first tap on the page, so tap 
 - **Diary and achievements:** she keeps a daily diary in `data/diary` and announces milestones.
 - **Changelog:** `CHANGELOG.md`. After an update she reads it and tells you what's new.
 - **Remote control:** Settings > Remote control. Open the address it shows on another phone on the same Wi-Fi and enter the PIN.
+  **Watch live** shows her camera with sound; tap any camera button (front, back, wide...) to switch while watching.
 - **Mute:** the speaker button under Panel.
 
 ## She can use the phone
 
 Ask her to do things on the phone ("open YouTube and search for cat videos", "turn the brightness down in settings",
 "check my email"). She reads the screen, taps, types and scrolls, then comes back to her face with a summary.
-It uses Wireless debugging (pair once with `robot-dedicate`), not root. A notification with a STOP button shows while she
+It uses Wireless debugging (set up once with `robot-dedicate`), not root. After that she keeps her own connection:
+you don't need to leave Wireless debugging open, and after a restart she switches it back on herself. A notification with a STOP button shows while she
 works. She won't buy, pay, send, post or delete anything unless that's what you asked for.
 
 ## Real eyes (offline vision)
@@ -111,7 +113,14 @@ works. She won't buy, pay, send, post or delete anything unless that's what you 
 `robot-vision-download` fetches Google's open-source MediaPipe engine and two small models (about 40 MB, once).
 After that, with no internet, she tracks your face, reads smiles, surprise, frowns and blinks, takes nods and head
 shakes as yes and no, and recognizes hand signs (thumbs up/down, open palm, fist, peace, "I love you", pointing up,
-waving). Turn it off in Settings if the phone gets hot.
+waving). It runs in a background worker so her face stays smooth. Turn it off in Settings if the phone gets hot.
+
+**Living face:** `behaviors.js` combines small face pieces (gaze, blinks, per-eye squints, pupils, chewing,
+swallowing, trembling) into reactions: chewing while charging, startles that fade with repeats, glaring when
+shaken, squinting at lights, glancing away during long sentences, natural eye contact, peeking with one eye while asleep.
+
+**"Error in termuxApiReceiver" popups:** Settings > Apps > Termux:API: allow all its permissions, set Battery to
+Unrestricted, and allow "Modify system settings". Termux and Termux:API must both come from F-Droid.
 
 **Vibration spin:** stand her on a smooth, hard table, ideally without a grippy case, and ask her to spin. She buzzes
 her vibration motor and uses her gyro to stop at the right angle. How well it works depends on the surface and case.

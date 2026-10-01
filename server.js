@@ -35,6 +35,8 @@ async function readRaw(req, limit) {
 
 // ---- remote control from another phone on the same Wi-Fi (off unless config.json has "remote": true) ----
 const remote = { queue: [], state: {}, photo: null };
+// live video: offers from her page and answers from viewers, keyed by session (no trickle ICE; same Wi-Fi)
+const rtc = {};
 const isLocal = req => { const a = req.socket.remoteAddress || ""; return a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1"; };
 function lanIPs() {
   return Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === "IPv4" && !i.internal).map(i => i.address);
@@ -203,17 +205,40 @@ function cpuTemps() {
   return out.length ? Math.max(...out) : null;
 }
 
-let hwCache = { at: 0, data: null }, sensorList = null;
+let hwCache = { at: 0, data: null }, sensorList = null, hwRunning = null, sensorFails = 0, sensorPauseUntil = 0;
+// Reading EVERY sensor at once, or starting a new read while the last is still running, makes Termux:API pop up
+// "Error in termuxApiReceiver". So: only the sensors she uses, one read at a time, cleanup after, and back off on errors.
+const WANTED_SENSORS = /accelerometer|gyroscope|light|proximity|magnetic|pressure|gravity|step counter|hall/i;
+const SKIP_SENSORS = /uncalibrated|wake.?up|secondary|non.?wakeup.*non|tilt detector|pickup|motion detect|significant|stationary|interrupt|sar|grip|auto.?rotat|device.?orient|game.?rotation|geomagnetic.?rotation|\bstep detector/i;
 async function hardware(force = false) {
-  if (!force && Date.now() - hwCache.at < 4000 && hwCache.data) return hwCache.data;
+  if (!force && Date.now() - hwCache.at < 6000 && hwCache.data) return hwCache.data;
+  if (hwRunning) return hwRunning;                     // one read at a time
+  hwRunning = readHardware().finally(() => { hwRunning = null; });
+  return hwRunning;
+}
+async function readHardware() {
   if (sensorList === null) {
     const l = parseJson(await run("termux-sensor", ["-l"], 8000));
-    sensorList = l?.sensors || [];
+    const all = l?.sensors || [];
+    // one of each kind, the plain version
+    const seen = new Set();
+    sensorList = all.filter(n => WANTED_SENSORS.test(n) && !SKIP_SENSORS.test(n)).filter(n => {
+      const kind = (n.match(WANTED_SENSORS) || [""])[0].toLowerCase(); if (seen.has(kind)) return false; seen.add(kind); return true;
+    });
+    if (all.length && !sensorList.length) sensorList = all.slice(0, 4);
+    if (l) sensorList.total = all.length;
   }
+  const sensorsOk = sensorList.length && Date.now() > sensorPauseUntil;
   const [sens, batt] = await Promise.all([
-    sensorList.length ? run("termux-sensor", ["-a", "-n", "1"], 8000) : null,
+    sensorsOk ? run("termux-sensor", ["-s", sensorList.join(","), "-n", "1"], 6000) : null,
     run("termux-battery-status", [], 5000)
   ]);
+  if (sensorsOk) {
+    if (!sens || !/\{/.test(sens)) {
+      run("termux-sensor", ["-c"], 4000);             // release any listener the failed read left behind
+      if (++sensorFails >= 3) { sensorPauseUntil = Date.now() + 5 * 60000; sensorFails = 0; log({ kind: "error", where: "sensors", detail: "sensor reads keep failing; pausing them for 5 minutes" }); }
+    } else sensorFails = 0;
+  }
   // termux-sensor prints one JSON object per reading
   let readings = {};
   if (sens) { const m = sens.match(/\{[\s\S]*\}/); readings = parseJson(m?.[0]) || {}; }
@@ -221,8 +246,8 @@ async function hardware(force = false) {
   for (const [name, v] of Object.entries(readings)) simple[name] = (v.values || []).map(x => +Number(x).toFixed(2));
   const load = os.loadavg()[0];
   hwCache = { at: Date.now(), data: {
-    termuxApi: sensorList.length > 0,
-    sensorCount: sensorList.length, sensors: simple,
+    termuxApi: sensorList.length > 0 || !!batt,
+    sensorCount: sensorList.total || sensorList.length, sensors: simple, sensorsPaused: Date.now() < sensorPauseUntil,
     battery: parseJson(batt),
     memory: memInfo(), disk: diskInfo(),
     cpu: { cores: os.cpus().length, load: +load.toFixed(2), hottestC: cpuTemps() },
@@ -255,11 +280,25 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true });
       }
       if (p === "/api/remote/state") return send(res, 200, { ...remote.state, photoAt: remote.photo?.at || 0 });
+      if (p === "/api/remote/rtc" && req.method === "GET") return send(res, 200, { offer: rtc[url.searchParams.get("session")]?.offer || null });
+      if (p === "/api/remote/rtc" && req.method === "POST") {
+        const body = await readBody(req, 256 * 1024);
+        if (!/^[\w-]{8,64}$/.test(body.session || "")) return send(res, 400, { error: "bad session" });
+        rtc[body.session] = { ...(rtc[body.session] || {}), answer: body.answer, at: Date.now() };
+        return send(res, 200, { ok: true });
+      }
       if (p === "/api/remote/photo" && remote.photo) return send(res, 200, remote.photo.buf, "image/jpeg");
       return send(res, 404, { error: "Not found" });
     }
 
     // ---- remote control: the robot's own page picks up commands and reports its state ----
+    if (p === "/api/rtc/offer" && req.method === "POST") {
+      const body = await readBody(req, 256 * 1024);
+      rtc[body.session] = { offer: body.offer, at: Date.now() };
+      for (const [k, v] of Object.entries(rtc)) if (Date.now() - v.at > 10 * 60000) delete rtc[k];
+      return send(res, 200, { ok: true });
+    }
+    if (p === "/api/rtc/answer") return send(res, 200, { answer: rtc[url.searchParams.get("session")]?.answer || null });
     if (p === "/api/remote/poll") { const q = remote.queue; remote.queue = []; return send(res, 200, { commands: q }); }
     if (p === "/api/remote/report" && req.method === "POST") { remote.state = { ...(await readBody(req, 256 * 1024)), at: Date.now() }; return send(res, 200, { ok: true }); }
     if (p === "/api/remote/photo" && req.method === "PUT") { remote.photo = { buf: await readRaw(req, 8 * 1024 * 1024), at: Date.now() }; return send(res, 200, { ok: true }); }
@@ -357,7 +396,18 @@ const server = http.createServer(async (req, res) => {
       const c = cmds[what];
       if (!c) return send(res, 400, { error: "unknown: " + what });
       const out = await run(c[0], c[1], c[2]);
-      if (out === null) return send(res, 503, { error: "Termux:API not installed or permission missing" });
+      const HELP = {
+        brightness: "Android Settings > Apps > Termux:API > 'Modify system settings' > Allow",
+        location: "Android Settings > Apps > Termux:API > Permissions > Location > Allow",
+        wifiscan: "Android Settings > Apps > Termux:API > Permissions > Location > Allow (Wi-Fi scans need it)",
+        cell: "Android Settings > Apps > Termux:API > Permissions > Phone and Location > Allow",
+        notify: "Android Settings > Apps > Termux:API > Notifications > Allow",
+        torch_on: "Android Settings > Apps > Termux:API > Permissions > Camera > Allow"
+      };
+      if (out === null || /error|permission|denied/i.test(out) && !/^\s*[{[]/.test(out)) {
+        log({ kind: "error", where: "termux-api " + what, detail: (out || "no answer").trim().slice(0, 200) });
+        return send(res, 503, { error: `Termux:API couldn't do "${what}". ${HELP[what] ? "Fix: " + HELP[what] : "Check that the Termux:API app (from F-Droid) is installed."}` });
+      }
       return send(res, 200, { what, result: parseJson(out) ?? out.trim() ?? "ok" });
     }
 
@@ -449,7 +499,8 @@ const server = http.createServer(async (req, res) => {
     // ---- files ----
     if (p === "/api/files" && req.method === "GET") {
       const target = safePath(url.searchParams.get("path") || "");
-      const st = fs.statSync(target);
+      const st = fs.statSync(target, { throwIfNoEntry: false });
+      if (!st) return send(res, 404, { error: "No such file yet" });   // normal for files she hasn't made yet
       if (st.isDirectory()) {
         const items = fs.readdirSync(target, { withFileTypes: true })
           .filter(d => !d.name.startsWith("."))

@@ -92,7 +92,7 @@ function speak(text) {
       u.pitch = clamp(settings.pitch * vs.pitch + (mood === "excited" ? 0.15 : mood === "sad" ? -0.15 : 0), 0, 2);
       u.volume = vs.volume ?? 1;
       u.onboundary = e => { window.Face?.kick(); window.speakChar = e.charIndex; };   // each spoken word pulses the mouth
-      u.onstart = () => { window.speakIndex = speakingNow.indexOf(u); window.speakChar = 0; };
+      u.onstart = () => { window.speakIndex = speakingNow.indexOf(u); window.speakChar = 0; try { window.Behaviors?.onSentence(u.text, speakIndex, speakingNow.length); } catch {} };
       return u;
     });                                                  // kept in a list so Chrome can't garbage-collect them mid-sentence
     speakingNow[speakingNow.length - 1].onend = finish;
@@ -572,7 +572,12 @@ function sensorReport(full = false) {
 let camStream = null;
 async function camOn() {
   if (camStream) return camStream;
-  camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: settings.facing, width: { ideal: 1280 } }, audio: false });
+  const video = settings.cameraId ? { deviceId: { exact: settings.cameraId }, width: { ideal: 1280 } } : { facingMode: settings.facing, width: { ideal: 1280 } };
+  try { camStream = await navigator.mediaDevices.getUserMedia({ video, audio: false }); }
+  catch (e) { if (!settings.cameraId) throw e; settings.cameraId = ""; return camOn(); }   // that camera's gone: fall back
+  // which way is this camera facing? (mirroring for eye-tracking depends on it)
+  const f = camStream.getVideoTracks()[0]?.getSettings?.().facingMode;
+  if (f === "user" || f === "environment") settings.facing = f;
   $("#cam").srcObject = camStream; await $("#cam").play().catch(() => {});
   $("#btnCam").textContent = "Camera off";
   return camStream;
@@ -646,7 +651,10 @@ const TOOLS = [
 ];
 
 async function runTool(name, input) {
-  const out = await runToolInner(name, input);
+  // her "thinking" look matches what she's doing: looking at something, or digging through memory
+  const style = /^(see_|what_color|take_photo|look|scan_code|read_phone_screen)/.test(name) ? "visual" : /^(recall|recent_events|read_|list_notes)/.test(name) ? "memory" : null;
+  if (style) window.Face?.thinkStyle(style);
+  const out = await runToolInner(name, input).finally(() => { if (style) window.Face?.thinkStyle("online"); });
   try { window.Mind?.onAction(name, input, Array.isArray(out) ? "(photo)" : out); } catch {}
   return out;
 }
@@ -808,6 +816,7 @@ async function loadConversation() {
   }
   $("#transcript").innerHTML = "";
   for (const m of history.slice(-30)) transcriptLine(m.auto ? "act" : m.role === "user" ? "me" : "bot", m.content);
+  scrollChat();
 }
 // Called after the personality changes: if it's now someone else, swap conversations.
 async function switchConversationIfNeeded() {
@@ -1041,6 +1050,7 @@ async function ask(userText, opts = {}) {
       try { reply = await (b === "gemini" ? askGemini : askClaude)(userText); brain = b; break; }
       catch (e) {
         logEvent("error", { where: b, detail: e.message });
+        window.Behaviors?.netFail();
         transcriptLine("act", `${NAMES[b]} didn't answer: ${e.message}`);
         if (only) throw e;
       }
@@ -1050,7 +1060,7 @@ async function ask(userText, opts = {}) {
       transcriptLine("act", `Using the offline brain (${why})`);
     }
     if (!brain) {
-      setFaceState("offline", true);
+      setFaceState("offline", true); window.Face?.thinkStyle("local");
       $("#heard").textContent = "thinking with the offline brain…";
       reply = await askLocal(userText); brain = "nessari-offline";
     } else setFaceState("offline", false);
@@ -1521,12 +1531,17 @@ function showTab(name) {
   if (name === "tricks") renderTricks();
   if (name === "settings") renderRemoteInfo();
   if (name === "sensors") $("#sensorDump").textContent = sensorReport(true);
+  if (name === "talk") scrollChat();
 }
+// newest message at the bottom, always (also after opening the tab: a hidden list can't scroll)
+function scrollChat() { const t = $("#transcript"); requestAnimationFrame(() => { t.scrollTop = t.scrollHeight; }); }
 
 function transcriptLine(who, text) {
   const d = document.createElement("div"); d.className = "line " + who; d.textContent = text;
-  const t = $("#transcript"); t.append(d); while (t.children.length > 200) t.firstChild.remove();
-  d.scrollIntoView({ block: "end" });
+  const t = $("#transcript");
+  const nearBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 120;     // don't yank you down if you scrolled up to read
+  t.append(d); while (t.children.length > 200) t.firstChild.remove();
+  if (nearBottom || who === "me" || t.offsetParent === null) t.scrollTop = t.scrollHeight;
 }
 $("#typeForm").onsubmit = e => { e.preventDefault(); const v = $("#typeBox").value.trim(); if (v) { $("#typeBox").value = ""; ask(v); } };
 
@@ -1725,6 +1740,49 @@ if (!isApp) window.addEventListener("pointerdown", function fs(e) {
   window.removeEventListener("pointerdown", fs);
 });
 
+/* ================= live video to other phones (WebRTC) ================= */
+const lives = {};                                    // session → RTCPeerConnection
+async function listCameras() {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+    return devs.map((d, i) => ({ id: d.deviceId, label: d.label || `camera ${i + 1}` }));
+  } catch { return []; }
+}
+// Switch which camera she uses (her eyes, photos and any live video follow along).
+async function switchCamera(deviceId) {
+  settings.cameraId = deviceId || ""; saveSettings();
+  camOff(); await camOn();
+  const track = camStream.getVideoTracks()[0];
+  for (const pc of Object.values(lives)) pc.getSenders().find(s => s.track?.kind === "video")?.replaceTrack(track);
+  return track?.label || "camera";
+}
+async function startLive(session, { audio = true } = {}) {
+  if (!/^[\w-]{8,64}$/.test(session || "")) return;
+  if (Object.keys(lives).length >= 3) { const old = Object.keys(lives)[0]; lives[old].close(); delete lives[old]; }
+  await camOn();
+  const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  lives[session] = pc;
+  pc.addTrack(camStream.getVideoTracks()[0], camStream);
+  if (audio) {
+    try { const mic = await navigator.mediaDevices.getUserMedia({ audio: true }); mic.getAudioTracks().forEach(t => pc.addTrack(t, mic)); pc._mic = mic; } catch {}
+  }
+  const end = () => { pc._mic?.getTracks().forEach(t => t.stop()); delete lives[session]; };
+  pc.onconnectionstatechange = () => {
+    if (["failed", "closed", "disconnected"].includes(pc.connectionState)) { setTimeout(() => { if (pc.connectionState !== "connected") { pc.close(); end(); } }, 5000); }
+    if (pc.connectionState === "connected") { transcriptLine("act", "Someone is watching live through my camera"); window.Mind?.event("live_video", "someone started watching your camera live from another phone", { source: "FELT", salience: 0.4 }); }
+  };
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise(r => { if (pc.iceGatheringState === "complete") return r(); pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && r(); setTimeout(r, 3000); });
+  await api("/api/rtc/offer", { method: "POST", body: JSON.stringify({ session, offer: pc.localDescription }) });
+  for (let i = 0; i < 120 && lives[session]; i++) {               // wait up to a minute for the viewer's answer
+    const { answer } = await api("/api/rtc/answer?session=" + session).catch(() => ({}));
+    if (answer) { await pc.setRemoteDescription(answer); return; }
+    await sleep(500);
+  }
+  pc.close(); end();
+}
+function stopLive(session) { const pc = lives[session]; if (pc) { pc.close(); pc._mic?.getTracks().forEach(t => t.stop()); delete lives[session]; } }
+
 /* ================= remote control (another phone) ================= */
 async function remoteTick() {
   if (!status.remote) return;
@@ -1746,11 +1804,15 @@ async function remoteTick() {
       else if (c.cmd === "photo") { const data = await snapshot(); await fetch("/api/remote/photo", { method: "PUT", body: await (await fetch("data:image/jpeg;base64," + data)).blob() }); }
       else if (c.cmd === "save_photo") transcriptLine("act", await takePhoto("remote"));
       else if (c.cmd === "stop") stopAll("remote");
+      else if (c.cmd === "rtc_start") startLive(c.arg?.session, { audio: c.arg?.audio !== false }).catch(e => logEvent("error", { where: "live video", detail: e.message }));
+      else if (c.cmd === "rtc_stop") stopLive(c.arg?.session);
+      else if (c.cmd === "camera") transcriptLine("act", "Switched to " + await switchCamera(c.arg));
     } catch (e) { logEvent("error", { where: "remote", detail: e.message }); }
   }
   api("/api/remote/report", { method: "POST", body: JSON.stringify({
     mood, said: $("#said").textContent.slice(0, 300), battery: battery ? Math.round(battery.level * 100) : null, charging: battery?.charging,
     brain: $("#chipBrain").textContent, body: $("#chipBody").textContent, busy,
+    cameras: await listCameras(), cameraId: settings.cameraId || camStream?.getVideoTracks()[0]?.getSettings?.().deviceId || "", watching: Object.keys(lives).length,
     lists: { tricks: Tricks.list(), sfx: Abilities.sfxList, songs: Abilities.songList, effects: Face.effects, gestures: Face.gestures, moods: MOOD_NAMES, voices: Object.keys(VOICE_STYLES) }
   }) }).catch(() => {});
 }

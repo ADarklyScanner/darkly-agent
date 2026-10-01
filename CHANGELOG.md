@@ -2,6 +2,24 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-01 · v0.14 · Live video, smoother eyes, a living face
+- Phone controls stay connected: after the first setup she switches to a fixed local port, so you don't have to keep Wireless debugging open. After a restart she turns Wireless debugging back on by herself and reconnects. Run robot-dedicate once more to give her that permission.
+- Live video: the remote page has "Watch live" with sound, and a button for every camera the phone has (front, back, wide, zoom). Switch cameras while watching. Up to 3 people at once, same Wi-Fi.
+- Her vision and hearing now run in a background worker, separate from her face, so the face and touch stay smooth while she looks and listens. If a phone can't do that, they quietly run the old way.
+- Face behaviors built from small pieces (gaze, blink, squint each eye, pupils, freeze, eye darting, drifting, chewing, swallowing, trembling, puffs) and combined by what she senses:
+  - Charging: she looks down at the cable and politely chews. She chews faster when nearly empty and slower as she fills up, swallows now and then, burps at 100% and looks full. Fiddling with the cable annoys her. When her battery is low she glances down hungrily, with sleepy half-blinks.
+  - Startles: she freezes, hard-blinks, snaps her eyes to the source (overshooting a bit), checks around, then relaxes slowly. Repeats matter less, a much louder one renews the reaction, and right after one she's jumpy.
+  - Shaking: rapid blinks, then a glare, then real anger if you keep doing it. Falling: eyes shut, then wide, then she looks around.
+  - Lights: lights coming on make her squint; in the dark her pupils widen.
+  - Moods: alert means quick darting eyes, concentrating means steady ones. Listening makes her settle, and her eyes slowly drift when she's bored. Boredom fidgets include looking at the ceiling or floor, one eye drooping, playing with her pupils, and the odd eye-roll, never the same one twice in a row.
+  - Talking: blinks between phrases, glances away during long explanations, eyes narrow on sarcasm, widen on exclamations, and she nods when she's done.
+  - Thinking: a different look for an online answer, the offline brain, looking at something, and remembering. She gets impatient if it takes ages, does an "aha" when the answer lands, and looks annoyed when the internet fails.
+  - People: she holds eye contact, then breaks it naturally. Your smile reaches her eyes. She keeps looking where you left. A quick nod if you were gone a minute, a big hello if it's been hours.
+  - Objects: she inspects new objects (object, then you, then the object again) and gives familiar ones only a glance.
+  - Asleep: something moving makes her peek with one eye, then she dozes off again. She wakes with heavy lids.
+- Fixed "Error in termuxApiReceiver" popups: she now reads only the sensors she uses, one read at a time, and backs off if reads fail. If a phone ability needs an Android permission, she says which one.
+- The chat opens on your newest messages and stays scrolled to the bottom (unless you've scrolled up to read).
+
 ## 2026-10-01 · v0.13 · Hands on the phone, more senses
 - She can drive the phone she lives on: open apps, read the screen, tap, scroll, type and press buttons, step by step until the job's done, then come back to her face and tell you what happened. Ask her things like "open YouTube and find cat videos" or "turn on dark mode". Uses Wireless debugging (paired by robot-dedicate), not root, and reconnects by itself when the port changes.
 - Guardrails: only when you ask, max 25 steps / 4 minutes, STOP (or the STOP button in the notification) cancels, and she refuses to tap anything that buys, pays, sends, posts or deletes unless your request asked for it.

@@ -15,6 +15,8 @@
   .row{display:flex;gap:8px;margin:6px 0} .row>*{flex:1} .grid{display:flex;flex-wrap:wrap;gap:6px} .grid button{font-size:.85rem}
   #state{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:.9rem;white-space:pre-wrap}
   #photo{width:100%;border-radius:10px;margin-top:8px;display:none}
+  #live{width:100%;border-radius:10px;background:#000;display:none;max-height:60vh}
+  .muted{color:var(--muted);font-size:.85rem} .grid button.on{border-color:var(--glow);color:var(--glow)}
   #stop{position:fixed;bottom:14px;right:14px;width:72px;height:72px;border-radius:50%;background:#b3122b;border:3px solid #ff8193;font-weight:800}
   #login{max-width:340px;margin:20vh auto;text-align:center}
 </style>
@@ -32,8 +34,13 @@
   <h3>Make her talk</h3>
   <div class="row"><input id="text" placeholder="Words"></div>
   <div class="row"><button id="say">Say exactly this</button><button id="ask">Ask her this</button></div>
-  <h3>Camera</h3>
-  <div class="row"><button id="peek">See through her eyes</button><button id="snap">Save photo on her phone</button></div>
+  <h3>Live video</h3>
+  <video id="live" playsinline autoplay muted></video>
+  <div class="row"><button id="liveGo">▶ Watch live</button><button id="liveStop">■ Stop</button><button id="liveSound">🔇 Sound off</button></div>
+  <div class="grid" id="cams"></div>
+  <p id="liveInfo" class="muted"></p>
+  <h3>Snapshot</h3>
+  <div class="row"><button id="peek">Quick snapshot</button><button id="snap">Save photo on her phone</button></div>
   <img id="photo" alt="her camera">
   <h3>Tricks</h3><div class="grid" id="tricks"></div>
   <h3>Moods</h3><div class="grid" id="moods"></div>
@@ -55,6 +62,7 @@ async function poll() {
   const s = await r.json();
   $("#state").textContent = s.at ? `Mood: ${s.mood}   Battery: ${s.battery ?? "?"}%${s.charging ? " ⚡" : ""}\n${s.brain} · ${s.body}${s.busy ? " · thinking…" : ""}\nLast said: ${s.said || "—"}` : "Waiting for her (is her face open?)";
   if (s.lists && !lists) { lists = s.lists; build(); }
+  renderCams(s.cameras || [], s.cameraId);
   if (s.photoAt && s.photoAt !== lastPhoto) { lastPhoto = s.photoAt; $("#photo").src = "/api/remote/photo?pin=" + pin + "&t=" + lastPhoto; $("#photo").style.display = "block"; }
 }
 function grid(id, items, cmd) {
@@ -75,6 +83,42 @@ $("#go").onclick = async () => {
 };
 $("#say").onclick = () => { send("say", $("#text").value); $("#text").value = ""; };
 $("#ask").onclick = () => { send("ask", $("#text").value); $("#text").value = ""; };
+// ---- live video (WebRTC, straight from her phone to this one) ----
+let pc = null, session = null, camKey = "";
+function renderCams(cams, current) {
+  const key = JSON.stringify(cams) + current; if (key === camKey) return; camKey = key;
+  $("#cams").innerHTML = "";
+  for (const c of cams) {
+    const b = document.createElement("button"); b.textContent = "📷 " + c.label.replace(/camera2 /, "camera ").slice(0, 40);
+    if (c.id === current) b.classList.add("on");
+    b.onclick = () => { send("camera", c.id); $("#liveInfo").textContent = "Switching camera…";
+      setTimeout(() => { if ($("#liveInfo").textContent === "Switching camera…") $("#liveInfo").textContent = pc?.connectionState === "connected" ? "Live." : ""; }, 2500); };
+    $("#cams").append(b);
+  }
+}
+$("#liveGo").onclick = async () => {
+  if (pc) pc.close();
+  session = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  $("#liveInfo").textContent = "Connecting…";
+  await send("rtc_start", { session, audio: true });
+  let offer = null;
+  for (let i = 0; i < 60 && !offer; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    offer = (await (await fetch("/api/remote/rtc?session=" + session, { headers: { "x-pin": pin } })).json()).offer;
+  }
+  if (!offer) { $("#liveInfo").textContent = "She didn't answer. Is her face open on her phone?"; return; }
+  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  // video and sound arrive as separate streams: put both tracks into one so neither replaces the other
+  const both = new MediaStream();
+  pc.ontrack = e => { both.addTrack(e.track); const v = $("#live"); if (v.srcObject !== both) v.srcObject = both; v.style.display = "block"; v.play().catch(() => {}); };
+  pc.onconnectionstatechange = () => { $("#liveInfo").textContent = { connected: "Live.", disconnected: "Connection dropped…", failed: "Couldn't connect (are both phones on the same Wi-Fi?)" }[pc.connectionState] || ""; };
+  await pc.setRemoteDescription(offer);
+  await pc.setLocalDescription(await pc.createAnswer());
+  await new Promise(r => { if (pc.iceGatheringState === "complete") return r(); pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && r(); setTimeout(r, 3000); });
+  await fetch("/api/remote/rtc", { method: "POST", headers: { "content-type": "application/json", "x-pin": pin }, body: JSON.stringify({ session, answer: pc.localDescription }) });
+};
+$("#liveStop").onclick = () => { if (pc) { pc.close(); pc = null; send("rtc_stop", { session }); } $("#live").style.display = "none"; $("#liveInfo").textContent = ""; };
+$("#liveSound").onclick = () => { const v = $("#live"); v.muted = !v.muted; $("#liveSound").textContent = v.muted ? "🔇 Sound off" : "🔊 Sound on"; };
 $("#peek").onclick = () => send("photo");
 $("#snap").onclick = () => send("save_photo");
 $("#stop").onclick = () => send("stop");

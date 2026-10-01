@@ -37,6 +37,12 @@ EOF
 fi
 A() { adb shell "$@" 2>/dev/null; }
 
+echo "== Letting her reconnect to her own phone controls by herself =="
+# Termux may switch Wireless debugging on (after a restart) without you going into Settings
+A pm grant com.termux android.permission.WRITE_SECURE_SETTINGS && echo "  ok: she can turn Wireless debugging on herself"
+# and a fixed local port that keeps working after Wireless debugging switches off or Wi-Fi drops (until a restart)
+adb tcpip 5555 >/dev/null 2>&1; sleep 2; adb connect 127.0.0.1:5555 >/dev/null 2>&1 && echo "  ok: fixed local control port is on"
+
 echo "== Stopping Android from killing her brain =="
 A device_config set_sync_disabled_for_tests persistent
 A device_config put activity_manager max_phantom_processes 2147483647

@@ -51,6 +51,11 @@ else
   echo "No offline brain (need llama-server and a .gguf in ~/models). Claude-only for now."
 fi
 
+# ---------- phone controls: reconnect quietly in the background (see phone.js) ----------
+( adb connect 127.0.0.1:5555 >/dev/null 2>&1 || { settings put global adb_wifi_enabled 1 >/dev/null 2>&1; sleep 5;
+    P=$(adb mdns services 2>/dev/null | grep -o '[0-9.]*:[0-9]*' | head -1); [ -n "$P" ] && adb connect "$P" >/dev/null 2>&1 \
+    && adb -s "$P" tcpip 5555 >/dev/null 2>&1 && sleep 2 && adb connect 127.0.0.1:5555 >/dev/null 2>&1; } ) &
+
 # ---------- server + face ----------
 rm -f "$DIR/data/.stopping"
 if pgrep -f "node $DIR/server.js" >/dev/null; then

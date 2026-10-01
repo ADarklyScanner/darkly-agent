@@ -13,49 +13,97 @@ const now = () => performance.now();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const BASE = "./vendor/mediapipe/";
 
-let faceTask = null, handTask = null, objTask = null, poseTask = null, embedTask = null, audioTask = null, tick = 0, lastVideoTime = -1;
+// The models run in a background worker (perception-worker.js) so the face never stutters while she looks.
+// If workers can't run the engine on this phone, the same code runs on the page instead.
+let engine = null, tick = 0, lastVideoTime = -1, inFlight = false;
 let slowMs = 0;                                   // how long a frame of perception takes; extras back off when the phone is busy
-async function init() {
-  let mp;
-  try { mp = await import(BASE + "vision_bundle.mjs"); }
-  catch { V.error = "not downloaded (run robot-vision-download)"; return; }
-  try {
-    const files = await mp.FilesetResolver.forVisionTasks(BASE + "wasm");
-    const make = async (Cls, model, opts) => {
-      for (const delegate of ["GPU", "CPU"]) {
-        try { return await Cls.createFromOptions(files, { baseOptions: { modelAssetPath: BASE + model, delegate }, runningMode: "VIDEO", ...opts }); }
-        catch (e) { if (delegate === "CPU") throw e; }
-      }
+
+function workerEngine() {
+  return new Promise((resolve, reject) => {
+    const w = new Worker("./perception-worker.js", { type: "module" });
+    const pending = new Map(); let seq = 0, ready = false;
+    const eng = { mode: "worker", have: {}, audio: false, dead: false,
+      call(msg, transfer, ms = 4000) {
+        const id = ++seq; msg.id = id;
+        return new Promise((res, rej) => {
+          const t = setTimeout(() => { pending.delete(id); rej(new Error("worker timeout")); }, ms);
+          pending.set(id, d => { clearTimeout(t); res(d); });
+          w.postMessage(msg, transfer);
+        });
+      },
+      async frame(v, ts, want) {
+        const bitmap = await createImageBitmap(v, { resizeWidth: Math.min(480, v.videoWidth || 480), resizeQuality: "low" });
+        const d = await this.call({ type: "frame", bitmap, ts, want }, [bitmap]);
+        if (d.error) throw new Error(d.error);
+        return d;
+      },
+      async sound(data, rate) { return (await this.call({ type: "audio", data, rate }, [data.buffer], 3000)).cats; }
     };
-    faceTask = await make(mp.FaceLandmarker, "face_landmarker.task", { numFaces: 4, outputFaceBlendshapes: true });
-    handTask = await make(mp.GestureRecognizer, "gesture_recognizer.task", { numHands: 2 }).catch(() => null);
-    objTask = await make(mp.ObjectDetector, "efficientdet_lite0.tflite", { scoreThreshold: 0.45, maxResults: 8 }).catch(() => null);
-    poseTask = await make(mp.PoseLandmarker, "pose_landmarker_lite.task", { numPoses: 1 }).catch(() => null);
-    try { embedTask = await mp.ImageEmbedder.createFromOptions(files, { baseOptions: { modelAssetPath: BASE + "mobilenet_v3_small.tflite" }, runningMode: "IMAGE", quantize: true }); } catch {}
-    initAudio();
-    V.available = true;
-    logEvent("vision", { detail: "vision engine ready" + (handTask ? "" : " (no hand gestures)") });
-    setInterval(loop, 110);
-  } catch (e) { V.error = e.message; logEvent("error", { where: "vision", detail: e.message }); }
+    const fail = e => { eng.dead = true; w.terminate(); for (const f of pending.values()) f({ error: "worker died" }); pending.clear(); if (!ready) reject(e); else V.emit("engine-died", e); };
+    const timer = setTimeout(() => fail(new Error("worker took too long to start")), 60000);
+    w.onerror = e => { e.preventDefault?.(); fail(new Error(e.message || "worker error")); };
+    w.onmessage = ({ data: d }) => {
+      if (d.type === "ready") { ready = true; clearTimeout(timer); eng.have = d.have; resolve(eng); }
+      else if (d.type === "audio-ready") eng.audio = true;
+      else if (d.type === "error") { if (d.where === "vision") { clearTimeout(timer); fail(new Error(d.error)); } else eng.audioError = d.error; }
+      else if (d.id && pending.has(d.id)) { const f = pending.get(d.id); pending.delete(d.id); f(d); }
+    };
+    w.postMessage({ type: "init" });
+  });
 }
+
+async function pageEngine() {
+  const C = await import("./perception-common.js");
+  const t = await C.makeVisionTasks(false);
+  const eng = { mode: "page", have: Object.fromEntries(Object.entries(t).map(([k, v]) => [k, !!v])), audio: false,
+    async frame(v, ts, want) { const t0 = now(); const res = C.detect(t, v, ts, want, v.videoWidth || 640, v.videoHeight || 480); return { res, ms: now() - t0 }; },
+    async sound(data, rate) { return C.classify(eng.audioTask, data, rate); }
+  };
+  try { eng.audioTask = await C.makeAudioTask(false); eng.audio = true; } catch {}
+  return eng;
+}
+
+async function init() {
+  if (settings.perceptionWorker !== false && window.Worker && window.createImageBitmap) {
+    try { engine = await workerEngine(); }
+    catch (e) { logEvent("error", { where: "vision-worker", detail: e.message + " (running vision on the page instead)" }); }
+  }
+  if (!engine) {
+    try { engine = await pageEngine(); }
+    catch (e) { V.error = /import|fetch|Failed|404/i.test(e.message) ? "not downloaded (run robot-vision-download)" : e.message; return; }
+  }
+  V.available = true; V.engine = engine.mode;
+  logEvent("vision", { detail: `vision engine ready (${engine.mode === "worker" ? "background worker" : "on the page"})` + (engine.have.hand ? "" : " (no hand gestures)") });
+  V.on("engine-died", async e => {                       // the worker crashed mid-run: carry on without it
+    logEvent("error", { where: "vision-worker", detail: "worker stopped: " + e.message + "; switching to the page" });
+    engine = null; try { engine = await pageEngine(); V.engine = "page"; } catch { V.available = false; }
+  });
+  setInterval(loop, 110);
+  initAudio();
+}
+const hasTask = k => !!engine?.have?.[k];
+V.engineInfo = () => engine ? { mode: engine.mode, have: engine.have, hearing: !!engine.audio, frameMs: V.frameMs } : { mode: "none", error: V.error };
 
 function video() { const v = window.trackVid; return v && v.readyState >= 2 ? v : null; }
 
-function loop() {
-  if (!settings.vision || document.hidden) return;
+async function loop() {
+  if (!engine || inFlight || !settings.vision || document.hidden) return;
   const v = video(); if (!v || v.currentTime === lastVideoTime) return;
-  lastVideoTime = v.currentTime;
-  const ts = now();
+  lastVideoTime = v.currentTime; tick++;
+  const busyPhone = slowMs > 70;                          // the phone is struggling: run the extras less often
+  const want = { face: true, hand: tick % 2 === 0, pose: tick % (busyPhone ? 9 : 3) === 1,
+    obj: tick % (busyPhone ? 30 : 12) === 5, embed: tick % 120 === 60 };
+  inFlight = true;
   try {
-    const t0 = now(); tick++;
-    if (faceTask) onFaces(faceTask.detectForVideo(v, ts));
-    if (handTask && tick % 2 === 0) onHands(handTask.detectForVideo(v, ts + 1));
-    const busyPhone = slowMs > 70;                          // the phone is struggling: run the extras less often
-    if (poseTask && tick % (busyPhone ? 9 : 3) === 1) onPose(poseTask.detectForVideo(v, ts + 2));
-    if (objTask && tick % (busyPhone ? 30 : 12) === 5) onObjects(objTask.detectForVideo(v, ts + 3));
-    if (embedTask && tick % 120 === 60) onScene(v);
-    slowMs = slowMs * 0.9 + (now() - t0) * 0.1;
+    const { res, ms } = await engine.frame(v, now(), want);
+    slowMs = slowMs * 0.9 + ms * 0.1; V.frameMs = Math.round(slowMs);
+    if (res.face) onFaces(res.face);
+    if (res.hand) onHands(res.hand);
+    if (res.pose) onPose(res.pose);
+    if (res.obj) onObjects(res.obj);
+    if (res.embed) onScene(res.embed);
   } catch (e) { /* a dropped frame is fine */ }
+  finally { inFlight = false; }
 }
 
 // ---------------- faces ----------------
@@ -190,7 +238,7 @@ V.on("gesture", g => {
 // ---------------- games and tools that need real eyes ----------------
 let rpsWaiting = false;
 async function rockPaperScissors() {
-  if (!V.available || !handTask) return "FAILED: hand recognition isn't available (run robot-vision-download).";
+  if (!V.available || !hasTask("hand")) return "FAILED: hand recognition isn't available (run robot-vision-download).";
   await speak("Rock, paper, scissors. Show me your hand on shoot.");
   for (const w of ["Rock.", "Paper.", "Scissors.", "Shoot!"]) { Abilities.sfx(w === "Shoot!" ? "boop" : "beep"); await speak(w); }
   rpsWaiting = true;
@@ -214,8 +262,8 @@ function onObjects(r) {
   for (const d of r.detections || []) {
     const c = d.categories?.[0]; if (!c) continue;
     const label = c.categoryName; if (label === "person") continue;
-    const b = d.boundingBox, w = video()?.videoWidth || 640;
-    const x = mirrorX((b.originX + b.width / 2) / w), size = b.width / w;
+    const b = d.box;                                       // 0..1 fractions of the picture
+    const x = mirrorX(b.x + b.w / 2), size = b.w;
     here.add(label);
     const o = objSeen[label] ||= { firstAt: now(), lastAt: 0, hits: 0, where: "", announced: false };
     o.hits++; o.lastAt = now(); o.where = `${sideOf(x)}${size > 0.4 ? ", close" : ""}`; o.x = x; o.size = size;
@@ -223,6 +271,7 @@ function onObjects(r) {
       const w0 = window.Mind?.world?.().things?.[label];
       const familiar = (w0?.seen || 0) > 2;
       window.Mind?.event("object_seen", `${label} ${o.where}`, { source: "SAW", conf: c.score, salience: familiar ? 0.25 : 0.5 });
+      V.emit("object", { label, x, y: (b.y + b.h / 2) * 2 - 1, size, familiar });
       if (!familiar && !o.announced && window.Mind) {       // something new: curiosity (habituates, so #37 doesn't get question #37)
         o.announced = true; Mind.S.curiosity = Math.min(1, Mind.S.curiosity + 0.15);
         Mind.perceive("object-" + label, `you noticed a ${label} ${o.where} (you don't know this one well yet)`, { base: 0.45, recoverMin: 30 });
@@ -270,12 +319,10 @@ function onPose(r) {
 
 // ---------------- scene memory: has she been here before? ----------------
 let scenes = null;
-async function onScene(v) {
+async function onScene(vec) {
   try {
     if (!scenes) { try { scenes = JSON.parse(await readFile("scenes.json")); } catch { scenes = []; } }
-    const e = embedTask.embed(v).embeddings?.[0]; if (!e) return;
-    const vec = Array.from(e.floatEmbedding || e.quantizedEmbedding || []);
-    if (!vec.length) return;
+    if (!vec?.length) return;
     const cos = (a, b) => { let d = 0, na = 0, nb = 0; for (let i = 0; i < a.length; i++) { d += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; } return d / (Math.sqrt(na * nb) || 1); };
     let best = -1, bi = -1; scenes.forEach((s, i) => { const c = cos(vec, s.v); if (c > best) { best = c; bi = i; } });
     if (best > 0.82) { scenes[bi].seen++; scenes[bi].t = Date.now(); if (V.place !== bi) { V.place = bi; } }
@@ -299,32 +346,35 @@ const SOUND_EVENTS = [
   [/microwave|blender|vacuum|hair dryer/i, "an appliance is running", 0.25], [/thunder/i, "thunder", 0.6], [/explosion|gunshot|bang/i, "a very loud bang", 0.9]
 ];
 async function initAudio() {
-  try {
-    const am = await import("./vendor/mediapipe-audio/audio_bundle.mjs");
-    const files = await am.FilesetResolver.forAudioTasks("./vendor/mediapipe-audio/wasm");
-    audioTask = await am.AudioClassifier.createFromOptions(files, { baseOptions: { modelAssetPath: "./vendor/mediapipe-audio/yamnet.tflite" }, maxResults: 4, scoreThreshold: 0.25 });
-    V.hearing = true;
-    let lastSound = "", soundRun = 0, musicSince = 0;
-    setInterval(() => {
-      if (!settings.ears || document.hidden) return;
-      const s = Tricks.earsSamples?.(); if (!s) return;
-      let res; try { res = audioTask.classify(s.data, s.rate); } catch { return; }
-      const cats = (res?.[0]?.classifications?.[0]?.categories || []).filter(c => c.score > 0.3);
-      V.sounds = cats.map(c => c.categoryName);
-      for (const c of cats) {
-        const hit = SOUND_EVENTS.find(([re]) => re.test(c.categoryName)); if (!hit) continue;
-        const [, what, base] = hit;
-        soundRun = what === lastSound ? soundRun + 1 : 1; lastSound = what;
-        if (/music/.test(what)) { if (!musicSince) musicSince = now(); if (now() - musicSince > 4000 && settings.react) Face.effect("dance", 3); }
-        if (/sneezed/.test(what)) Face.gesture("startle");
-        if (/laughed/.test(what) && window.Mind) Mind.S.amusement = Math.min(1, Mind.S.amusement + 0.15);
-        if (/snoring/.test(what)) window.Mind?.event("sound", "snoring nearby (he's asleep?)", { source: "HEARD", salience: 0.3 });
-        else if (soundRun <= 2) react("sound-" + what, what + ` (you heard it: "${c.categoryName}", ${Math.round(c.score * 100)}% sure)`, 2);
-        break;
-      }
-      if (!V.sounds.some(n => /music|instrument|guitar|piano|drum/i.test(n))) musicSince = 0;
-    }, 1000);
-  } catch { V.hearing = false; }
+  // the worker loads hearing after vision; give it a moment, then fall back to the page if it couldn't
+  for (let i = 0; i < 40 && engine?.mode === "worker" && !engine.audio && !engine.audioError; i++) await new Promise(r => setTimeout(r, 500));
+  if (!engine?.audio) {
+    try { const C = await import("./perception-common.js"); const task = await C.makeAudioTask(false); engine.sound = async (d, r) => C.classify(task, d, r); engine.audio = true; }
+    catch { V.hearing = false; return; }
+  }
+  V.hearing = true;
+  let lastSound = "", soundRun = 0, musicSince = 0, soundBusy = false;
+  setInterval(async () => {
+    if (soundBusy || !engine?.audio || !settings.ears || document.hidden) return;
+    const s = Tricks.earsSamples?.(); if (!s) return;
+    soundBusy = true;
+    let all; try { all = await engine.sound(s.data, s.rate); } catch { return; } finally { soundBusy = false; }
+    const cats = (all || []).filter(c => c.score > 0.3);
+    V.sounds = cats.map(c => c.categoryName);
+    for (const c of cats) {
+      const hit = SOUND_EVENTS.find(([re]) => re.test(c.categoryName)); if (!hit) continue;
+      const [, what, base] = hit;
+      soundRun = what === lastSound ? soundRun + 1 : 1; lastSound = what;
+      V.emit("sound", { what, name: c.categoryName, score: c.score, base, run: soundRun });
+      if (/music/.test(what)) { if (!musicSince) musicSince = now(); if (now() - musicSince > 4000 && settings.react) Face.effect("dance", 3); }
+      if (/sneezed/.test(what)) Face.gesture("startle");
+      if (/laughed/.test(what) && window.Mind) Mind.S.amusement = Math.min(1, Mind.S.amusement + 0.15);
+      if (/snoring/.test(what)) window.Mind?.event("sound", "snoring nearby (he's asleep?)", { source: "HEARD", salience: 0.3 });
+      else if (soundRun <= 2) react("sound-" + what, what + ` (you heard it: "${c.categoryName}", ${Math.round(c.score * 100)}% sure)`, 2);
+      break;
+    }
+    if (!V.sounds.some(n => /music|instrument|guitar|piano|drum/i.test(n))) musicSince = 0;
+  }, 1000);
 }
 
 function describe() {
@@ -337,8 +387,8 @@ function describe() {
 }
 
 V.run = async (name, input) => {
-  if (name === "see_people") return describe() + (objTask ? " Objects: " + objectsNow() : "") + (V.sounds?.length ? ` Hearing: ${V.sounds.join(", ")}.` : "");
-  if (name === "see_objects") return objTask ? objectsNow() : "FAILED: object recognition isn't downloaded (robot-vision-download).";
+  if (name === "see_people") return describe() + (hasTask("obj") ? " Objects: " + objectsNow() : "") + (V.sounds?.length ? ` Hearing: ${V.sounds.join(", ")}.` : "");
+  if (name === "see_objects") return hasTask("obj") ? objectsNow() : "FAILED: object recognition isn't downloaded (robot-vision-download).";
   if (name === "mirror_mode") { V.mirror = !!input.on; if (!V.mirror) setMood("calm"); return V.mirror ? "Mirroring his expressions." : "Stopped mirroring."; }
   if (name === "rock_paper_scissors") return await rockPaperScissors();
 };

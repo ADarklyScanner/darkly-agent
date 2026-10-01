@@ -46,6 +46,17 @@
   let eyeScale = 1, noBlinkUntil = 0, highlight = null, nightDim = 0, gestureTimers = [];
   let blend = {}, blinkRate = 1, sacc = { x: 0, y: 0, next: 0 };
   const fxOn = n => fx.name === n && nowMs() < fx.until;
+  // ---------- facial primitives: small building blocks that behaviors.js combines into thousands of reactions ----------
+  // L / R = the eye on the screen's left / right (her right / left eye).
+  const prim = {
+    sqL: 1, sqR: 1, sqTL: 1, sqTR: 1, sqUntil: 0,      // per-eye openness multipliers (asymmetric squints, one eye open)
+    pupil: 1, pupilT: 1, pupilUntil: 0,                // pupil size multiplier
+    saccAmp: 1, saccRate: 1, wander: 1, eyeSpeed: 1,   // idle eye darts and drift
+    freezeUntil: 0, snapUntil: 0,                      // gaze locked / eyes jump fast
+    chew: 0, chewOn: false, chewRate: 1.6, chewPh: 0, swallowT: -1,
+    tremble: 0, trembleUntil: 0, puffs: [],
+    blinkMs: 130, thinkKind: "online", thinkSince: 0, ahaUntil: 0
+  };
   const nowMs = () => performance.now();
 
   // ---------- eyes: where they look, blinking ----------
@@ -142,6 +153,12 @@
     const dozing = mood === "calm" && !st.talking && !st.listening && !st.thinking && idle > 180;
     const target = { ...BASE, ...MOODS[dozing ? "sleepy" : mood] };
     for (const [k, v] of Object.entries(blend)) if (k in target) target[k] += v;      // the mind's continuous state, layered on
+    if (st._thinking && prim.thinkSince) {                       // waiting ages for an answer: growing impatience
+      const waited = (nowMs() - prim.thinkSince) / 1000;
+      if (waited > 8) { const im = Math.min(1, (waited - 8) / 20); target.browA += im * 0.6; target.tilt += im * 0.4; target.open -= im * 0.15; }
+      if (prim.thinkKind === "local") target.open -= 0.12;
+    }
+    if (nowMs() < prim.ahaUntil) { target.open = 1; target.low = 0; target.browY -= 0.5; target.pupil = 0.55; }   // "aha": the answer arrived
     if (trans && nowMs() < trans.until) Object.assign(target, trans.props); else trans = null;
     const k = 1 - Math.exp(-dt * (trans ? 14 : 5));
     for (const key of Object.keys(BASE)) {
@@ -162,23 +179,44 @@
     amp = lerp(amp, ampT, 1 - Math.exp(-dt * (st.talking ? 14 : 6)));
 
     // where the eyes look: little darts around, up and to the side while thinking, tilt adds parallax
-    if (t > look.next) {
-      look.tx = rand(-0.5, 0.5); look.ty = rand(-0.35, 0.35);
+    const frozen = nowMs() < prim.freezeUntil;
+    if (t > look.next && !frozen) {
+      look.tx = rand(-0.5, 0.5) * prim.wander; look.ty = rand(-0.35, 0.35) * prim.wander;
       if (Math.random() < 0.3) { look.tx = 0; look.ty = 0; }
-      look.next = t + rand(0.8, 3.5);
+      look.next = t + rand(0.8, 3.5) / Math.max(0.2, prim.wander < 1 ? 0.5 + prim.wander / 2 : prim.wander);
     }
     let tx = look.tx, ty = look.ty;
     const following = ext && nowMs() < ext.until;
     if (following) { tx = ext.x; ty = ext.y; }
-    else if (st._thinking) { tx = 0.55 + 0.1 * Math.sin(t * 1.3); ty = -0.6; }
+    else if (st._thinking) {
+      // a different "thinking" look for each kind of thinking
+      const k = prim.thinkKind;
+      if (k === "local") { tx = -0.5 + 0.08 * Math.sin(t * 1.1); ty = -0.55; }               // inward: up and to the other side
+      else if (k === "visual") { tx = Math.sin(t * 2.2) * 0.8; ty = 0.1; }                   // scanning back and forth
+      else if (k === "memory") { tx = -0.6 + 0.15 * Math.sin(t * 0.7); ty = 0.35; }          // down-and-aside, recalling
+      else { tx = 0.55 + 0.1 * Math.sin(t * 1.3); ty = -0.6; }                                // online lookup: up and away
+    }
     // while thinking she mostly keeps looking at you, glancing away up-and-aside every couple of seconds
     if (st._thinking && following && (t % 2.7) < 0.75) { tx = (Math.floor(t / 2.7) % 2 ? 0.6 : -0.6); ty = -0.55; }
     // microsaccades: tiny involuntary corrections, so a fixed gaze never looks frozen
-    if (t > sacc.next) { sacc.x = rand(-0.05, 0.05); sacc.y = rand(-0.04, 0.04); sacc.next = t + rand(0.35, 1.4); }
-    tx += sacc.x; ty += sacc.y;
+    if (t > sacc.next && !frozen) { sacc.x = rand(-0.05, 0.05) * prim.saccAmp; sacc.y = rand(-0.04, 0.04) * prim.saccAmp; sacc.next = t + rand(0.35, 1.4) / Math.max(0.2, prim.saccRate); }
+    if (!frozen) { tx += sacc.x; ty += sacc.y; } else { tx = look.x; ty = look.y; }
     if (st.talking && !following) { tx *= 0.3; ty *= 0.3; }
     if (!following) { tx += tiltIn.x * 0.6; ty += tiltIn.y * 0.4; }
-    const lk = 1 - Math.exp(-dt * 12);
+    const lk = frozen ? 0 : 1 - Math.exp(-dt * (nowMs() < prim.snapUntil ? 30 : 12 * prim.eyeSpeed));
+
+    // squints, pupils, chewing, swallowing, trembling ease toward their targets
+    const pk = 1 - Math.exp(-dt * 10);
+    if (nowMs() > prim.sqUntil) { prim.sqTL = 1; prim.sqTR = 1; }
+    prim.sqL = lerp(prim.sqL, prim.sqTL, pk); prim.sqR = lerp(prim.sqR, prim.sqTR, pk);
+    if (nowMs() > prim.pupilUntil) prim.pupilT = 1;
+    prim.pupil = lerp(prim.pupil, prim.pupilT, pk);
+    const chewing = prim.chewOn && !st.talking && prim.swallowT < 0;
+    prim.chew = lerp(prim.chew, chewing ? 1 : 0, 1 - Math.exp(-dt * 4));
+    if (chewing) prim.chewPh += dt * prim.chewRate * TAU;
+    if (prim.swallowT >= 0) { prim.swallowT += dt; if (prim.swallowT > 0.8) prim.swallowT = -1; }
+    if (nowMs() > prim.trembleUntil) prim.tremble = 0;
+    prim.puffs = prim.puffs.filter(p => (p.life += dt) < 1.4);
     look.x = lerp(look.x, clamp(tx, -1, 1), lk); look.y = lerp(look.y, clamp(ty, -1, 1), lk);
 
     // blinking (sometimes double, flirty sometimes winks)
@@ -190,11 +228,11 @@
       blink.double = !blink.wink && Math.random() < 0.2;
     }
     if (blink.phase) {
-      const T = 130, v = blink.t < T ? blink.t / T : blink.t < 2 * T ? 1 - (blink.t - T) / T : 0;
+      const T = prim.blinkMs, v = blink.t < T ? blink.t / T : blink.t < 2 * T ? 1 - (blink.t - T) / T : 0;
       blink.L = blink.wink ? 0 : v; blink.R = v;
       if (blink.t >= 2 * T) {
         if (blink.double) { blink.double = false; blink.t = 0; }
-        else { blink.phase = 0; blink.t = 0; blink.next = (Math.random() < 0.15 ? rand(500, 1200) : rand(2200, 6500)) * blinkRate; blink.L = blink.R = 0; }
+        else { blink.phase = 0; blink.t = 0; prim.blinkMs = 130; blink.next = (Math.random() < 0.15 ? rand(500, 1200) : rand(2200, 6500)) * blinkRate; blink.L = blink.R = 0; }
       }
     }
 
@@ -287,7 +325,8 @@
     const inner = -side;                         // direction toward the middle of the face
     let bl = side < 0 ? blink.L : blink.R;
     if (eyeShut.side === side && nowMs() < eyeShut.until) bl = 1;
-    const open = cur.open * (1 - bl) * (st._thinking ? 0.9 : 1);
+    const swallowing = prim.swallowT >= 0 && prim.swallowT < 0.45;
+    const open = cur.open * (1 - bl) * (st._thinking ? 0.9 : 1) * (side < 0 ? prim.sqL : prim.sqR) * (swallowing ? 0.55 : 1);
     ctx.save(); ctx.translate(ex, ey);
 
     // rotating outer rings and ticks
@@ -319,7 +358,7 @@
     // iris spokes
     ctx.save(); ctx.translate(px, py); ctx.rotate(t * 0.25 * cur.spin * side);
     ctx.strokeStyle = col(30, 0.22); ctx.lineWidth = 1;
-    const pr = r * (0.2 + cur.pupil * 0.3) * (1 + 0.15 * st.listening);
+    const pr = r * (0.2 + cur.pupil * 0.3) * (1 + 0.15 * st.listening) * prim.pupil;
     for (let i = 0; i < 28; i++) {
       const a = TAU * i / 28;
       ctx.beginPath(); ctx.moveTo(Math.cos(a) * pr * 1.1, Math.sin(a) * pr * 1.1);
@@ -344,7 +383,7 @@
     ctx.fillStyle = lidFill; ctx.beginPath(); ctx.moveTo(-r * 1.1, -r * 1.1); ctx.lineTo(r * 1.1, -r * 1.1);
     for (let x = r * 1.1; x >= -r * 1.1; x -= r / 12) ctx.lineTo(x, yTop(x));
     ctx.closePath(); ctx.fill();
-    const low = clamp(cur.low + bl * 0.15, 0, 1);
+    const low = clamp(cur.low + bl * 0.15 + prim.chew * 0.07 * (0.5 + 0.5 * Math.sin(prim.chewPh)), 0, 1);
     const botC = r - low * 2 * r * 0.55;
     const yBot = x => botC - 0.4 * r * low * (1 - (x / r) ** 2);
     ctx.beginPath(); ctx.moveTo(-r * 1.1, r * 1.1); ctx.lineTo(r * 1.1, r * 1.1);
@@ -388,7 +427,8 @@
   }
 
   function mouth(t) {
-    const N = 30, w = 0.66 * U * cur.mouthW, my = 0.45 * U;
+    const chewOpen = prim.chew * Math.max(0, Math.sin(prim.chewPh));
+    const N = 30, w = 0.66 * U * cur.mouthW * (1 - prim.chew * 0.25), my = 0.45 * U + chewOpen * 0.025 * U;
     const cy = f => my + cur.mouth * 0.11 * U * (1 - f * f) + cur.skew * 0.05 * U * f + cur.question * 0.018 * U * Math.sin(f * 6 + t * 3);
     // faint baseline
     ctx.strokeStyle = col(0, 0.25 * cur.dim); ctx.lineWidth = 1;
@@ -401,9 +441,23 @@
       let h = U * 0.014 + U * 0.006 * (1 + Math.sin(t * 2 + i * 0.5));
       h += amp * (0.3 + 0.7 * noise(i, t)) * (1 - 0.6 * f * f) * 0.17 * U;
       h += st.listening * Math.abs(Math.sin(t * 5 + i * 0.45)) * 0.035 * U;
+      h += chewOpen * (1 - 0.7 * f * f) * 0.06 * U;
+      if (prim.swallowT >= 0) h *= 0.5;
       ctx.roundRect(x - bw / 2, cy(f) - h / 2, bw, h, bw / 2);
     }
     glow(true, 0.07); ctx.fillStyle = col(12, 0.95 * cur.dim); ctx.fill(); glow(false);
+    // swallow: a little "gulp" of light slides down from the mouth
+    if (prim.swallowT >= 0) {
+      const p = prim.swallowT / 0.8;
+      ctx.fillStyle = col(25, (1 - p) * 0.9); glow(true, 0.05);
+      ctx.beginPath(); ctx.arc(0, my + U * (0.08 + p * 0.3), U * 0.025 * (1 - p * 0.5), 0, TAU); ctx.fill(); glow(false);
+    }
+    // burps and puffs
+    for (const pf of prim.puffs) {
+      const p = pf.life / 1.4;
+      ctx.strokeStyle = col(30, (1 - p) * 0.7); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(pf.x * U + Math.sin(p * 8) * U * 0.02, my - U * 0.05 - p * U * 0.4, U * (0.03 + p * 0.05) * pf.s, 0, TAU); ctx.stroke();
+    }
     // end brackets
     ctx.strokeStyle = col(10, 0.5 * cur.dim); ctx.lineWidth = 2;
     for (const s of [-1, 1]) {
@@ -413,6 +467,13 @@
   }
 
   function cheeks(t) {
+    if (prim.chew > 0.03) {
+      for (const s of [-1, 1]) {
+        const puff = prim.chew * (0.5 + 0.5 * Math.sin(prim.chewPh + 0.6 + (s > 0 ? 0.3 : 0)));
+        ctx.strokeStyle = col(15, 0.45 * puff * cur.dim); ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(s * 0.5 * U, 0.42 * U, U * (0.07 + 0.03 * puff), s > 0 ? -0.9 : Math.PI - 0.9 + 0.9 * 0, s > 0 ? 0.9 : Math.PI + 0.9); ctx.stroke();
+      }
+    }
     if (cur.blush > 0.02) {
       for (const s of [-1, 1]) {
         const x = s * 0.5 * U, y = 0.2 * U;
@@ -528,7 +589,7 @@
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     background(t);
     ctx.save();
-    const shk = now < shakeUntil ? U * 0.025 : 0;
+    const shk = (now < shakeUntil ? U * 0.025 : 0) + prim.tremble * U * 0.008;
     ctx.translate(CX + rand(-shk, shk), CY + Math.sin(t * 0.9) * U * 0.012 - st.thinking * U * 0.02 + rand(-shk, shk));
     if (fxOn("dance") || fxOn("disco")) {
       ctx.translate(Math.sin(t * 4.2) * U * 0.06, -Math.abs(Math.sin(t * 8.4)) * U * 0.06);
@@ -803,7 +864,41 @@
     setMood(m) { if (MOODS[m]) { mood = m; lastActivity = performance.now(); } },
     setTalking(on) { st.talking = !!on; lastActivity = performance.now(); },
     kick() { kickV = 1; },
-    setState(name, on) { st["_" + name] = !!on; if (on) lastActivity = performance.now(); },
+    setState(name, on) {
+      if (name === "thinking") {
+        if (on && !st._thinking) prim.thinkSince = nowMs();
+        if (!on && st._thinking) { if (nowMs() - prim.thinkSince > 600) prim.ahaUntil = nowMs() + 380; prim.thinkSince = 0; prim.thinkKind = "online"; }
+      }
+      st["_" + name] = !!on; if (on) lastActivity = performance.now();
+    },
+    thinkStyle(kind) { prim.thinkKind = kind; },
+    // primitives for behaviors.js (see the list at the top of that file)
+    prim: {
+      gaze(x, y, { ms = 900, snap = false, overshoot = false } = {}) {
+        x = clamp(x, -1, 1); y = clamp(y, -1, 1);
+        if (snap) prim.snapUntil = nowMs() + 250;
+        if (overshoot) {                                           // land a little past the target, then correct
+          ext = { x: clamp(x * 1.18 + Math.sign(x) * 0.05, -1, 1), y: clamp(y * 1.18, -1, 1), until: nowMs() + 110 };
+          setTimeout(() => { ext = { x, y, until: nowMs() + ms }; }, 110);
+        } else ext = { x, y, until: nowMs() + ms };
+      },
+      blink({ ms = 130, double = false, side = null } = {}) {
+        prim.blinkMs = ms; blink.phase = 1; blink.t = 0; blink.double = double; blink.wink = false;
+        if (side) { eyeShut = { side: side === "left" ? -1 : 1, until: nowMs() + ms * 2 }; blink.phase = 0; }
+      },
+      squint(l = 1, r = 1, ms = 1200) { prim.sqTL = clamp(l, 0, 1.2); prim.sqTR = clamp(r, 0, 1.2); prim.sqUntil = nowMs() + ms; },
+      pupils(mult = 1, ms = 1500) { prim.pupilT = clamp(mult, 0.4, 1.8); prim.pupilUntil = nowMs() + ms; },
+      freeze(ms = 300) { prim.freezeUntil = nowMs() + ms; },
+      saccades(amp = 1, rate = 1) { prim.saccAmp = amp; prim.saccRate = rate; },
+      wander(scale = 1, speed = 1) { prim.wander = scale; prim.eyeSpeed = speed; },
+      chew(on, rate = 1.6) { prim.chewOn = !!on; prim.chewRate = rate; },
+      swallow() { prim.swallowT = 0; },
+      tremble(amount = 1, ms = 600) { prim.tremble = amount; prim.trembleUntil = nowMs() + ms; },
+      puff(n = 1) { for (let i = 0; i < n; i++) prim.puffs.push({ life: -i * 0.15, x: rand(-0.1, 0.1), s: rand(0.7, 1.3) }); },
+      hold(props, ms) { trans = { until: nowMs() + ms, props }; },
+      shakeFace(ms = 300) { shakeUntil = nowMs() + ms; },
+      state() { return { ...prim, puffs: prim.puffs.length, look: { x: look.x, y: look.y }, talking: st.talking, listening: !!st._listening, thinking: !!st._thinking, mood }; }
+    },
     setLabel(text) { st.label = text || ""; },
     poke() { lastActivity = performance.now(); },
     moods: Object.keys(MOODS)

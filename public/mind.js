@@ -140,6 +140,7 @@
     if (!/^touch/.test(key)) lastEngaged = nowMs();
     const sal = salienceOf(key, important ? Math.max(base, 0.95) : base, { recoverMin: Math.max(recoverMin, minutes) });
     event(family, what, { source, salience: sal, key });
+    try { window.Behaviors?.onPerceive(family, sal); } catch {}
 
     if (sal < P().faceThreshold) return { sal, acted: "nothing" };
     const dir = guessDir(key); if (dir) glance(dir[0], dir[1], 900 + sal * 1200);
@@ -177,6 +178,7 @@
     }[kind] || {};
     if (/eye/.test(zone) && kind === "tap") fx.irritation = (fx.irritation || 0) + 0.15;
     nudge({ ...fx, boredom: -0.3 });
+    try { window.Behaviors?.onTouch(kind, zone, rep); } catch {}
     event("touch", `${kind} on ${zone}`, { source: "FELT", salience: sal * 0.5, key: `touch-${kind}` });
     // repetition → escalating, not identical, reactions
     if (rep > 0.6 && (kind === "tap" || kind === "boop")) Face.gesture(S.irritation > 0.5 ? "squint" : "side_eye_" + (Math.random() < 0.5 ? "left" : "right"));
@@ -275,6 +277,7 @@
   let backchannelAt = 0;
   function onUserSpeaking(partial) {                               // while he's still talking: tiny acknowledgements
     lastEngaged = nowMs(); if (sleepMode) wake("he talked");
+    try { window.Behaviors?.onUserSpeaking(partial); } catch {}
     if (performance.now() - backchannelAt < 2600 + Math.random() * 1800 || partial.length < 12) return;
     backchannelAt = performance.now();
     const r = Math.random();
