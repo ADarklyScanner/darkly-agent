@@ -50,7 +50,12 @@ if [ ! -s "$HOME/.robot-key" ]; then
   echo "Paste your Claude API key (starts with sk-ant-), then press Enter."
   echo "Leave it blank to skip; she'll run on her offline brain until you add one."
   read -r KEY || true
-  if [ -n "$KEY" ]; then printf '%s' "$KEY" > "$HOME/.robot-key"; chmod 600 "$HOME/.robot-key"; echo "Key saved."; fi
+  if [ -n "$KEY" ]; then
+    printf '%s\n' "$KEY" > "$HOME/.robot-key"; chmod 600 "$HOME/.robot-key"; echo "Key saved."
+    echo "Backup key (used when the first runs out of credit). Paste one, or just press Enter to skip:"
+    read -r KEY2 || true
+    if [ -n "$KEY2" ]; then printf '%s\n' "$KEY2" >> "$HOME/.robot-key"; echo "Backup saved."; fi
+  fi
 fi
 
 echo

@@ -31,12 +31,29 @@ function config() {
   };
 }
 
-function apiKey() {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY.trim();
+// Keys live in ~/.robot-key, one per line. Line 1 is the main key; the rest are backups,
+// used in order when a key is out of credit, rate-limited, or rejected.
+// Lines starting with # are ignored, so you can label them.
+function apiKeys() {
+  const keys = [];
+  if (process.env.ANTHROPIC_API_KEY) keys.push(process.env.ANTHROPIC_API_KEY.trim());
   for (const f of [path.join(os.homedir(), ".robot-key"), path.join(DATA, ".key")]) {
-    try { const k = fs.readFileSync(f, "utf8").trim(); if (k) return k; } catch {}
+    try {
+      for (const line of fs.readFileSync(f, "utf8").split(/\r?\n/)) {
+        const k = line.trim();
+        if (k && !k.startsWith("#") && !keys.includes(k)) keys.push(k);
+      }
+    } catch {}
   }
-  return "";
+  return keys;
+}
+let activeKey = 0;                 // index of the key currently in use
+const apiKey = () => apiKeys()[activeKey] || apiKeys()[0] || "";
+
+// Errors where a different key could work: bad/disabled key, no credit, rate limit.
+function keyProblem(status, text) {
+  if (status === 401 || status === 403 || status === 429) return true;
+  return status === 400 && /credit|billing|balance/i.test(text);
 }
 
 function log(entry) {
@@ -156,7 +173,9 @@ const server = http.createServer(async (req, res) => {
     // ---- status ----
     if (p === "/api/status") {
       const [online, local] = await Promise.all([checkOnline(), checkLocal()]);
-      return send(res, 200, { online, local, hasKey: !!apiKey(), model: config().claudeModel, time: new Date().toISOString() });
+      const keys = apiKeys();
+      return send(res, 200, { online, local, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
+        model: config().claudeModel, time: new Date().toISOString() });
     }
 
     // ---- every sensor + RAM/storage/CPU ----
@@ -182,17 +201,28 @@ const server = http.createServer(async (req, res) => {
 
     // ---- online brain: Claude ----
     if (p === "/api/claude" && req.method === "POST") {
-      const key = apiKey();
-      if (!key) return send(res, 400, { error: "No Claude API key. Put it in ~/.robot-key" });
+      const keys = apiKeys();
+      if (!keys.length) return send(res, 400, { error: "No Claude API key. Put it in ~/.robot-key" });
       const body = await readBody(req);
-      const payload = { model: config().claudeModel, max_tokens: 1024, ...body };
-      const r = await timedFetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: JSON.stringify(payload)
-      }, 90000);
-      const text = await r.text();
-      if (!r.ok) log({ kind: "error", where: "claude", status: r.status, detail: text.slice(0, 300) });
+      const payload = JSON.stringify({ model: config().claudeModel, max_tokens: 1024, ...body });
+      if (activeKey >= keys.length) activeKey = 0;
+      let r, text;
+      // Try the key in use first, then each backup once.
+      for (let tries = 0; tries < keys.length; tries++) {
+        const i = (activeKey + tries) % keys.length;
+        r = await timedFetch(process.env.ROBOT_CLAUDE_URL || "https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "x-api-key": keys[i], "anthropic-version": "2023-06-01", "content-type": "application/json" },
+          body: payload
+        }, 90000);
+        text = await r.text();
+        if (r.ok) {
+          if (i !== activeKey) { log({ kind: "key", detail: `Switched to Claude key #${i + 1}` }); activeKey = i; }
+          break;
+        }
+        log({ kind: "error", where: "claude", key: i + 1, status: r.status, detail: text.slice(0, 300) });
+        if (!keyProblem(r.status, text)) break;           // not a key problem; another key won't help
+      }
       res.writeHead(r.status, { "Content-Type": "application/json" });
       return res.end(text);
     }

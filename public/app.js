@@ -490,17 +490,16 @@ Only use commands for parts listed as installed. If something is MISSING, compla
 You are running on your small offline backup brain: no internet, no camera vision.`
     : `Start every reply with your mood like [mood:happy]. Moods: ${MOOD_NAMES.join(", ")}.
 Use your tools to act. Tool results that start with FAILED mean nothing happened: react to that honestly.`;
-  // The offline brain reuses its work when the start of the prompt stays the same, so
-  // things that change every second (sensors, clock) are left out here for it and sent
-  // at the end of the message instead (see quickSenses).
-  const senses = offline ? "" : `\n\n## Your senses\n${sensorReport()}`;
-  return `${persona}\n\n## Your body right now\n${bodyReport()}${senses}\n\n## Your memory\n${memory || "(empty)"}\n\n## Rules\n${rules}`;
+  // Both brains reuse work when the start of the prompt stays the same (offline: llama's
+  // cache, Claude: prompt caching, billed at a fraction of the price). So things that change
+  // every second (sensors, clock) are NOT in here; they ride along at the end of your message.
+  return `${persona}\n\n## Your body right now\n${bodyReport()}\n\n## Your memory\n${memory || "(empty)"}\n\n## Rules\n${rules}\nYour current senses are attached in brackets at the end of each message from him.`;
 }
 
 function quickSenses() {
   const b = battery ? `battery ${Math.round(battery.level * 100)}%${battery.charging ? " charging" : ""}` : "";
   const t = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return `(${[b, tipped ? "you are TIPPED OVER" : "upright", "time " + t].filter(Boolean).join(", ")})`;
+  return `[senses] ${[b, tipped ? "you are TIPPED OVER" : "upright", "time " + t].filter(Boolean).join(", ")}`;
 }
 
 // Conversation survives reloads and restarts: saved to data/conversation.json
@@ -524,10 +523,41 @@ function takeMood(text) {
   return out.replace(re, "").trim();
 }
 
+// Prompt caching: Claude stores the unchanging start of each request (tools, personality,
+// older chat) for a few minutes, and re-reading it costs about a tenth of the normal price.
+// Up to 4 cache marks: end of tools, end of personality, end of older chat, latest tool result.
+const CACHE = { type: "ephemeral" };
+const CACHED_TOOLS = TOOLS.map((t, i) => i === TOOLS.length - 1 ? { ...t, cache_control: CACHE } : t);
+
+function claudeHistory() {
+  // Drop old messages 10 at a time (not 1 at a time), so the cached start stays the same longer.
+  const start = Math.max(0, Math.ceil((history.length - 40) / 10) * 10);
+  const h = history.slice(start).map(m => ({ role: m.role, content: m.content }));
+  while (h.length && h[0].role !== "user") h.shift();
+  if (h.length) {
+    const last = h[h.length - 1];
+    last.content = [{ type: "text", text: String(last.content), cache_control: CACHE }];
+  }
+  return h;
+}
+
+let cacheStats = { read: 0, written: 0, fresh: 0 };
+
 async function askClaude(userText) {
-  const messages = [...recentHistory(30), { role: "user", content: userText }];
+  const system = [{ type: "text", text: systemPrompt(false), cache_control: CACHE }];
+  const messages = [...claudeHistory(), { role: "user", content: `${userText}\n\n[senses]\n${sensorReport()}` }];
   for (let round = 0; round < 6; round++) {
-    const r = await api("/api/claude", { method: "POST", body: JSON.stringify({ system: systemPrompt(false), tools: TOOLS, messages, max_tokens: 700 }) });
+    if (round > 0) {                       // move the 4th cache mark to the newest tool result
+      for (const m of messages) if (Array.isArray(m.content)) for (const b of m.content) if (b.type === "tool_result") delete b.cache_control;
+      const lm = messages[messages.length - 1];
+      lm.content[lm.content.length - 1].cache_control = CACHE;
+    }
+    const r = await api("/api/claude", { method: "POST", body: JSON.stringify({ system, tools: CACHED_TOOLS, messages, max_tokens: 700 }) });
+    const u = r.usage || {};
+    cacheStats.read += u.cache_read_input_tokens || 0;
+    cacheStats.written += u.cache_creation_input_tokens || 0;
+    cacheStats.fresh += u.input_tokens || 0;
+    logEvent("claude", { detail: `tokens: ${u.cache_read_input_tokens || 0} cached, ${u.cache_creation_input_tokens || 0} newly cached, ${u.input_tokens || 0} full price, ${u.output_tokens || 0} out` });
     const text = (r.content || []).filter(b => b.type === "text").map(b => b.text).join(" ").trim();
     const uses = (r.content || []).filter(b => b.type === "tool_use");
     if (text) { const said = takeMood(text); if (said && uses.length) { speak(said); transcriptLine("bot", said); } if (!uses.length) return said; }
@@ -853,6 +883,8 @@ setInterval(refreshStatus, 15000);
 function renderStatus() {
   const items = [
     ["Online brain", status.hasKey ? (status.online ? "Claude ready" : "no internet") : "no API key"],
+    ["Claude key", status.keyCount ? `#${status.keyInUse} of ${status.keyCount}` : "none"],
+    ["Cache savings", (() => { const t = cacheStats.read + cacheStats.written + cacheStats.fresh; return t ? Math.round(cacheStats.read / t * 100) + "% reused" : "—"; })()],
     ["Offline brain", status.local ? "Nessari running" : "not running"],
     ["Brain mode", settings.brain],
     ["Body", link.connected ? link.kind + (link.hello ? " ✓" : " (silent)") : "not connected"],

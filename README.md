@@ -32,6 +32,19 @@ Settings > Apps > Termux > **Appear on top** > Allow.
 
 Your Claude key is saved in `~/.robot-key`. To change it, run `nano ~/.robot-key`.
 
+**Backup keys:** put one key per line in `~/.robot-key`. Line 1 is the main key. If a key runs out of credit,
+gets rate-limited, or stops working, she switches to the next one by herself. Lines starting with `#` are labels:
+
+```
+# robot
+sk-ant-api03-...
+# backup
+sk-ant-api03-...
+```
+
+**Cost:** she uses prompt caching. Her personality, tools and older chat are stored by Claude for a few
+minutes, and re-reading them costs about a tenth of the normal price. The Status tab shows how much is being reused.
+
 ## Give the whole phone to her
 
 `robot-dedicate` sets up the phone to run only the robot:
