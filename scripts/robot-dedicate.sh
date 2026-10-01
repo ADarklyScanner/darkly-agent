@@ -14,11 +14,26 @@ One-time pairing (the phone connects to itself):
  2. Settings > Developer options > turn on "Wireless debugging" (needs Wi-Fi), tap it.
  3. Tap "Pair device with pairing code". Use split screen so Termux stays visible.
 EOF
-  read -rp "Pairing port (the number after the colon): " PP
-  read -rp "Pairing code: " PC
-  adb pair "localhost:$PP" "$PC" || { echo "Pairing failed."; exit 1; }
-  read -rp "Now the port shown on the main Wireless debugging screen (IP address & Port): " CP
-  adb connect "localhost:$CP" || { echo "Connect failed."; exit 1; }
+  if adb devices 2>/dev/null | grep -q "offline\|unauthorized"; then adb kill-server >/dev/null 2>&1; fi
+  read -rp "Already paired before? Type y to skip pairing, or just press Enter: " SKIP
+  if [ "$SKIP" != "y" ]; then
+    echo "Keep the pairing-code box OPEN on screen while you type (split screen), or the code stops working."
+    read -rp "Pairing port (the number after the colon): " PP
+    read -rp "Pairing code (6 digits): " PC
+    # This often prints "protocol fault ... Success" even when pairing worked, so carry on either way.
+    adb pair "localhost:$PP" "$PC" || echo "(Pairing reported an error. That's often harmless. Trying to connect anyway...)"
+  fi
+  echo "Now close the pairing box. On the main Wireless debugging screen, look at 'IP address & Port'."
+  read -rp "The number after the colon there: " CP
+  adb connect "localhost:$CP"
+  sleep 1
+  if ! adb devices 2>/dev/null | grep -q "device$"; then
+    echo
+    echo "Not connected. Check Wireless debugging > 'Paired devices':"
+    echo " - If something is listed there, run robot-dedicate again, type y to skip pairing, and enter the port."
+    echo " - If nothing is listed, run robot-dedicate again and pair with split screen so the code box stays open."
+    exit 1
+  fi
 fi
 A() { adb shell "$@" 2>/dev/null; }
 
