@@ -156,6 +156,10 @@
       <option value="claude">Claude only</option>
       <option value="local">Offline brain only</option>
     </select></label>
+    <label>Her own chatter (reactions, speaking up) <select id="setChatter">
+      <option value="offline">Offline brain when it's running (free, works without internet)</option>
+      <option value="brain">Same brain as above</option>
+    </select></label>
     <label>Listening <select id="setListen"><option value="push">Tap the mic to talk</option><option value="always">Always listening</option></select></label>
     <label>Wake word (always-listening only, blank = answer everything) <input id="setWake" placeholder="nessari"></label>
     <label>Voice <select id="setVoice"></select></label>
@@ -188,6 +192,7 @@
 <script src="abilities.js"></script>
 <script src="face.js"></script>
 <script src="tricks.js"></script>
+<script src="variety.js"></script>
 <script src="mind.js"></script>
 <script src="behaviors.js"></script>
 <script src="app.js"></script>

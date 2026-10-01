@@ -2,6 +2,14 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-01 · v0.15 · She stops repeating herself
+- She remembers everything she's said lately (data/said-recently.json, kept across restarts). Before saying something on her own she's shown what she already said and which words she's overusing (no more "is that a ghost?" for the twelfth time).
+- Every spontaneous line gets a random angle, tone and length: about 3,900 combinations (guesses, complaints, nature-documentary narration, made-up statistics, playful threats, tiny poems, sports commentary...). An angle isn't reused until 15 others have been.
+- Repeat catcher: if a line comes out too close to something she's said before, she tries once more; if it's still a rerun she stays quiet and gives a look instead. Silence beats a rerun.
+- Same thing over and over: on the third comment about the same kind of event she notices the pattern instead; after five in a few hours she just reacts with her face.
+- Her own chatter (reactions, speaking up when bored) now uses the offline brain whenever it's running: free, private, works without internet. Questions you ask still go to Gemini/Claude first. Change it in Settings › "Her own chatter".
+- Offline brain variety: a new random seed every time, a penalty for repeating recent words, and DRY (stops repeated phrases). Spontaneous lines run hotter than answers to your questions.
+
 ## 2026-10-01 · v0.14 · Live video, smoother eyes, a living face
 - Phone controls stay connected: after the first setup she switches to a fixed local port, so you don't have to keep Wireless debugging open. After a restart she turns Wireless debugging back on by herself and reconnects. Run robot-dedicate once more to give her that permission.
 - Live video: the remote page has "Watch live" with sound, and a button for every camera the phone has (front, back, wide, zoom). Switch cameras while watching. Up to 3 people at once, same Wi-Fi.

@@ -205,6 +205,18 @@ function cpuTemps() {
   return out.length ? Math.max(...out) : null;
 }
 
+// Sampling for the offline brain. Small models fall into loops ("is that a ghost?" x12) at low variety:
+// a fresh random seed every time, a penalty on repeating recent words, and DRY (stops repeating whole phrases).
+function localSampling(body) {
+  const lively = body.lively ? 1 : 0;                  // spontaneous lines get more variety than answers to questions
+  return {
+    temperature: Math.min(1.3, Number(body.temperature) || (lively ? 1.0 : 0.8)),
+    top_p: 0.95, min_p: 0.05, top_k: 0,
+    repeat_penalty: 1.12, repeat_last_n: 512, presence_penalty: lively ? 0.5 : 0.25, frequency_penalty: lively ? 0.3 : 0.1,
+    dry_multiplier: 0.8, dry_base: 1.75, dry_allowed_length: 2, dry_penalty_last_n: -1,
+    seed: Math.floor(Math.random() * 2 ** 31)
+  };
+}
 let hwCache = { at: 0, data: null }, sensorList = null, hwRunning = null, sensorFails = 0, sensorPauseUntil = 0;
 // Reading EVERY sensor at once, or starting a new read while the last is still running, makes Termux:API pop up
 // "Error in termuxApiReceiver". So: only the sensors she uses, one read at a time, cleanup after, and back off on errors.
@@ -476,7 +488,7 @@ const server = http.createServer(async (req, res) => {
         method: "POST",
         headers: { "content-type": "application/json" },
         // cache_prompt: reuse the already-read start of the conversation instead of re-reading it every time
-        body: JSON.stringify({ messages: body.messages, max_tokens: body.max_tokens || 300, temperature: 0.8, stream: false, cache_prompt: true })
+        body: JSON.stringify({ messages: body.messages, max_tokens: body.max_tokens || 300, ...localSampling(body), stream: false, cache_prompt: true })
       }, 180000);
       const j = await r.json().catch(() => ({}));
       if (!r.ok) return send(res, 502, { error: "Local brain error", detail: j });
@@ -488,7 +500,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const r = await timedFetch(config().localUrl + "/v1/chat/completions", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: body.messages, max_tokens: body.max_tokens || 300, temperature: 0.8, stream: true, cache_prompt: true })
+        body: JSON.stringify({ messages: body.messages, max_tokens: body.max_tokens || 300, ...localSampling(body), stream: true, cache_prompt: true })
       }, 300000);
       if (!r.ok || !r.body) return send(res, 502, { error: "Local brain error " + r.status });
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });

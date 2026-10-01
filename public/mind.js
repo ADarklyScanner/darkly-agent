@@ -156,7 +156,7 @@
     lastSpontaneous = nowMs();
     const strength = sal > 0.85 ? "strongly" : sal > 0.7 ? "" : "mildly";
     const interrupted = resumeText ? " You were interrupted mid-sentence by this; react to it first." : "";
-    speakUp(`(system: something just happened (${source.toLowerCase()}): ${what}. React ${strength} in character, one short sentence.${interrupted})`, "reacted: " + what)
+    speakUp(`(system: something just happened (${source.toLowerCase()}): ${what}. React ${strength} in character.${interrupted})`, "reacted: " + what, family)
       .then(() => {
         if (resumeText && canSpeakUp()) { const r = resumeText; resumeText = null; setTimeout(() => speak("Anyway… " + r), 400); }
         resumeText = null;
@@ -251,7 +251,7 @@
     if (!due.length || !canSpeakUp()) return;
     const l = due[0];
     lastSpontaneous = nowMs();
-    speakUp(`(system: ${when === "next_seen" ? "he's back after being away" : when === "internet_back" ? "your internet is back" : when === "charger" ? "you were just put on the charger" : "now is a good moment"}. You had this unfinished business: "${l.text}". Bring it up naturally, briefly ("Oh, before I forget…"). Use close_open_loop if it's resolved.)`, "open loop: " + l.text);
+    speakUp(`(system: ${when === "next_seen" ? "he's back after being away" : when === "internet_back" ? "your internet is back" : when === "charger" ? "you were just put on the charger" : "now is a good moment"}. You had this unfinished business: "${l.text}". Bring it up naturally, briefly ("Oh, before I forget…"). Use close_open_loop if it's resolved.)`, "open loop: " + l.text, "loop", "idle");
     l.when = "anytime";                                               // mentioned once; stays until closed or expired
     saveWorld();
   }

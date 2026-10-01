@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /* ================= settings ================= */
 const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true,
-  auto: "normal", react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
+  auto: "normal", chatter: "offline", react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
 let settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("robot-settings") || "{}") };
 const saveSettings = () => localStorage.setItem("robot-settings", JSON.stringify(settings));
 
@@ -912,7 +912,7 @@ async function askGemini(userText) {
     { role: "user", content: `${userText}\n\n[senses]\n${sensorReport()}\n\n[context]\n${window.Mind?.context() || ""}` }
   ];
   for (let round = 0; round < 6; round++) {
-    const r = await api("/api/gemini", { method: "POST", body: JSON.stringify({ messages, tools: GEMINI_TOOLS }) });
+    const r = await api("/api/gemini", { method: "POST", body: JSON.stringify({ messages, tools: GEMINI_TOOLS, ...(autoTurn ? { temperature: 1.15 } : {}) }) });
     const msg = r.choices?.[0]?.message || {};
     const text = (msg.content || "").trim();
     const calls = msg.tool_calls || [];
@@ -1002,11 +1002,15 @@ async function askLocalStreaming(msgs) {
   return full;
 }
 
-async function askLocal(userText) {
+async function askLocal(userText, { lively = false, temperature } = {}) {
   const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + "\n" + quickSenses() + "\n(" + (window.Mind?.context(true) || "") + ")" }];
   let text;
-  try { text = await askLocalStreaming(msgs); localSpoke = true; }
-  catch (e) { ({ text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) })); }
+  // her own chatter isn't streamed: it gets checked for repeats before she says it
+  if (lively) ({ text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 120, lively, temperature }) }));
+  else {
+    try { text = await askLocalStreaming(msgs); localSpoke = true; }
+    catch (e) { ({ text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) })); }
+  }
   const cmds = [];
   const allowMove = !autoTurn || settings.autoMove;
   const clean = text.replace(/\[(drive|part|stop|song|sfx|vibrate|effect)(?::([^\]:]+))?(?::([^\]:]+))?\]/gi, (_, k, a, b) => { cmds.push([k.toLowerCase(), a?.trim(), b?.trim()]); return ""; });
@@ -1040,7 +1044,9 @@ async function ask(userText, opts = {}) {
   try {
     // Brain order comes from Settings. Each online brain is tried in turn; offline is last.
     const online = status.online && navigator.onLine;
-    const order = { auto: ["gemini", "claude"], "auto-claude": ["claude", "gemini"], gemini: ["gemini"], claude: ["claude"], local: [] }[settings.brain] || ["gemini", "claude"];
+    let order = { auto: ["gemini", "claude"], "auto-claude": ["claude", "gemini"], gemini: ["gemini"], claude: ["claude"], local: [] }[settings.brain] || ["gemini", "claude"];
+    // her own chatter goes to the offline brain when it's running: free, private, works with no internet
+    if (opts.auto && settings.chatter !== "brain" && status.local) order = [];
     const have = { gemini: status.geminiKeyCount > 0, claude: status.hasKey };
     const NAMES = { gemini: "Gemini", claude: "Claude" };
     const only = settings.brain === "gemini" || settings.brain === "claude";
@@ -1062,22 +1068,38 @@ async function ask(userText, opts = {}) {
     if (!brain) {
       setFaceState("offline", true); window.Face?.thinkStyle("local");
       $("#heard").textContent = "thinking with the offline brain…";
-      reply = await askLocal(userText); brain = "nessari-offline";
+      reply = await askLocal(userText, { lively: !!opts.auto }); brain = "nessari-offline";
     } else setFaceState("offline", false);
   } catch (e) {
     setMood("confused"); failed = true;
     reply = status.local ? "My brain just glitched. " + e.message : "Both my brains are down. Start the local model in Termux, or get me some internet.";
     logEvent("error", { where: "ask", detail: e.message });
   }
+  // Her own chatter: never repeat herself. Too close to something she already said → one more try, then silence.
+  const quietReply = r => !r || /\[quiet\]/i.test(r) || r.replace(/[^a-z]/gi, "").length < 2;
+  if (opts.auto && !failed && window.Variety) {
+    let same = quietReply(reply) ? null : Variety.mostSimilar(reply);
+    if (same && same.sim > 0.55) {
+      logEvent("auto", { detail: `caught a repeat (${Math.round(same.sim * 100)}% like "${same.text}"), trying again` });
+      const again = userText + `\n(You were about to say "${reply}", but that's basically what you already said ${same.text ? `("${same.text}")` : ""}. Say something completely different in idea and wording, or reply [quiet].)`;
+      try { reply = brain === "gemini" ? await askGemini(again) : brain === "claude" ? await askClaude(again) : await askLocal(again, { lively: true, temperature: 1.2 }); }
+      catch { reply = ""; }
+      same = quietReply(reply) ? null : Variety.mostSimilar(reply);
+      if (same && same.sim > 0.55) { logEvent("auto", { detail: "still a repeat, staying quiet: " + reply }); reply = ""; }
+    }
+    if (quietReply(reply)) { reply = ""; Face.gesture(["side_eye_left", "side_eye_right", "squint", "look_up"][Math.floor(Math.random() * 4)]); }
+  }
+  reply = String(reply || "").replace(/\[quiet\]/gi, "").trim();
   setFaceState("thinking", false);
   $("#heard").textContent = "";
   autoTurn = false;
   if (failed) transcriptLine("act", reply);               // shown, but not saved into the conversation
-  else if (opts.auto) history.push({ role: "user", content: "(" + (opts.note || "you spoke up on your own") + ")", auto: true });
+  else if (opts.auto) { if (reply) history.push({ role: "user", content: "(" + (opts.note || "you spoke up on your own") + ")", auto: true }); }
   else if (!opts.quiet) history.push({ role: "user", content: userText });
   if (reply && !failed) {
     history.push({ role: "assistant", content: reply });
     window.Mind?.onSheSaid(reply);
+    window.Variety?.record(reply, opts.topic || (opts.auto ? "auto" : "chat"));
     transcriptLine("bot", reply);
     logEvent("said", { text: reply, brain, seconds: Math.round((Date.now() - started) / 1000) });
   }
@@ -1319,10 +1341,12 @@ const IDEAS = [
 const nightNow = () => { const h = new Date().getHours(); return h >= 23 || h < 7; };
 const canSpeakUp = () => !busy && !talking && !listening && document.visibilityState === "visible";
 
-async function speakUp(prompt, note) {
+async function speakUp(prompt, note, topic = "idle", kind = "react") {
   if (!canSpeakUp()) return false;
+  if (window.Variety?.shouldStayQuiet(topic)) { Face.gesture(Math.random() < 0.5 ? "side_eye_left" : "eye_roll"); logEvent("auto", { detail: "stayed quiet (said enough about " + topic + " today): " + note }); return false; }
   logEvent("auto", { detail: note });
-  await ask(prompt, { quiet: true, auto: true, note });
+  const guide = window.Variety ? window.Variety.guide(topic, kind) : "";
+  await ask(prompt.replace(/\)\s*$/, "") + guide + ")", { quiet: true, auto: true, note, topic });
   lastTalk = Date.now();
   return true;
 }
@@ -1336,11 +1360,12 @@ function idleTick() {
     if (Mind.S.boredom < 0.35 && Math.random() < 0.7) { scheduleAuto(); return; }   // not bored enough to bother
   }
   const online = status.online && (status.hasKey || status.geminiKeyCount > 0);
-  const ideas = online ? IDEAS : IDEAS.filter(i => !i.includes("camera"));   // offline brain can't see
+  const offlineChatter = settings.chatter !== "brain" && status.local;
+  const ideas = online && !offlineChatter ? IDEAS : IDEAS.filter(i => !/camera|sensors/.test(i));   // the offline brain can't see or use tools
   const idea = ideas[Math.floor(Math.random() * ideas.length)];
   const mins = Math.round((Date.now() - lastTalk) / 60000);
   speakUp(`(system: it's been quiet for about ${mins} minutes. Speak up on your own, unprompted. Idea: ${idea}. One or two sentences. Use a tool first if the idea needs one. Don't greet him like it's the first time today.)`,
-    "spoke up on her own: " + idea).then(ok => { if (ok) scheduleAuto(); });
+    "spoke up on her own: " + idea, "idle:" + idea.split(" ").slice(0, 3).join(" "), "idle").then(ok => { if (ok) scheduleAuto(); });
 }
 
 // ---- things happening to her ----
@@ -1706,7 +1731,7 @@ function onSettingChange(key) {
   if (key === "track") { if (settings.track) startTracking(); else { stopTracking(); camOff(); } }
   refreshChips();
 }
-bindSetting("#setBrain", "brain"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
+bindSetting("#setBrain", "brain"); bindSetting("#setChatter", "chatter"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
 bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bindSetting("#setPitch", "pitch", Number);
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
 bindSetting("#setTrack", "track"); bindSetting("#setVision", "vision"); bindSetting("#setEars", "ears"); bindSetting("#setQr", "qr");

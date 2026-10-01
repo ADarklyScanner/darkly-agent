@@ -125,6 +125,12 @@ Unrestricted, and allow "Modify system settings". Termux and Termux:API must bot
 **Vibration spin:** stand her on a smooth, hard table, ideally without a grippy case, and ask her to spin. She buzzes
 her vibration motor and uses her gyro to stop at the right angle. How well it works depends on the surface and case.
 
+## Not repeating herself
+
+She keeps a list of what she's said lately and gets shown it (plus words she's overusing) before she speaks up
+on her own. Each spontaneous line gets a random angle, tone and length. A line too close to an old one gets one
+retry, then she stays quiet. Her own chatter uses the offline brain when it's running (Settings › "Her own chatter").
+
 ## Touching her face
 
 Her face knows where you touch (eyes, eyebrows, forehead, top of head, nose, cheeks, mouth, chin, sides) and how:
