@@ -24,6 +24,15 @@ if [ -z "$MODEL" ] || [ ! -f "$MODEL" ]; then
   done < <(find "$HOME/models" "$HOME/llama.cpp/models" "$HOME/storage/shared/Download" -maxdepth 2 -name '*.gguf' 2>/dev/null)
 fi
 
+# A brain file sitting in Download loads and runs slowly (Android's shared storage is slow).
+# Move it into Termux's own storage once.
+case "$MODEL" in
+  "$HOME"/storage/*|/storage/*|/sdcard/*)
+    echo "Moving $(basename "$MODEL") into Termux so it runs fast (one time, about a minute)..."
+    mkdir -p "$HOME/models"
+    if mv "$MODEL" "$HOME/models/"; then MODEL="$HOME/models/$(basename "$MODEL")"; fi ;;
+esac
+
 if pgrep -x llama-server >/dev/null; then
   echo "Offline brain already running."
 elif [ -n "$LLAMA" ] && [ -n "$MODEL" ]; then

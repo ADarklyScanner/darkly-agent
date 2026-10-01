@@ -203,7 +203,8 @@ const server = http.createServer(async (req, res) => {
       const r = await timedFetch(config().localUrl + "/v1/chat/completions", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: body.messages, max_tokens: body.max_tokens || 300, temperature: 0.8, stream: false })
+        // cache_prompt: reuse the already-read start of the conversation instead of re-reading it every time
+        body: JSON.stringify({ messages: body.messages, max_tokens: body.max_tokens || 300, temperature: 0.8, stream: false, cache_prompt: true })
       }, 180000);
       const j = await r.json().catch(() => ({}));
       if (!r.ok) return send(res, 502, { error: "Local brain error", detail: j });

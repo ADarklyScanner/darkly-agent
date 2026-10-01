@@ -490,7 +490,31 @@ Only use commands for parts listed as installed. If something is MISSING, compla
 You are running on your small offline backup brain: no internet, no camera vision.`
     : `Start every reply with your mood like [mood:happy]. Moods: ${MOOD_NAMES.join(", ")}.
 Use your tools to act. Tool results that start with FAILED mean nothing happened: react to that honestly.`;
-  return `${persona}\n\n## Your body right now\n${bodyReport()}\n\n## Your senses\n${sensorReport()}\n\n## Your memory\n${memory || "(empty)"}\n\n## Rules\n${rules}`;
+  // The offline brain reuses its work when the start of the prompt stays the same, so
+  // things that change every second (sensors, clock) are left out here for it and sent
+  // at the end of the message instead (see quickSenses).
+  const senses = offline ? "" : `\n\n## Your senses\n${sensorReport()}`;
+  return `${persona}\n\n## Your body right now\n${bodyReport()}${senses}\n\n## Your memory\n${memory || "(empty)"}\n\n## Rules\n${rules}`;
+}
+
+function quickSenses() {
+  const b = battery ? `battery ${Math.round(battery.level * 100)}%${battery.charging ? " charging" : ""}` : "";
+  const t = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `(${[b, tipped ? "you are TIPPED OVER" : "upright", "time " + t].filter(Boolean).join(", ")})`;
+}
+
+// Conversation survives reloads and restarts: saved to data/conversation.json
+function recentHistory(n) {
+  const h = history.slice(-n);
+  while (h.length && h[0].role !== "user") h.shift();       // must start with something you said
+  return h;
+}
+function saveConversation() {
+  writeFile("conversation.json", JSON.stringify(history.slice(-60))).catch(() => {});
+}
+async function loadConversation() {
+  try { const h = JSON.parse(await readFile("conversation.json")); if (Array.isArray(h)) history = h; } catch {}
+  for (const m of history.slice(-30)) transcriptLine(m.role === "user" ? "me" : "bot", m.content);
 }
 
 function takeMood(text) {
@@ -501,7 +525,7 @@ function takeMood(text) {
 }
 
 async function askClaude(userText) {
-  const messages = [...history, { role: "user", content: userText }];
+  const messages = [...recentHistory(30), { role: "user", content: userText }];
   for (let round = 0; round < 6; round++) {
     const r = await api("/api/claude", { method: "POST", body: JSON.stringify({ system: systemPrompt(false), tools: TOOLS, messages, max_tokens: 700 }) });
     const text = (r.content || []).filter(b => b.type === "text").map(b => b.text).join(" ").trim();
@@ -522,7 +546,7 @@ async function askClaude(userText) {
 }
 
 async function askLocal(userText) {
-  const msgs = [{ role: "system", content: systemPrompt(true) }, ...history.slice(-12), { role: "user", content: userText }];
+  const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + "\n" + quickSenses() }];
   const { text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) });
   const cmds = [];
   const clean = text.replace(/\[(drive|part|stop)(?::([^\]:]+))?(?::([^\]:]+))?\]/gi, (_, k, a, b) => { cmds.push([k.toLowerCase(), a, b]); return ""; });
@@ -537,29 +561,50 @@ async function askLocal(userText) {
 }
 
 async function ask(userText, opts = {}) {
-  if (busy) return;
+  if (busy) {                                   // don't silently drop what you said
+    if (!opts.quiet) { $("#heard").textContent = "Hang on, still thinking about the last thing…"; }
+    return;
+  }
   busy = true; setFaceState("thinking", true);
   if (!opts.quiet) { transcriptLine("me", userText); logEvent("heard", { text: userText }); }
-  let reply = "", brain = "";
+  let reply = "", brain = "", failed = false;
+  const started = Date.now();
   try {
     const useClaude = settings.brain === "claude" || (settings.brain === "auto" && status.hasKey && status.online && navigator.onLine);
+    if (settings.brain !== "local" && !useClaude && !opts.quiet) {
+      const why = !status.hasKey ? "no Claude key" : "no internet";
+      transcriptLine("act", `Using the offline brain (${why})`);
+    }
     if (useClaude) {
+      $("#heard").textContent = "thinking…";
       try { reply = await askClaude(userText); brain = "claude"; }
-      catch (e) { logEvent("error", { where: "claude", detail: e.message }); if (settings.brain === "claude") throw e; }
+      catch (e) {
+        logEvent("error", { where: "claude", detail: e.message });
+        transcriptLine("act", "Claude didn't answer: " + e.message);
+        if (settings.brain === "claude") throw e;
+      }
     }
     if (!brain) {
       setFaceState("offline", true);
+      $("#heard").textContent = "thinking with the offline brain…";
       reply = await askLocal(userText); brain = "nessari-offline";
     } else setFaceState("offline", false);
   } catch (e) {
-    setMood("confused");
+    setMood("confused"); failed = true;
     reply = status.local ? "My brain just glitched. " + e.message : "Both my brains are down. Start the local model in Termux, or get me some internet.";
     logEvent("error", { where: "ask", detail: e.message });
   }
   setFaceState("thinking", false);
-  if (!opts.quiet) history.push({ role: "user", content: userText });
-  if (reply) { history.push({ role: "assistant", content: reply }); transcriptLine("bot", reply); logEvent("said", { text: reply, brain }); }
-  history = history.slice(-20);
+  $("#heard").textContent = "";
+  if (failed) transcriptLine("act", reply);               // shown, but not saved into the conversation
+  else if (!opts.quiet) history.push({ role: "user", content: userText });
+  if (reply && !failed) {
+    history.push({ role: "assistant", content: reply });
+    transcriptLine("bot", reply);
+    logEvent("said", { text: reply, brain, seconds: Math.round((Date.now() - started) / 1000) });
+  }
+  history = history.slice(-60);
+  saveConversation();
   busy = false;
   if (reply) await speak(reply);
 }
@@ -940,12 +985,16 @@ bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bind
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
 $("#btnFull").onclick = () => document.documentElement.requestFullscreen?.().catch(() => {});
 $("#btnTestVoice").onclick = () => speak("Testing. One two. Yes, I can hear myself, unfortunately.");
-$("#btnForget").onclick = () => { history = []; $("#transcript").innerHTML = ""; };
+$("#btnForget").onclick = () => {
+  if (!confirm("Clear the conversation? Her memory notes and personality stay.")) return;
+  history = []; saveConversation(); $("#transcript").innerHTML = "";
+};
 
 /* ================= boot ================= */
 (async function boot() {
   drawFace();
   await loadRobotFiles();
+  await loadConversation();
   await refreshStatus();
   logEvent("boot", { detail: "face page opened" });
   if (settings.listen === "always") startListening();

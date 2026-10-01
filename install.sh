@@ -5,6 +5,7 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HOME/robot"
 BIN="$PREFIX/bin"
 
+if [ "$1" != "--quick" ]; then
 echo "== Installing packages (a few minutes on a fresh phone) =="
 # Never stop to ask about config files, so it can't sit frozen on a hidden question.
 export DEBIAN_FRONTEND=noninteractive
@@ -16,6 +17,7 @@ pkg install "${KEEP[@]}" nodejs-lts termux-api android-tools procps \
 command -v llama-server >/dev/null 2>&1 || [ -x "$HOME/llama.cpp/build/bin/llama-server" ] \
   || pkg install "${KEEP[@]}" llama-cpp \
   || echo "(Couldn't install the offline brain program. Claude still works.)"
+fi
 
 echo "== Copying robot to $DEST =="
 mkdir -p "$DEST"
@@ -31,6 +33,7 @@ ln -sf "$DEST/robot.sh" "$BIN/robot"
 ln -sf "$DEST/robot-stop.sh" "$BIN/robot-stop"
 ln -sf "$DEST/robot-dedicate.sh" "$BIN/robot-dedicate"
 ln -sf "$DEST/robot-undedicate.sh" "$BIN/robot-undedicate"
+ln -sf "$DEST/robot-update.sh" "$BIN/robot-update"
 
 # Start automatically when the phone boots (needs the Termux:Boot app)
 mkdir -p "$HOME/.termux/boot"
@@ -54,6 +57,7 @@ echo
 echo "Done. Commands:"
 echo "  robot             start her (brain + face)"
 echo "  robot-stop        shut her down"
+echo "  robot-update      get the newest version from GitHub and restart her"
 echo "  robot-dedicate    give the whole phone to the robot (turns off other apps)"
 echo "  robot-undedicate  undo that"
 echo
