@@ -2,6 +2,17 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-01 · v0.11 · Real eyes
+- Vision engine: Google's open-source MediaPipe (Apache 2.0) runs on the phone with no internet. Download it once with robot-vision-download (the installer tries automatically).
+- Her eyes follow your actual face, not just movement. She counts people, notices someone arriving, leaving, getting really close, looking at her or away, and eyes closed for a while.
+- Reads expressions: smiling, surprised, frowning. Mirror mode copies your face with hers.
+- Nod or shake your head to answer her questions yes or no.
+- Hand signs: thumbs up/down (also answers her questions), peace sign, "I love you" sign (heart eyes), fist, pointing up. Wave at her to make her listen.
+- Offline rock paper scissors that reads your actual hand. Staring contest now watches your real blinks.
+- Vibration spin: she spins in place using only her vibration motor (the Cycloramic trick), measuring the turn with her gyro. She can also spin until she's facing you.
+- New tricks: vibro spin, rock paper scissors (offline), mirror me.
+- robot-doctor checks the vision engine.
+
 ## 2026-10-01 · v0.10 · Sturdier
 - Offline brain talks while it thinks: each sentence is spoken as soon as it's written, instead of waiting for the whole reply.
 - New robot-doctor command: checks the server, offline brain, memory, Termux:API, storage, boot setup and tests every Claude and Gemini key, then says what to fix.

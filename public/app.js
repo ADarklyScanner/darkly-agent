@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /* ================= settings ================= */
 const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true,
-  auto: "normal", react: true, night: true, autoMove: false, track: true, ears: true, qr: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
+  auto: "normal", react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
 let settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("robot-settings") || "{}") };
 const saveSettings = () => localStorage.setItem("robot-settings", JSON.stringify(settings));
 
@@ -1437,7 +1437,7 @@ function trackTick() {
     if (frac > 0.006 && frac < 0.5) {
       let x = (sx / n) / 32 - 1, y = (sy / n) / 24 - 1;
       if (settings.facing === "user") x = -x;                // front camera: mirror so she looks AT you
-      if (mode === "motion") window.Face?.lookAt(x * 1.1, y * 0.8);
+      if (mode === "motion" && !(performance.now() < (window.visionLookUntil || 0))) window.Face?.lookAt(x * 1.1, y * 0.8);   // a seen face wins
       if (Date.now() - stillSince > 120000 && frac > 0.05) {
         window.Tricks?.bump("visitors"); window.Tricks?.diary("someone walked in");
         if (mood === "bored" || mood === "sleepy") setMood("calm");
@@ -1654,7 +1654,7 @@ function onSettingChange(key) {
 bindSetting("#setBrain", "brain"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
 bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bindSetting("#setPitch", "pitch", Number);
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
-bindSetting("#setTrack", "track"); bindSetting("#setEars", "ears"); bindSetting("#setQr", "qr");
+bindSetting("#setTrack", "track"); bindSetting("#setVision", "vision"); bindSetting("#setEars", "ears"); bindSetting("#setQr", "qr");
 bindSetting("#setAuto", "auto"); bindSetting("#setReact", "react"); bindSetting("#setNight", "night"); bindSetting("#setAutoMove", "autoMove");
 $("#btnFull").onclick = () => document.documentElement.requestFullscreen?.().catch(() => {});
 $("#btnTestVoice").onclick = () => speak("Testing. One two. Yes, I can hear myself, unfortunately.");

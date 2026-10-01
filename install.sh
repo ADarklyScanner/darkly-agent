@@ -35,6 +35,11 @@ ln -sf "$DEST/robot-dedicate.sh" "$BIN/robot-dedicate"
 ln -sf "$DEST/robot-undedicate.sh" "$BIN/robot-undedicate"
 ln -sf "$DEST/robot-update.sh" "$BIN/robot-update"
 ln -sf "$DEST/robot-doctor.sh" "$BIN/robot-doctor"
+ln -sf "$DEST/robot-vision-download.sh" "$BIN/robot-vision-download"
+
+# Vision engine for face tracking and hand gestures (kept between updates; downloads only what's missing)
+mkdir -p "$DEST/public/vendor"
+bash "$DEST/robot-vision-download.sh" || echo "(Vision download failed; run robot-vision-download later.)"
 
 # Start automatically when the phone boots (needs the Termux:Boot app)
 mkdir -p "$HOME/.termux/boot"

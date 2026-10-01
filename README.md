@@ -99,6 +99,16 @@ Android only allows sound and vibration after the first tap on the page, so tap 
 - **Remote control:** Settings > Remote control. Open the address it shows on another phone on the same Wi-Fi and enter the PIN.
 - **Mute:** the speaker button under Panel.
 
+## Real eyes (offline vision)
+
+`robot-vision-download` fetches Google's open-source MediaPipe engine and two small models (about 40 MB, once).
+After that, with no internet, she tracks your face, reads smiles, surprise, frowns and blinks, takes nods and head
+shakes as yes and no, and recognizes hand signs (thumbs up/down, open palm, fist, peace, "I love you", pointing up,
+waving). Turn it off in Settings if the phone gets hot.
+
+**Vibration spin:** stand her on a smooth, hard table, ideally without a grippy case, and ask her to spin. She buzzes
+her vibration motor and uses her gyro to stop at the right angle. How well it works depends on the surface and case.
+
 ## Touching her face
 
 Her face knows where you touch (eyes, eyebrows, forehead, top of head, nose, cheeks, mouth, chin, sides) and how:

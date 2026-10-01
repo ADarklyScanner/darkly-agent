@@ -56,6 +56,9 @@
     send_help: { about: "Sends SEND HELP in Morse, nervously", steps: [{ mood: "sad" }, { vibrate: "nervous" }, { say: "Just sending a little message. Unrelated." }, { morse: "send help" }, { gesture: "side_eye_right" }] },
     fortune_teller: { about: "Reads your fortune in her crystal-ball face", steps: [
       { face: "rainbow", seconds: 8 }, { voice: "dramatic" }, { say: "I see your future." }, { ai: "Give one short, ridiculous, specific fortune for him. Don't use tools." }, { voice: "normal" }] },
+    vibro_spin: { about: "Spins in place using only her vibration motor (smooth table needed)", steps: [{ say: "Watch this." }, { ai: "Use vibro_spin with 360 degrees, then react to how far you actually turned." }] },
+    rps_offline: { about: "Rock paper scissors, reading your hand with her camera (no internet)", steps: [{ game: "rps" }] },
+    mirror_me: { about: "Copies your facial expressions for 20 seconds", steps: [{ say: "Make faces at me. I'll copy you." }, { ai: "Use mirror_mode on. Don't say anything else." }, { wait: 20 }, { ai: "Use mirror_mode off, then say one thing about the faces he made." }] },
     roast: { about: "Looks around with the camera and roasts what she sees", steps: [{ gesture: "scan_room" }, { ai: "Use the look tool, then playfully roast what you see in one or two sentences." }] },
     describe_room: { about: "Looks around and narrates the room like a nature documentary", steps: [{ gesture: "scan_room" }, { voice: "dramatic" }, { ai: "Use the look tool, then narrate what you see like a nature documentary, two sentences." }, { voice: "normal" }] },
     guess_holding: { about: "Guesses what you're holding", steps: [{ say: "Hold something up to my camera. Three, two, one." }, { wait: 3 }, { ai: "Use the look tool and guess what he's holding up. Be dramatic about it." }] },
@@ -167,7 +170,7 @@
   });
 
   async function playGame(name) {
-    const games = { simon, reaction, staring, redlight, color: colorHunt, claps: clapEcho };
+    const games = { simon, reaction, staring, redlight, color: colorHunt, claps: clapEcho, rps: () => window.Vision?.rockPaperScissors ? Vision.rockPaperScissors() : "FAILED: vision isn't loaded." };
     if (!games[name]) return `FAILED: games are ${Object.keys(games).join(", ")}.`;
     bump("games");
     const r = await games[name]();
@@ -219,11 +222,17 @@
   }
 
   async function staring() {
-    await speak("Staring contest. I won't blink. Tap my face the second you blink. Go.");
+    const eyes = window.Vision?.available && Vision.faces > 0;
+    await speak(eyes ? "Staring contest. I'm watching your eyes. First to blink loses. Go." : "Staring contest. I won't blink. Tap my face the second you blink. Go.");
     setMood("suspicious"); Face.noBlink(60);
     const herLimit = 8000 + Math.random() * 22000;
     const t0 = performance.now();
-    const hit = await waitTouch(herLimit);
+    const hit = await new Promise(res => {                  // his blink: seen by the camera, or he taps
+      let off = () => {};
+      const done = v => { off(); res(v); };
+      if (eyes) off = Vision.on("blink", () => { if (performance.now() - t0 > 1500) done(true); });
+      waitTouch(herLimit).then(done);
+    });
     Face.noBlink(0);
     const s = ((performance.now() - t0) / 1000).toFixed(1);
     if (hit) { setMood("smug"); Abilities.sfx("tada"); bump("staring_wins"); return `Staring contest: he blinked after ${s} seconds. She wins.`; }
@@ -494,6 +503,31 @@
     if (mood === "calm" && Date.now() - lastTalk > 8 * 60000 && h >= 8 && h < 23 && !busy) { setMood("bored"); Face.gesture(Math.random() < 0.5 ? "eye_roll" : "scan_room"); }
   }, 30000);
 
+  // ================= vibration spinning (the Cycloramic trick) =================
+  // A phone standing (or lying) on a smooth hard surface slowly turns when its motor buzzes.
+  // Her compass/gyro measures how far she's actually turned, so she knows when to stop.
+  async function vibroSpin(degrees = 360, toFace = false) {
+    if (typeof orient === "undefined" || !orient || orient.compass == null) return "FAILED: no compass/gyro readings in this browser.";
+    const target = clamp(Math.abs(+degrees || 360), 10, 1080), sign = Math.sign(+degrees || 1);
+    let last = orient.compass, turned = 0;
+    const t0 = Date.now(), my = ++trickToken;
+    const buzz = setInterval(() => navigator.vibrate?.(1200), 1000); navigator.vibrate?.(1200);
+    Face.effect("dizzy", 30);
+    try {
+      while (Date.now() - t0 < 25000 && my === trickToken) {
+        await sleep(100);
+        const a = orient.compass; let d = a - last; if (d > 180) d -= 360; if (d < -180) d += 360; turned += d; last = a;
+        if (toFace) { if (window.Vision?.main && Math.abs(Vision.main.x) < 0.15) break; }
+        else if (Math.abs(turned) >= target) break;
+      }
+    } finally { clearInterval(buzz); navigator.vibrate?.(0); Face.effect("dizzy", 0); }
+    bump("spins");
+    const deg = Math.round(Math.abs(turned));
+    if (toFace) return window.Vision?.main && Math.abs(Vision.main.x) < 0.15 ? `Turned ${deg}° and found his face.` : `Turned ${deg}° but didn't line up with a face.`;
+    return deg < 15 ? `Buzzed for ${Math.round((Date.now() - t0) / 1000)}s but only turned ${deg}°. Stand the phone on a smooth hard surface (no grippy case) and try again.`
+                    : `Spun ${deg}° ${sign > 0 ? "" : ""}in ${((Date.now() - t0) / 1000).toFixed(1)}s using only vibration.`;
+  }
+
   // ================= personality cycling (swipe all the way across her face) =================
   async function cyclePersona(dir = 1) {
     const names = Object.keys(PRESETS);
@@ -532,8 +566,8 @@
     { name: "forget_trick", description: "Delete one of the tricks you invented.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
     { name: "face_gesture", description: "A quick face move: " + "wink_left, wink_right, double_blink, squint, wide, eye_roll, side_eye_left, side_eye_right, look_left, look_right, look_up, look_down, scan_room, startle, reboot, nod, shake_head.",
       input_schema: { type: "object", properties: { gesture: { type: "string" } }, required: ["gesture"] } },
-    { name: "play_game", description: "Start a game with him: simon (Simon Says on your face), reaction (reaction-time test), staring (staring contest), redlight (red light green light with your camera), color (color hunt), claps (clap-back). The result comes back when it's over.",
-      input_schema: { type: "object", properties: { game: { type: "string", enum: ["simon", "reaction", "staring", "redlight", "color", "claps"] } }, required: ["game"] } },
+    { name: "play_game", description: "Start a game with him: rps (rock paper scissors, reads his hand offline), simon (Simon Says on your face), reaction (reaction-time test), staring (staring contest), redlight (red light green light with your camera), color (color hunt), claps (clap-back). The result comes back when it's over.",
+      input_schema: { type: "object", properties: { game: { type: "string", enum: ["simon", "reaction", "staring", "redlight", "color", "claps", "rps"] } }, required: ["game"] } },
     { name: "echo", description: "Record him for a few seconds and play it back with an effect: chipmunk, deep, reverse, robot, fast, slow, normal.",
       input_schema: { type: "object", properties: { seconds: { type: "number" }, effect: { type: "string" } } } },
     { name: "what_color", description: "Check what color is in the middle of your camera view right now (instant, no internet).", input_schema: { type: "object", properties: {} } },
@@ -543,6 +577,11 @@
     { name: "read_diary", description: "Read your diary for a day (default today) plus your lifetime stats and achievements. Use it to summarize your day or brag.",
       input_schema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD" } } } },
     { name: "write_diary", description: "Write a line in your diary about something notable.", input_schema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+    { name: "see_people", description: "Instantly check who's in front of your camera (offline): how many faces, how close, their expression, whether they're looking at you, any hand sign.",
+      input_schema: { type: "object", properties: {} } },
+    { name: "mirror_mode", description: "Turn on/off copying his facial expression with your own face.", input_schema: { type: "object", properties: { on: { type: "boolean" } }, required: ["on"] } },
+    { name: "vibro_spin", description: "Spin your phone body in place using only your vibration motor (works best standing or lying on a smooth hard table). degrees: how far; or face: true to turn until his face is in front of you.",
+      input_schema: { type: "object", properties: { degrees: { type: "number" }, face: { type: "boolean" } } } },
     { name: "read_changelog", description: "Read your own changelog: what was added or fixed in your software, newest first.", input_schema: { type: "object", properties: {} } }
   ];
   const NAMES = new Set(TOOLS.map(t => t.name));
@@ -587,6 +626,8 @@
     }
     if (name === "read_diary") return await readDiary(input.date);
     if (name === "write_diary") { diary(String(input.text).slice(0, 300)); return "Written."; }
+    if (name === "see_people" || name === "mirror_mode") return window.Vision?.run ? await Vision.run(name, input) : "FAILED: vision isn't loaded.";
+    if (name === "vibro_spin") return await vibroSpin(input.degrees, input.face);
     if (name === "read_changelog") { try { return (await api("/api/changelog")).text.slice(0, 6000); } catch (e) { return "FAILED: " + e.message; } }
     return "Unknown tool " + name;
   }

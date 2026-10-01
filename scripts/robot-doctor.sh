@@ -43,6 +43,10 @@ else bad "Termux:API isn't answering" "Install Termux:API from F-Droid, open it 
 if [ -w "$HOME/storage/shared" ]; then ok "Can save photos and videos to the gallery"
 else bad "No storage permission" "Run termux-setup-storage and tap Allow."; fi
 
+V="$DIR/public/vendor/mediapipe"
+if [ -s "$V/vision_bundle.mjs" ] && [ -s "$V/face_landmarker.task" ] && [ -s "$V/gesture_recognizer.task" ]; then ok "Vision engine installed (faces, expressions, hand gestures)"
+else warn "Vision engine not downloaded" "With internet on: robot-vision-download"; fi
+
 # --- keys ---
 echo "-- Online brains --"
 CLAUDE=$(grep -E '^sk-ant-' "$HOME/.robot-key" 2>/dev/null)
