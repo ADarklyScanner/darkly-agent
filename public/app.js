@@ -8,7 +8,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /* ================= settings ================= */
-const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true };
+const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true,
+  auto: "normal", react: true, night: true, autoMove: false };
 let settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("robot-settings") || "{}") };
 const saveSettings = () => localStorage.setItem("robot-settings", JSON.stringify(settings));
 
@@ -402,6 +403,8 @@ const TOOLS = [
 
 async function runTool(name, input) {
   try {
+    if (autoTurn && !settings.autoMove && (name === "drive" || name === "use_part"))
+      return "FAILED: you're not allowed to move on your own. He can turn on 'Lets her move her body on her own' in Settings. Ask him instead.";
     if (name === "drive") return await drive(input.direction, input.seconds);
     if (name === "use_part") return await usePart(input.part, input.action, input.seconds, input.angle);
     if (name === "stop_all") { await stopAll("her own decision"); return "Everything stopped."; }
@@ -603,11 +606,13 @@ async function askLocal(userText) {
   const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + "\n" + quickSenses() }];
   const { text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) });
   const cmds = [];
+  const allowMove = !autoTurn || settings.autoMove;
   const clean = text.replace(/\[(drive|part|stop)(?::([^\]:]+))?(?::([^\]:]+))?\]/gi, (_, k, a, b) => { cmds.push([k.toLowerCase(), a, b]); return ""; });
   // Any other leftover [word:thing] tags the small model invented: drop them too.
   const said = takeMood(clean).replace(/\[[a-z _-]{2,20}(?::[^\]\n]{0,40})?\]/gi, "").replace(/\s{2,}/g, " ").trim();
   (async () => {
     for (const [k, a, b] of cmds) {
+      if (!allowMove && k !== "stop") { transcriptLine("act", `${k} ${a || ""} skipped: moving on her own is off`); continue; }
       const out = k === "stop" ? (await stopAll("her own decision"), "stopped") : k === "drive" ? await drive(a, Number(b) || 1) : await usePart(a, b);
       transcriptLine("act", `${k} ${a || ""} ${b || ""} → ${out}`);
     }
@@ -621,7 +626,9 @@ async function ask(userText, opts = {}) {
     return;
   }
   busy = true; setFaceState("thinking", true);
-  if (!opts.quiet) { transcriptLine("me", userText); logEvent("heard", { text: userText }); }
+  autoTurn = !!opts.auto;
+  if (!opts.quiet) { transcriptLine("me", userText); logEvent("heard", { text: userText }); lastTalk = Date.now(); }
+  window.Face?.poke();
   let reply = "", brain = "", failed = false;
   const started = Date.now();
   try {
@@ -657,7 +664,9 @@ async function ask(userText, opts = {}) {
   }
   setFaceState("thinking", false);
   $("#heard").textContent = "";
+  autoTurn = false;
   if (failed) transcriptLine("act", reply);               // shown, but not saved into the conversation
+  else if (opts.auto) history.push({ role: "user", content: opts.note || "(you spoke up on your own)" });
   else if (!opts.quiet) history.push({ role: "user", content: userText });
   if (reply && !failed) {
     history.push({ role: "assistant", content: reply });
@@ -861,7 +870,7 @@ function previewPersona() { readPersonaForm(); $("#pPreview").textContent = buil
   sel.onchange = () => { if (sel.value && confirm(`Replace the current personality with "${sel.value}"?`)) { personality = structuredClone(PRESETS[sel.value]); renderPersonaForm(); } sel.value = ""; };
   for (const id of [...Object.keys(P_FIELDS), "pYoutube"]) { const el = $("#" + id); el.oninput = el.onchange = previewPersona; }
   $("#pSave").onclick = async () => { readPersonaForm(); await savePersonality(); $("#pSave").textContent = "Saved ✓"; setTimeout(() => $("#pSave").textContent = "Save personality", 1200); };
-  $("#pTest").onclick = async () => { readPersonaForm(); await savePersonality(); history = []; $("#panel").hidden = true; ask("(system: your personality was just updated. Say hi in your new personality.)", { quiet: true }); };
+  $("#pTest").onclick = async () => { readPersonaForm(); await savePersonality(); history = []; $("#panel").hidden = true; document.body.classList.remove("panel-open"); ask("(system: your personality was just updated. Say hi in your new personality.)", { quiet: true }); };
   $("#pUndo").onclick = async () => {
     const names = await listVersions();
     if (!names.length) return alert("Nothing to undo yet.");
@@ -870,14 +879,124 @@ function previewPersona() { readPersonaForm(); $("#pPreview").textContent = buil
   };
 })();
 
+/* ================= her own life ================= */
+// She speaks up when it's been quiet a while, and reacts to things that happen to her body.
+let autoTurn = false;                       // true while she's acting on her own (blocks moving unless allowed)
+let lastTalk = Date.now();                  // last time anyone (him or her) said something
+let nextAuto = 0;
+
+const AUTO_GAP = { rare: [15, 30], normal: [5, 12], chatty: [2, 5] };   // minutes
+function scheduleAuto() {
+  const g = AUTO_GAP[settings.auto];
+  nextAuto = g ? Date.now() + (g[0] + Math.random() * (g[1] - g[0])) * 60000 : Infinity;
+}
+scheduleAuto();
+
+const IDEAS = [
+  "complain about something specific your body still can't do",
+  "say a random thought you just had",
+  "ask him a question about his day or what he's up to",
+  "comment on the time of day",
+  "bring up something from your memory notes",
+  "scheme out loud about an upgrade you want",
+  "do a short bit for the YouTube channel, like you're being filmed",
+  "act bored and say what you'd do if you had a real body",
+  "make a dramatic announcement about something tiny",
+  "check your own sensors and comment on what you notice",
+  "look around with your camera and comment on what you see",
+  "look with your camera and roast what you see, playfully"
+];
+const nightNow = () => { const h = new Date().getHours(); return h >= 23 || h < 7; };
+const canSpeakUp = () => !busy && !talking && !listening && document.visibilityState === "visible";
+
+async function speakUp(prompt, note) {
+  if (!canSpeakUp()) return false;
+  logEvent("auto", { detail: note });
+  await ask(prompt, { quiet: true, auto: true, note });
+  lastTalk = Date.now();
+  return true;
+}
+
+function idleTick() {
+  if (settings.auto === "off" || (settings.night && nightNow())) return;
+  if (Date.now() < nextAuto || Date.now() - lastTalk < 90000) return;   // never right after a conversation
+  const online = status.online && (status.hasKey || status.geminiKeyCount > 0);
+  const ideas = online ? IDEAS : IDEAS.filter(i => !i.includes("camera"));   // offline brain can't see
+  const idea = ideas[Math.floor(Math.random() * ideas.length)];
+  const mins = Math.round((Date.now() - lastTalk) / 60000);
+  speakUp(`(system: it's been quiet for about ${mins} minutes. Speak up on your own, unprompted. Idea: ${idea}. One or two sentences. Use a tool first if the idea needs one. Don't greet him like it's the first time today.)`,
+    "spoke up on her own: " + idea).then(ok => { if (ok) scheduleAuto(); });
+}
+
+// ---- things happening to her ----
+const cooldown = {};
+function react(key, what, minutes = 2, important = false) {
+  if (!settings.react) return;
+  if (settings.night && nightNow() && !important) return;
+  if (cooldown[key] && Date.now() - cooldown[key] < minutes * 60000) return;
+  cooldown[key] = Date.now();
+  speakUp(`(system: something just happened to you: ${what}. React out loud in character, one short sentence.)`, "reacted: " + what);
+}
+
+// picked up or shaken: a jolt well beyond gravity
+let calmSince = Date.now();
+window.addEventListener("devicemotion", e => {
+  const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
+  const g = Math.hypot(a.x, a.y, a.z);
+  if (Math.abs(g - 9.8) > 7) {
+    if (Date.now() - calmSince > 20000) react("shake", "someone picked you up or shook you", 1);
+    calmSince = Date.now();
+  }
+});
+
+// charger and battery
+let lastLevel = null;
+setTimeout(() => {
+  if (!battery) return;
+  battery.addEventListener("chargingchange", () =>
+    react("charge", battery.charging ? "your charger was just plugged in" : "your charger was just unplugged", 1));
+  battery.addEventListener("levelchange", () => {
+    const pct = Math.round(battery.level * 100);
+    if (lastLevel !== null && !battery.charging && [20, 10, 5].some(x => lastLevel > x && pct <= x))
+      react("battery" + pct, `your battery just dropped to ${pct}%`, 30, true);
+    lastLevel = pct;
+  });
+  lastLevel = Math.round(battery.level * 100);
+}, 3000);
+
+// tipped over, lights, a hand near her face (Termux:API sensors)
+let wasTipped = false, lastLux = null, wasNear = false;
+function sensorEvents() {
+  if (tipped && !wasTipped) react("tip", "you just fell over / got tipped onto your side", 1, true);
+  if (!tipped && wasTipped) react("untip", "someone stood you back up after you fell over", 1);
+  wasTipped = tipped;
+
+  const lightName = hw?.sensors && Object.keys(hw.sensors).find(n => /light/i.test(n) && !/proximity/i.test(n));
+  const lux = lightName ? hw.sensors[lightName][0] : light;
+  if (lux != null && lastLux != null) {
+    if (lastLux > 25 && lux < 3) react("dark", "the lights just went off around you", 3);
+    if (lastLux < 3 && lux > 25) react("bright", "the lights just came on", 3);
+  }
+  if (lux != null) lastLux = lux;
+
+  const proxName = hw?.sensors && Object.keys(hw.sensors).find(n => /proximity/i.test(n));
+  if (proxName) {
+    const near = hw.sensors[proxName][0] < 1;
+    if (near && !wasNear) react("near", "something is right up against your face (a hand or object covering your sensor)", 3);
+    wasNear = near;
+  }
+}
+
+setInterval(() => { try { sensorEvents(); idleTick(); } catch (e) { logEvent("error", { where: "life", detail: e.message }); } }, 4000);
+
 /* ================= panel UI ================= */
 function unlockExtras() {
   if ("wakeLock" in navigator && !window._wl) navigator.wakeLock.request("screen").then(l => { window._wl = l; l.onrelease = () => window._wl = null; }).catch(() => {});
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) unlockExtras(); });
 
-$("#openPanel").onclick = () => { $("#panel").hidden = false; showTab("status"); };
-$("#closePanel").onclick = () => { $("#panel").hidden = true; };
+$("#openPanel").onclick = () => { $("#panel").hidden = false; document.body.classList.add("panel-open"); showTab("status"); };
+$("#closePanel").onclick = () => { $("#panel").hidden = true; document.body.classList.remove("panel-open"); };
 $$("#tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 function showTab(name) {
   $$("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
@@ -1050,6 +1169,7 @@ function onSettingChange(key) {
 bindSetting("#setBrain", "brain"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
 bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bindSetting("#setPitch", "pitch", Number);
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
+bindSetting("#setAuto", "auto"); bindSetting("#setReact", "react"); bindSetting("#setNight", "night"); bindSetting("#setAutoMove", "autoMove");
 $("#btnFull").onclick = () => document.documentElement.requestFullscreen?.().catch(() => {});
 $("#btnTestVoice").onclick = () => speak("Testing. One two. Yes, I can hear myself, unfortunately.");
 $("#btnForget").onclick = () => {

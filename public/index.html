@@ -136,6 +136,17 @@
     <label>Pitch <input id="setPitch" type="range" min="0.5" max="1.8" step="0.05"></label>
     <label>Camera <select id="setFacing"><option value="user">Front (same side as the face)</option><option value="environment">Back</option></select></label>
     <label class="check"><input id="setTipStop" type="checkbox"> Stop motors if she tips over</label>
+    <h3>Her own life</h3>
+    <label>Talks on her own <select id="setAuto">
+      <option value="off">Never</option>
+      <option value="rare">Rarely (every 15–30 min)</option>
+      <option value="normal">Sometimes (every 5–12 min)</option>
+      <option value="chatty">A lot (every 2–5 min)</option>
+    </select></label>
+    <label class="check"><input id="setReact" type="checkbox"> Reacts to things (picked up, charger, lights, battery, hand near her face)</label>
+    <label class="check"><input id="setNight" type="checkbox"> Quiet at night (11 PM – 7 AM)</label>
+    <label class="check"><input id="setAutoMove" type="checkbox"> Lets her move her body on her own (careful near table edges)</label>
+    <p class="muted">Every time she speaks up uses the online brain, so "A lot" costs more.</p>
     <div class="row"><button id="btnFull">Full screen</button><button id="btnTestVoice" class="ghost">Test voice</button><button id="btnForget" class="ghost">Clear conversation</button></div>
   </div>
 </section>

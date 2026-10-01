@@ -53,7 +53,11 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--panel);border:1p
 .line{padding:8px 12px;border-radius:12px;max-width:88%;background:var(--panel);border:1px solid var(--line)}
 .line.me{align-self:flex-end;background:#2a1740}
 .line.act{align-self:center;font-size:.8rem;color:var(--muted);background:transparent;border-style:dashed}
-#typeForm{display:flex;gap:8px;padding:8px 100px calc(16px + env(safe-area-inset-bottom)) 0;background:var(--bg);border-top:1px solid var(--line)}
+#typeForm{display:flex;gap:8px;padding:8px 0 calc(16px + env(safe-area-inset-bottom)) 0;background:var(--bg);border-top:1px solid var(--line)}
+/* With the panel open, STOP moves up into the top bar, away from Send and the keyboard */
+body.panel-open #stopBtn{top:calc(8px + env(safe-area-inset-top));bottom:auto;right:8px;width:70px;height:42px;border-radius:12px;font-size:.9rem;border-width:2px}
+body.panel-open #panelHead{padding-right:86px}
+body.panel-open .tab{padding-bottom:24px}
 #typeBox,.tab input:not([type=checkbox]):not([type=range]),.tab select,textarea{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;width:100%}
 #dpad{display:grid;grid-template-columns:repeat(3,72px);gap:8px;justify-content:center;user-select:none}
 #dpad button{height:64px;font-size:1.4rem;touch-action:none}
