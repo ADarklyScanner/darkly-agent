@@ -71,3 +71,7 @@ label{display:block;margin:12px 0;color:var(--muted);font-size:.9rem}
 label select,label input{margin-top:6px;display:block}
 label.check{display:flex;gap:8px;align-items:center}
 input[type=range]{width:100%}
+.trait{margin:10px 0}
+.trait .top{display:flex;justify-content:space-between;color:var(--ink);font-size:.95rem}
+.trait .top span{color:var(--glow);font-size:.85rem}
+.trait .ends{display:flex;justify-content:space-between;color:var(--muted);font-size:.75rem}

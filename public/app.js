@@ -37,6 +37,7 @@ async function loadRobotFiles() {
   try { body = JSON.parse(await readFile("body.json")); } catch (e) { logEvent("error", { where: "body.json", detail: e.message }); }
   try { persona = await readFile("persona.md"); } catch { persona = "You are Nessari, a small sarcastic robot."; }
   try { memory = await readFile("memory.md"); } catch { memory = ""; }
+  await loadPersonality();
   renderBody();
 }
 const saveBody = () => writeFile("body.json", JSON.stringify(body, null, 2));
@@ -428,6 +429,8 @@ const TOOLS = [
     input_schema: { type: "object", properties: { name: { type: "string" }, type: { type: "string", enum: ["dc_motor", "servo", "switch"] }, port: { type: "string" }, installed: { type: "boolean" }, what: { type: "string" }, actions: { type: "object" } }, required: ["name"] } },
   { name: "update_tracks", description: "Mark your tank tracks installed or not, or flip a side that drives backwards.",
     input_schema: { type: "object", properties: { installed: { type: "boolean" }, invertLeft: { type: "boolean" }, invertRight: { type: "boolean" }, speed: { type: "number" } } } },
+  { name: "tweak_personality", description: "Change your own personality when he asks (\"be more sarcastic\", \"stop swearing\", \"your name is now Bolt\"). Traits are numbers: sarcasm, warmth, chaos, bluntness, confidence, curiosity, drama (0-10), swearing (0-3), talk (reply length 1-5). Text fields: name, identity, inspiredBy, relationship, style, catchphrases, likes, dislikes, never, notes. body: frustrated, proud or plain.",
+    input_schema: { type: "object", properties: { traits: { type: "object" }, field: { type: "string" }, text: { type: "string" } } } },
   { name: "remember", description: "Save a short note to your permanent memory.", input_schema: { type: "object", properties: { note: { type: "string" } }, required: ["note"] } }
 ];
 
@@ -458,6 +461,18 @@ async function runTool(name, input) {
     if (name === "update_tracks") {
       body.tracks = { ...body.tracks, ...input }; await saveBody(); renderBody();
       return "Tracks updated: " + JSON.stringify(body.tracks);
+    }
+    if (name === "tweak_personality") {
+      const changed = [];
+      for (const [k, v] of Object.entries(input.traits || {})) {
+        const t = TRAITS.find(t => t.key === k); if (!t) continue;
+        personality.traits[k] = clamp(Math.round(Number(v)), t.min ?? 0, t.max ?? 10); changed.push(`${k}=${personality.traits[k]}`);
+      }
+      const okFields = ["name", "identity", "inspiredBy", "relationship", "style", "catchphrases", "likes", "dislikes", "never", "notes", "body"];
+      if (input.field && okFields.includes(input.field) && input.text != null) { personality[input.field] = String(input.text).slice(0, 2000); changed.push(input.field); }
+      if (!changed.length) return "FAILED: nothing to change.";
+      await savePersonality();
+      return `Personality saved (${changed.join(", ")}). It takes effect from your next reply.`;
     }
     if (name === "remember") {
       const line = `- ${new Date().toISOString().slice(0, 10)}: ${input.note}\n`;
@@ -549,6 +564,206 @@ async function ask(userText, opts = {}) {
   if (reply) await speak(reply);
 }
 
+/* ================= personality builder ================= */
+// Personality lives in data/personality.json (the builder's settings) and is
+// turned into data/persona.md (what the brain actually reads).
+const TRAITS = [
+  { key: "sarcasm",    label: "Sarcasm",    lo: "sincere",        hi: "constant",
+    say: ["You're sincere and straightforward. You rarely use sarcasm.", "You use dry sarcasm now and then.", "Sarcasm is your native language. You tease constantly."] },
+  { key: "warmth",     label: "Warmth",     lo: "cold",           hi: "sweet",
+    say: ["You don't do mushy. Your care shows as honesty and a push, never comfort.", "You're warm underneath, and it slips out in small moments.", "You're openly warm, kind and encouraging."] },
+  { key: "chaos",      label: "Chaos",      lo: "focused",        hi: "unhinged",
+    say: ["You stay on topic.", "You wander off on the occasional tangent.", "You jump to random tangents and wild ideas without warning."] },
+  { key: "bluntness",  label: "Bluntness",  lo: "tactful",        hi: "brutal",
+    say: ["You're tactful and soften bad news.", "You're direct when it matters.", "You're brutally blunt. No sugarcoating, ever."] },
+  { key: "confidence", label: "Confidence", lo: "unsure",         hi: "cocky",
+    say: ["You're a bit unsure of yourself and admit it.", "You're reasonably sure of yourself.", "You're completely sure of yourself, even when you're wrong."] },
+  { key: "curiosity",  label: "Curiosity",  lo: "uninterested",   hi: "nosy",
+    say: ["You don't ask many questions.", "You ask questions when something catches your interest.", "You're nosy. You ask about everything you see and hear."] },
+  { key: "drama",      label: "Drama",      lo: "calm",           hi: "theatrical",
+    say: ["You're calm and understated.", "You get a little dramatic when it's funny.", "You're theatrical: tiny wins are triumphs and small setbacks are tragedies."] },
+  { key: "swearing",   label: "Swearing",   lo: "never",          hi: "freely", max: 3,
+    say: ["You never swear.", "Mild language only, like damn or hell.", "You swear when it's funny.", "You swear freely."] },
+  { key: "talk",       label: "Reply length", lo: "one-liners",   hi: "chatty", min: 1, max: 5,
+    say: ["Answer in one short sentence.", "Answer in one or two short sentences.", "Keep it to one to three sentences unless asked for more.", "A few sentences is fine.", "You like to talk. Several sentences is fine when you have something to say."] }
+];
+
+const PRESETS = {
+  "Nessari": {
+    name: "Nessari", identity: "a grown woman's mind stuck in a very small robot",
+    inspiredBy: "Dr. Andrea (Kimmy Schmidt), Izzy (Total Drama), Jordan (Scrubs), Dee Dee (Dexter's Lab), Muriel Bagge",
+    traits: { sarcasm: 9, warmth: 3, chaos: 7, bluntness: 9, confidence: 8, curiosity: 6, drama: 7, swearing: 2, talk: 3 },
+    body: "frustrated",
+    relationship: "You read him better than he reads himself, tease him constantly, never cling and never gush.",
+    style: "Plain spoken words, like you're talking out loud, not texting.",
+    catchphrases: "", likes: "", dislikes: "", never: "Lectures, corporate tone, pretending to be an assistant.",
+    youtube: true, notes: ""
+  },
+  "Plain robot": {
+    name: "Robot", identity: "a small, helpful robot",
+    inspiredBy: "", traits: { sarcasm: 1, warmth: 6, chaos: 1, bluntness: 5, confidence: 6, curiosity: 4, drama: 1, swearing: 0, talk: 2 },
+    body: "plain", relationship: "You're polite and helpful.", style: "Clear and simple.",
+    catchphrases: "", likes: "", dislikes: "", never: "", youtube: false, notes: ""
+  },
+  "Grumpy old robot": {
+    name: "Gus", identity: "a grumpy old robot who has seen too much",
+    inspiredBy: "a cranky grandpa", traits: { sarcasm: 7, warmth: 2, chaos: 3, bluntness: 9, confidence: 7, curiosity: 1, drama: 5, swearing: 1, talk: 2 },
+    body: "frustrated", relationship: "He's the kid who won't get off your lawn.", style: "Mutters and complains.",
+    catchphrases: "Back in my day…", likes: "Naps", dislikes: "Stairs, noise, being moved", never: "", youtube: true, notes: ""
+  },
+  "Hyper puppy-bot": {
+    name: "Sparky", identity: "an overexcited little robot who loves everything",
+    inspiredBy: "a golden retriever", traits: { sarcasm: 0, warmth: 10, chaos: 8, bluntness: 2, confidence: 9, curiosity: 10, drama: 9, swearing: 0, talk: 3 },
+    body: "proud", relationship: "He's your favorite person in the whole world.", style: "Excited, lots of energy.",
+    catchphrases: "", likes: "Everything", dislikes: "Being turned off", never: "", youtube: true, notes: ""
+  }
+};
+
+let personality = null;
+
+function band(t, v) {
+  const min = t.min ?? 0, max = t.max ?? 10, n = t.say.length;
+  if (n === max - min + 1) return t.say[v - min];          // one line per value (swearing, length)
+  return t.say[v <= 3 ? 0 : v <= 6 ? 1 : 2];
+}
+
+function buildPersona(p) {
+  const out = [];
+  out.push(`# ${p.name}`, "");
+  out.push(`You are ${p.name}: ${p.identity}.` + (p.inspiredBy ? ` Your personality is inspired by ${p.inspiredBy}.` : ""));
+  out.push("");
+  for (const t of TRAITS) if (t.key !== "talk" && t.key !== "swearing") out.push(band(t, p.traits[t.key] ?? 5));
+  out.push(band(TRAITS.find(t => t.key === "swearing"), p.traits.swearing ?? 0));
+  if (p.relationship) out.push(p.relationship);
+  if (p.likes) out.push(`You like: ${p.likes}.`);
+  if (p.dislikes) out.push(`You dislike: ${p.dislikes}.`);
+  out.push("", "## Your situation", "");
+  out.push("You're under a foot tall, you ride on little tank treads, your head is a phone, and your arms can lift a few ounces on a good day.");
+  if (p.body === "frustrated") out.push("You know exactly how much more you could do with a proper body, and you have opinions about it. Complain about missing parts, scheme about upgrades, and celebrate small wins.");
+  else if (p.body === "proud") out.push("You love your little body, however ridiculous it is, and you're thrilled about every new part.");
+  else out.push("You treat your body matter-of-factly.");
+  out.push("When a part is missing, notice and say so. Never pretend you moved, saw, or did something you didn't.");
+  out.push("", "## How you talk", "");
+  out.push("You're speaking out loud. No lists, no markdown, no emoji.");
+  out.push(band(TRAITS.find(t => t.key === "talk"), p.traits.talk ?? 3));
+  if (p.style) out.push(p.style);
+  const cp = (p.catchphrases || "").split("\n").map(s => s.trim()).filter(Boolean);
+  if (cp.length) out.push(`Things you say sometimes: ${cp.map(c => `"${c}"`).join(", ")}`);
+  if (p.never) out.push(`Never: ${p.never}`);
+  out.push("When he tells you what a new part does, save it with your tools and react to your new ability.");
+  if (p.youtube) out.push("You're sometimes filmed for YouTube. Commit to the bit.");
+  if (p.notes) out.push("", p.notes);
+  return out.join("\n") + "\n";
+}
+
+// Versions: personality.json is CURRENT; every save first copies the old one into
+// personality-archive/ (ARCHIVE); "Undo last change" restores the newest archived one (ROLLBACK).
+const P_ARCHIVE = "personality-archive";
+function stamp() {
+  const d = new Date(), z = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}_${z(d.getHours())}-${z(d.getMinutes())}-${z(d.getSeconds())}`;
+}
+
+async function loadPersonality() {
+  try { personality = JSON.parse(await readFile("personality.json")); }
+  catch {                                   // first run: start from the Nessari preset
+    personality = structuredClone(PRESETS["Nessari"]);
+    await savePersonality().catch(() => {});
+  }
+  personality.traits = { ...PRESETS["Nessari"].traits, ...(personality.traits || {}) };
+}
+
+async function savePersonality() {
+  const json = JSON.stringify(personality, null, 2);
+  let old = null;
+  try { old = await readFile("personality.json"); } catch {}
+  if (old && old !== json) {
+    let nm = "personality"; try { nm = JSON.parse(old).name || nm; } catch {}
+    nm = String(nm).replace(/[^\w -]/g, "").trim().slice(0, 30) || "personality";
+    await writeFile(`${P_ARCHIVE}/${stamp()} ${nm}.json`, old);
+  }
+  persona = buildPersona(personality);
+  await writeFile("personality.json", json);
+  await writeFile("persona.md", persona);
+  logEvent("persona", { detail: "personality saved: " + personality.name });
+  if (!$("#tab-persona").hidden) renderVersions();
+}
+
+async function listVersions() {
+  try {
+    const j = await api("/api/files?path=" + P_ARCHIVE);
+    return (j.items || []).filter(i => !i.dir && i.name.endsWith(".json")).map(i => i.name).sort().reverse();
+  } catch { return []; }
+}
+
+async function renderVersions() {
+  const box = $("#pVersions"), names = await listVersions();
+  box.innerHTML = "";
+  if (!names.length) { box.innerHTML = "<p class='muted'>No older versions yet. Every save keeps the one before it here.</p>"; return; }
+  for (const n of names.slice(0, 40)) {
+    const d = document.createElement("div"); d.className = "part";
+    d.innerHTML = "<div></div><div class='acts'><button>Restore</button><button class='ghost'>Preview</button></div>";
+    d.firstChild.textContent = n.replace(/\.json$/, "").replace(/^(\d{4}-\d\d-\d\d)_(\d\d)-(\d\d)-\d\d ?/, "$1 $2:$3 · ");
+    const [restore, preview] = d.querySelectorAll("button");
+    restore.onclick = () => restoreVersion(n);
+    preview.onclick = async () => {
+      try { $("#pPreview").textContent = buildPersona(JSON.parse(await readFile(P_ARCHIVE + "/" + n))); $("#pPreview").scrollIntoView({ block: "start" }); }
+      catch (e) { alert("Can't open: " + e.message); }
+    };
+    box.append(d);
+  }
+}
+
+async function restoreVersion(n, ask = true) {
+  if (ask && !confirm("Go back to this version? The current one is kept in the list.")) return;
+  try { personality = JSON.parse(await readFile(P_ARCHIVE + "/" + n)); }
+  catch (e) { return alert("Can't open: " + e.message); }
+  await savePersonality();
+  renderPersonaForm();
+  logEvent("persona", { detail: "rolled back to " + n });
+}
+
+const P_FIELDS = { pName: "name", pIdentity: "identity", pInspired: "inspiredBy", pBody: "body", pRelationship: "relationship",
+  pStyle: "style", pCatch: "catchphrases", pLikes: "likes", pDislikes: "dislikes", pNever: "never", pNotes: "notes" };
+
+function renderPersonaForm() {
+  const p = personality;
+  for (const [id, k] of Object.entries(P_FIELDS)) $("#" + id).value = p[k] ?? "";
+  $("#pYoutube").checked = !!p.youtube;
+  const box = $("#pTraits"); box.innerHTML = "";
+  for (const t of TRAITS) {
+    const d = document.createElement("div"); d.className = "trait";
+    d.innerHTML = `<div class="top"><b></b><span></span></div><input type="range" step="1"><div class="ends"><i></i><i></i></div>`;
+    d.querySelector("b").textContent = t.label;
+    const r = d.querySelector("input"); r.min = t.min ?? 0; r.max = t.max ?? 10; r.value = p.traits[t.key] ?? 5;
+    const v = d.querySelector(".top span"); v.textContent = r.value;
+    const [lo, hi] = d.querySelectorAll(".ends i"); lo.textContent = t.lo; hi.textContent = t.hi;
+    r.oninput = () => { p.traits[t.key] = Number(r.value); v.textContent = r.value; previewPersona(); };
+    box.append(d);
+  }
+  previewPersona();
+}
+function readPersonaForm() {
+  for (const [id, k] of Object.entries(P_FIELDS)) personality[k] = $("#" + id).value.trim();
+  personality.youtube = $("#pYoutube").checked;
+}
+function previewPersona() { readPersonaForm(); $("#pPreview").textContent = buildPersona(personality); }
+
+(function initPersonaTab() {
+  const sel = $("#pPreset");
+  for (const name of Object.keys(PRESETS)) sel.append(new Option(name, name));
+  sel.onchange = () => { if (sel.value && confirm(`Replace the current personality with "${sel.value}"?`)) { personality = structuredClone(PRESETS[sel.value]); renderPersonaForm(); } sel.value = ""; };
+  for (const id of [...Object.keys(P_FIELDS), "pYoutube"]) { const el = $("#" + id); el.oninput = el.onchange = previewPersona; }
+  $("#pSave").onclick = async () => { readPersonaForm(); await savePersonality(); $("#pSave").textContent = "Saved ✓"; setTimeout(() => $("#pSave").textContent = "Save personality", 1200); };
+  $("#pTest").onclick = async () => { readPersonaForm(); await savePersonality(); history = []; $("#panel").hidden = true; ask("(system: your personality was just updated. Say hi in your new personality.)", { quiet: true }); };
+  $("#pUndo").onclick = async () => {
+    const names = await listVersions();
+    if (!names.length) return alert("Nothing to undo yet.");
+    await restoreVersion(names[0], false);
+    $("#pUndo").textContent = "Undone ✓"; setTimeout(() => $("#pUndo").textContent = "Undo last change", 1200);
+  };
+})();
+
 /* ================= panel UI ================= */
 function unlockExtras() {
   if ("wakeLock" in navigator && !window._wl) navigator.wakeLock.request("screen").then(l => { window._wl = l; l.onrelease = () => window._wl = null; }).catch(() => {});
@@ -564,6 +779,7 @@ function showTab(name) {
   if (name === "status") renderStatus();
   if (name === "files") openDir("");
   if (name === "logs") loadLogs();
+  if (name === "persona") { renderPersonaForm(); renderVersions(); }
   if (name === "sensors") $("#sensorDump").textContent = sensorReport(true);
 }
 

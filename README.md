@@ -51,6 +51,23 @@ to `data/config.json`.
 3. To lock the phone to her face, use Settings > Security > Other security settings > **Pin windows**.
 4. In the Panel's Settings tab, tap **Full screen**.
 
+## Personality builder
+
+Panel > **Personality**. Pick a preset (Nessari, Plain robot, Grumpy old robot, Hyper puppy-bot) or build your own:
+name, who she is, who she's inspired by, trait sliders (sarcasm, warmth, chaos, bluntness, confidence,
+curiosity, drama, swearing, reply length), how she feels about her body, how she treats you, catchphrases,
+likes, dislikes, and free-form notes. The bottom of the tab shows exactly what she'll be told.
+
+You can also just tell her: "be more sarcastic", "stop swearing", "your name is Bolt now". She changes it herself.
+
+Versions work like your Personality Builder folders:
+- **Current:** `data/personality.json`
+- **Archive:** `data/personality-archive/`. Every save, yours or hers, keeps the old version here.
+- **Rollback:** the **Undo last change** button, or **Restore** on any older version.
+
+The same personality drives both brains (Claude and offline). `persona.md` is generated from the builder,
+so put custom text in the builder's "Anything else" box instead of editing that file.
+
 ## Her senses
 
 - **Camera:** she looks when she wants to, or when you ask. Claude sees the picture.

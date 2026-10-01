@@ -43,6 +43,7 @@
       <button data-tab="status" class="on">Status</button>
       <button data-tab="talk">Talk</button>
       <button data-tab="body">Body</button>
+      <button data-tab="persona">Personality</button>
       <button data-tab="sensors">Sensors</button>
       <button data-tab="files">Files</button>
       <button data-tab="logs">Logs</button>
@@ -78,6 +79,34 @@
     <h3>Parts</h3>
     <div id="partsList"></div>
     <p class="muted">To add a part, plug it into a free port and tell her what it is ("motor three is a crane that lifts the hook"). Or edit <b>body.json</b> in Files.</p>
+  </div>
+
+  <div class="tab" id="tab-persona" hidden>
+    <label>Start from a preset <select id="pPreset"><option value="">Pick one…</option></select></label>
+    <label>Name <input id="pName"></label>
+    <label>Who she is (one line) <input id="pIdentity"></label>
+    <label>Inspired by (characters, people, vibes) <input id="pInspired"></label>
+    <h3>Traits</h3>
+    <div id="pTraits"></div>
+    <label>How she feels about her robot body <select id="pBody">
+      <option value="frustrated">Frustrated: knows she deserves a better body</option>
+      <option value="proud">Proud of her ridiculous little body</option>
+      <option value="plain">Matter-of-fact about it</option>
+    </select></label>
+    <label>How she treats you <textarea id="pRelationship" rows="2"></textarea></label>
+    <label>How she talks (style, words she uses) <textarea id="pStyle" rows="2"></textarea></label>
+    <label>Catchphrases (one per line) <textarea id="pCatch" rows="2"></textarea></label>
+    <label>Likes <input id="pLikes"></label>
+    <label>Dislikes <input id="pDislikes"></label>
+    <label>Never does <textarea id="pNever" rows="2"></textarea></label>
+    <label class="check"><input id="pYoutube" type="checkbox"> Knows she's sometimes filmed for YouTube and commits to the bit</label>
+    <label>Anything else (written straight into her instructions) <textarea id="pNotes" rows="3"></textarea></label>
+    <div class="row"><button id="pSave">Save personality</button><button id="pTest" class="ghost">Save and say hi</button><button id="pUndo" class="ghost">Undo last change</button></div>
+    <p class="muted">You can also just tell her: "be more sarcastic", "stop swearing", "your name is Bolt now". Every change, yours or hers, keeps the old version below.</p>
+    <h3>Older versions</h3>
+    <div id="pVersions"></div>
+    <h3>What she'll be told</h3>
+    <pre id="pPreview"></pre>
   </div>
 
   <div class="tab" id="tab-sensors" hidden>
