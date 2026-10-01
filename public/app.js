@@ -42,47 +42,12 @@ async function loadRobotFiles() {
 }
 const saveBody = () => writeFile("body.json", JSON.stringify(body, null, 2));
 
-/* ================= face ================= */
-const MOODS = {
-  calm:     { eye: 36, brow: [0, 0],   mouth: 6 },
-  happy:    { eye: 30, brow: [-3, -3], mouth: 16 },
-  excited:  { eye: 42, brow: [-6, -6], mouth: 20 },
-  smug:     { eye: 18, brow: [4, -4],  mouth: 8 },
-  annoyed:  { eye: 20, brow: [8, -2],  mouth: -4 },
-  angry:    { eye: 24, brow: [12, -4], mouth: -10 },
-  sad:      { eye: 30, brow: [-6, 6],  mouth: -12 },
-  sleepy:   { eye: 6,  brow: [3, 3],   mouth: 0 },
-  confused: { eye: 32, brow: [-6, 6],  mouth: 2 },
-  flirty:   { eye: 24, brow: [-4, 2],  mouth: 12 }
-};
-const MOOD_NAMES = Object.keys(MOODS);
-let talking = false, mouthOpen = false;
-
-function drawFace() {
-  const m = MOODS[mood] || MOODS.calm;
-  const h = m.eye;
-  for (const id of ["eyeL", "eyeR"]) {
-    const e = document.getElementById(id);
-    e.setAttribute("height", h); e.setAttribute("y", 50 - h / 2); e.setAttribute("rx", Math.min(10, h / 2));
-  }
-  // brow[0] = inner end drop, brow[1] = outer end drop
-  const top = 50 - h / 2 - 12;
-  $("#browL").setAttribute("y1", top + m.brow[1]); $("#browL").setAttribute("y2", top + m.brow[0]);
-  $("#browR").setAttribute("y1", top + m.brow[0]); $("#browR").setAttribute("y2", top + m.brow[1]);
-  const c = m.mouth;
-  $("#mouth").setAttribute("d", talking && mouthOpen
-    ? `M78 98 Q100 ${120 + Math.max(c, 0) / 2} 122 98 Q100 ${92 - c / 4} 78 98`
-    : `M75 100 Q100 ${100 + c} 125 100`);
-}
-function setMood(x) { if (MOODS[x]) { mood = x; drawFace(); } }
-function setFaceState(cls, on) { $("#face").classList.toggle(cls, on); }
-setInterval(() => { if (talking) { mouthOpen = !mouthOpen; drawFace(); } }, 140);
-// blink
-setInterval(() => {
-  if (talking) return;
-  for (const id of ["eyeL", "eyeR"]) { const e = document.getElementById(id); e.setAttribute("height", 3); e.setAttribute("y", 49); }
-  setTimeout(drawFace, 130);
-}, 4200);
+/* ================= face (drawn and animated by face.js) ================= */
+const MOOD_NAMES = ["calm", "happy", "excited", "smug", "annoyed", "angry", "sad", "sleepy", "confused", "flirty"];
+let talking = false;
+function drawFace() {}                      // face.js redraws itself every frame
+function setMood(x) { if (MOOD_NAMES.includes(x)) { mood = x; window.Face?.setMood(x); } }
+function setFaceState(cls, on) { window.Face?.setState(cls, on); }
 
 /* ================= voice out ================= */
 let voices = [];
@@ -104,8 +69,9 @@ function speak(text) {
     const v = voices.find(v => v.voiceURI === settings.voice); if (v) u.voice = v;
     u.rate = settings.rate; u.pitch = settings.pitch + (mood === "excited" ? 0.15 : mood === "sad" ? -0.15 : 0);
     stopListening(true);
-    talking = true;
-    u.onend = u.onerror = () => { talking = false; mouthOpen = false; drawFace(); resumeListening(); resolve(); };
+    talking = true; window.Face?.setTalking(true);
+    u.onboundary = () => window.Face?.kick();          // each spoken word pulses the mouth
+    u.onend = u.onerror = () => { talking = false; window.Face?.setTalking(false); resumeListening(); resolve(); };
     speechSynthesis.speak(u);
   });
 }
@@ -935,6 +901,7 @@ function refreshChips() {
   const firstOnline = { auto: g ? "Gemini" : c && "Claude", "auto-claude": c ? "Claude" : g && "Gemini", gemini: g && "Gemini", claude: c && "Claude" }[settings.brain];
   const brain = settings.brain === "local" ? "offline" : (firstOnline || (status.local ? "offline" : "none"));
   $("#chipBrain").textContent = "brain: " + brain;
+  window.Face?.setLabel("brain: " + brain);
   $("#chipBrain").className = "chip " + (brain === "none" ? "bad" : "ok");
   $("#chipBody").textContent = link.connected ? "body: " + link.kind : "body: none";
   $("#chipBody").className = "chip " + (link.connected ? "ok" : "bad");

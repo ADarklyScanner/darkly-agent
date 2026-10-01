@@ -21,15 +21,12 @@ button.ghost{background:transparent}
 .chip.ok{color:var(--ok);border-color:#1f5a44}
 .chip.bad{color:var(--bad);border-color:#5a1f2a}
 #openPanel{position:absolute;top:calc(8px + env(safe-area-inset-top));right:10px}
-#face{width:min(92vw,560px);height:auto;filter:drop-shadow(0 0 18px rgba(224,122,224,.45))}
-#face rect{fill:var(--glow);transition:all .18s ease}
-#face line{stroke:var(--glow);stroke-width:5;stroke-linecap:round;transition:all .18s ease}
-#face path{fill:none;stroke:var(--glow);stroke-width:6;stroke-linecap:round;transition:d .15s ease}
-#face.listening rect{fill:#7af0ff}
-#face.thinking #eyes{transform:translateY(-6px)}
-#face.offline rect{fill:var(--gold)}
-#face #eyes{transition:transform .2s ease}
-#caption{min-height:4.5em;max-width:92vw;text-align:center;margin-top:10px}
+/* The face fills the whole screen; captions and the mic sit on top of it near the bottom */
+#face{position:absolute;inset:0;width:100%;height:100%;display:block;z-index:0}
+#faceView{justify-content:flex-end;padding-bottom:calc(28px + env(safe-area-inset-bottom))}
+#chips,#openPanel,#caption,#micBtn{z-index:1}
+#micBtn{position:relative}
+#caption{position:relative;min-height:4.5em;max-width:88vw;text-align:center;margin-top:10px;text-shadow:0 1px 6px #000}
 #heard{color:var(--muted);font-size:.95rem}
 #said{font-size:1.1rem}
 #micBtn{margin-top:12px;width:84px;height:84px;border-radius:50%;font-size:2rem;background:#3a1c52;border:2px solid var(--purple)}

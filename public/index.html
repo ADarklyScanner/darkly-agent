@@ -18,15 +18,7 @@
   </div>
   <button id="openPanel" class="ghost" aria-label="Open control panel">Panel</button>
 
-  <svg id="face" viewBox="0 0 200 140" aria-label="Robot face">
-    <g id="eyes">
-      <line id="browL" x1="40" y1="22" x2="72" y2="22" />
-      <line id="browR" x1="128" y1="22" x2="160" y2="22" />
-      <rect id="eyeL" x="42" y="32" width="28" height="36" rx="10" />
-      <rect id="eyeR" x="130" y="32" width="28" height="36" rx="10" />
-    </g>
-    <path id="mouth" d="M75 100 Q100 110 125 100" />
-  </svg>
+  <canvas id="face" aria-label="Robot face"></canvas>
 
   <div id="caption"><div id="heard"></div><div id="said"></div></div>
 
@@ -148,6 +140,7 @@
   </div>
 </section>
 
+<script src="face.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
