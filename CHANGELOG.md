@@ -2,6 +2,22 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-01 · v0.12 · A mind underneath
+- Behavior engine (mind.js) under everything: perception → events → salience → attention → working memory → inner state → action.
+- Restraint: most things she notices don't get a comment. Each event gets a salience score; only salient ones become speech, smaller ones only a face reaction, small ones nothing. A speech budget stops her chattering.
+- Habituation: the first bang gets a strong reaction, the fifth barely a glance. Things she's never seen before, and loud things at night, stand out more.
+- Inner state instead of switch-flipping moods: arousal, irritation, amusement, curiosity, boredom and alertness rise with events and fade at their own pace, blending subtly into her face. Repeated poking builds irritation (annoyed, then angry); scratches and pets calm it. Strong feelings break through.
+- Attention: a sudden event steals her gaze; if it's big enough she stops mid-sentence, reacts, then picks up with "Anyway…".
+- Working memory: a running stream of recent events with how she knows them (saw, heard, felt, told, inferred) goes along with each message, so "do that again", "where did I put the screwdriver" and "that's the third time" work.
+- World model: where things are, with confidence that fades unless reinforced ("I'm sure" vs "I think" vs "I vaguely remember"); names you use for things; open loops she brings up later (when you come back, when internet returns, when she's on the charger).
+- Says how she knows things and checks garbled speech instead of guessing.
+- Backchannels while you talk (nods, eyebrows, blinks). While thinking she keeps looking at you but glances away now and then. Tiny eye movements and uneven blinking so she never looks frozen. Searches the room when you leave her view.
+- Only speaks up on her own when someone's actually around and she's bored, or has unfinished business.
+- Learns a bedtime routine: on the charger late at night (in the dark, or at the usual time) she goes to sleep; she wakes when you talk, touch her or come into view.
+- Your personality settings now change behavior too: how much it takes to make her talk, how big her reactions are, how fast she gets irritated or bored.
+- Daily compression: raw events become a short episode summary per day.
+- Fixed: lying flat on a table no longer counts as tipped over or tilted. She now reads the direction of gravity: upright, flat (resting), face down, upside down, on her side.
+
 ## 2026-10-01 · v0.11 · Real eyes
 - Vision engine: Google's open-source MediaPipe (Apache 2.0) runs on the phone with no internet. Download it once with robot-vision-download (the installer tries automatically).
 - Her eyes follow your actual face, not just movement. She counts people, notices someone arriving, leaving, getting really close, looking at her or away, and eyes closed for a while.

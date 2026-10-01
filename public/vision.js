@@ -69,7 +69,7 @@ function onFaces(r) {
   const i = boxes.reduce((b, f, k) => f.w > boxes[b].w ? k : b, 0), m = boxes[i];
   const cx = (m.x0 + m.x1) / 2, cy = (m.y0 + m.y1) / 2;
   window.visionLookUntil = now() + 400;                    // face beats plain motion for where her eyes go
-  Face.lookAt(mirrorX(cx) * 1.15, (cy * 2 - 1) * 0.9, 400);
+  if (!window.Mind?.distracted()) Face.lookAt(mirrorX(cx) * 1.15, (cy * 2 - 1) * 0.9, 400);   // unless something stole her attention
 
   // arrivals and counts
   if (!faceSince) faceSince = now();

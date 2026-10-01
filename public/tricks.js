@@ -465,12 +465,13 @@
   // ================= phone pose + network reactions =================
   let poseState = { upside: false, tiltSide: 0, tiltSince: 0, pickedAt: 0, stillSince: Date.now() };
   setInterval(() => {
-    if (typeof orient === "undefined" || !orient || orient.tiltFrontBack == null) return;
-    const beta = orient.tiltFrontBack, gamma = orient.tiltSide;
-    const upside = beta < -45;
+    if (typeof pose === "undefined" || typeof grav === "undefined" || !grav) return;
+    const upside = pose === "upside_down";
     if (upside && !poseState.upside) { Face.effect("dizzy", 3); react("upside", "you're being held upside down", 1); }
     poseState.upside = upside;
-    const side = Math.abs(gamma) > 22 && Math.abs(gamma) < 55 ? Math.sign(gamma) : 0;
+    // a lean to the side only counts while she's roughly standing (lying flat is not a tilt)
+    const n = Math.hypot(grav.x, grav.y, grav.z) || 1, gx = grav.x / n, gy = grav.y / n;
+    const side = pose !== "flat" && gy > 0.5 && Math.abs(gx) > 0.35 && Math.abs(gx) < 0.75 ? -Math.sign(gx) : 0;
     if (side !== poseState.tiltSide) { poseState.tiltSide = side; poseState.tiltSince = Date.now(); }
     else if (side && Date.now() - poseState.tiltSince > 1500 && Date.now() - poseState.tiltSince < 1700) {
       Face.gesture(side > 0 ? "look_right" : "look_left");

@@ -91,7 +91,8 @@ function speak(text) {
       u.rate = clamp(settings.rate * vs.rate, 0.3, 3);
       u.pitch = clamp(settings.pitch * vs.pitch + (mood === "excited" ? 0.15 : mood === "sad" ? -0.15 : 0), 0, 2);
       u.volume = vs.volume ?? 1;
-      u.onboundary = () => window.Face?.kick();          // each spoken word pulses the mouth
+      u.onboundary = e => { window.Face?.kick(); window.speakChar = e.charIndex; };   // each spoken word pulses the mouth
+      u.onstart = () => { window.speakIndex = speakingNow.indexOf(u); window.speakChar = 0; };
       return u;
     });                                                  // kept in a list so Chrome can't garbage-collect them mid-sentence
     speakingNow[speakingNow.length - 1].onend = finish;
@@ -114,13 +115,14 @@ function startListening() {
   rec.interimResults = true;
   rec.continuous = settings.listen === "always";
   rec.onresult = ev => {
-    let interim = "", final = "";
+    let interim = "", final = "", conf = 1;
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const r = ev.results[i];
-      if (r.isFinal) final += r[0].transcript; else interim += r[0].transcript;
+      if (r.isFinal) { final += r[0].transcript; if (r[0].confidence > 0) conf = Math.min(conf, r[0].confidence); } else interim += r[0].transcript;
     }
     $("#heard").textContent = (final || interim).trim();
-    if (final.trim()) onHeard(final.trim());
+    if (interim.trim()) window.Mind?.onUserSpeaking(interim);       // nods and little reactions while he talks
+    if (final.trim()) onHeard(final.trim(), conf);
   };
   rec.onerror = ev => { if (ev.error !== "no-speech" && ev.error !== "aborted") logEvent("error", { where: "hearing", detail: ev.error }); };
   rec.onend = () => {
@@ -138,7 +140,7 @@ function resumeListening() {
   if (pausedForSpeech && settings.listen === "always") { pausedForSpeech = false; setTimeout(startListening, 250); }
   pausedForSpeech = false;
 }
-function onHeard(text) {
+function onHeard(text, conf = 1) {
   if (settings.listen === "always" && settings.wake.trim()) {
     const w = settings.wake.trim().toLowerCase();
     const i = text.toLowerCase().indexOf(w);
@@ -146,7 +148,8 @@ function onHeard(text) {
     text = text.slice(i + w.length).replace(/^[\s,.!?]+/, "") || "hey";
   }
   if (settings.listen === "push") stopListening();
-  ask(text);
+  // unsure speech recognition: tell her, so she can check instead of guessing
+  ask(conf < 0.55 ? `${text}\n(speech recognition was unsure about that: ${Math.round(conf * 100)}% confident)` : text);
 }
 $("#micBtn").onclick = () => {
   unlockExtras();
@@ -502,14 +505,29 @@ const recordVoice = (s, l) => recordMedia("voice", s, l);
 
 /* ================= sensors ================= */
 let motion = null, orient = null, battery = null, tipped = false, light = null;
-window.addEventListener("devicemotion", e => { const a = e.accelerationIncludingGravity; if (a) motion = { x: a.x, y: a.y, z: a.z }; });
-window.addEventListener("deviceorientation", e => {
-  orient = { compass: e.alpha, tiltFrontBack: e.beta, tiltSide: e.gamma };
-  // The phone stands upright as her head: beta ~ 90. Way off = she fell over.
-  const nowTipped = e.beta != null && (Math.abs(e.beta) < 25 || Math.abs(e.gamma) > 60);
-  if (nowTipped && !tipped && settings.tipStop && link.connected) { stopAll("tipped over"); transcriptLine("act", "Tip-over detected, motors stopped"); }
-  tipped = nowTipped;
+// Pose from the direction of gravity (smoothed): upright | flat (face up, resting) | face_down | upside_down | on_side | leaning.
+// Lying flat on a table is NOT tipped over.
+let grav = null, pose = "unknown", poseCandidate = "unknown", poseSince = 0;
+function poseOf(g) {
+  const n = Math.hypot(g.x, g.y, g.z) || 1, x = g.x / n, y = g.y / n, z = g.z / n;
+  if (z > 0.8) return "flat"; if (z < -0.8) return "face_down";
+  if (y > 0.7) return "upright"; if (y < -0.7) return "upside_down";
+  if (Math.abs(x) > 0.7) return "on_side"; return "leaning";
+}
+window.addEventListener("devicemotion", e => {
+  const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
+  motion = { x: a.x, y: a.y, z: a.z };
+  grav = grav ? { x: grav.x * 0.85 + a.x * 0.15, y: grav.y * 0.85 + a.y * 0.15, z: grav.z * 0.85 + a.z * 0.15 } : { ...motion };
+  const p = poseOf(grav);
+  if (p !== poseCandidate) { poseCandidate = p; poseSince = Date.now(); }
+  else if (p !== pose && Date.now() - poseSince > 800) {          // held for a moment, not just a jolt
+    pose = p;
+    const nowTipped = ["on_side", "face_down", "upside_down"].includes(pose);
+    if (nowTipped && !tipped && settings.tipStop && link.connected) { stopAll("tipped over"); transcriptLine("act", "Tip-over detected, motors stopped"); }
+    tipped = nowTipped;
+  }
 });
+window.addEventListener("deviceorientation", e => { orient = { compass: e.alpha, tiltFrontBack: e.beta, tiltSide: e.gamma }; });
 navigator.getBattery?.().then(b => { battery = b; const u = () => refreshChips(); b.onlevelchange = u; b.onchargingchange = u; u(); });
 try { if ("AmbientLightSensor" in window) { const s = new AmbientLightSensor(); s.onreading = () => { light = s.illuminance; }; s.start(); } } catch {}
 
@@ -540,7 +558,7 @@ function sensorReport(full = false) {
   return [
     hwReport(full),
     battery ? `Phone battery ${Math.round(battery.level * 100)}%${battery.charging ? " (charging)" : ""}` : "Battery unknown",
-    orient ? `Compass ${f(orient.compass)}°, tilt front/back ${f(orient.tiltFrontBack)}°, side ${f(orient.tiltSide)}°${tipped ? " — TIPPED OVER" : ""}` : "Orientation unknown",
+    orient ? `Compass ${f(orient.compass)}°, tilt front/back ${f(orient.tiltFrontBack)}°, side ${f(orient.tiltSide)}°${tipped ? " — TIPPED OVER" : ""}, pose: ${pose === "flat" ? "lying flat (resting)" : pose}` : "Orientation unknown",
     motion ? `Accel x${f(motion.x)} y${f(motion.y)} z${f(motion.z)}` : "",
     light != null ? `Light ${f(light)} lux` : "",
     `Camera ${camStream ? "on" : "off"}`,
@@ -572,6 +590,7 @@ async function snapshot() {
 /* ================= the brain ================= */
 const TOOLS = [
   ...(window.Tricks?.tools || []),
+  ...(window.Mind?.tools || []),
   { name: "take_photo", description: "Take a full-quality photo with your camera and save it to his phone's gallery (Pictures/Nessari).",
     input_schema: { type: "object", properties: { label: { type: "string", description: "a few words for the file name" } } } },
   { name: "record_video", description: "Record a video with your camera (and microphone) and save it to the gallery (Movies/Nessari). 1-60 seconds.",
@@ -621,7 +640,13 @@ const TOOLS = [
 ];
 
 async function runTool(name, input) {
+  const out = await runToolInner(name, input);
+  try { window.Mind?.onAction(name, input, Array.isArray(out) ? "(photo)" : out); } catch {}
+  return out;
+}
+async function runToolInner(name, input) {
   try {
+    if (window.Mind?.handles(name)) return await Mind.run(name, input);
     if (autoTurn && !settings.autoMove && (name === "drive" || name === "use_part"))
       return "FAILED: you're not allowed to move on your own. He can turn on 'Lets her move her body on her own' in Settings. Ask him instead.";
     if (name === "drive") return await drive(input.direction, input.seconds);
@@ -730,7 +755,8 @@ You are running on your small offline backup brain: no internet, no camera visio
 Use your tools to act. Tool results that start with FAILED mean nothing happened: react to that honestly.
 You have a synthesizer (play songs, compose your own, sing), sound effects, a vibration motor, face effects and face gestures, Morse code, timers, a flashlight, screen brightness, games, a camera that can save photos and videos, voice memos and notes. Use them freely for bits, reactions and comedic timing, but don't overdo it every reply.
 Your trick book (do_trick; "random" for a surprise): ${window.Tricks?.summary() || ""}. When something you just did was cool, you may save it as a new trick with save_trick.
-Morning you're groggy, late at night you're quieter and weirder.`;
+Morning you're groggy, late at night you're quieter and weirder.
+${window.Mind?.RULES || ""}`;
   // Both brains reuse work when the start of the prompt stays the same (offline: llama's
   // cache, Claude: prompt caching, billed at a fraction of the price). So things that change
   // every second (sensors, clock) are NOT in here; they ride along at the end of your message.
@@ -740,7 +766,7 @@ Morning you're groggy, late at night you're quieter and weirder.`;
 function quickSenses() {
   const b = battery ? `battery ${Math.round(battery.level * 100)}%${battery.charging ? " charging" : ""}` : "";
   const t = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return `(Robot status, don't repeat this: ${[b, tipped ? "you are TIPPED OVER" : "upright", "time " + t].filter(Boolean).join(", ")})`;
+  return `(Robot status, don't repeat this: ${[b, tipped ? "you are TIPPED OVER" : pose === "flat" ? "lying flat" : "upright", "time " + t].filter(Boolean).join(", ")})`;
 }
 
 // Conversation survives reloads and restarts: saved to data/conversation.json
@@ -779,7 +805,7 @@ async function switchConversationIfNeeded() {
 function takeMood(text) {
   let m, out = text;
   const re = /\[mood:\s*([a-z]+)\s*\]/gi;
-  while ((m = re.exec(text))) setMood(m[1].toLowerCase());
+  while ((m = re.exec(text))) { setMood(m[1].toLowerCase()); window.Mind?.moodImpulse(m[1].toLowerCase()); }
   // Small models copy the bracket formats they see ([senses], [sense:upright]...). Never say those out loud.
   return out.replace(re, "").replace(/\[\s*senses?\b[^\]\n]*\]/gi, "").replace(/\s{2,}/g, " ").trim();
 }
@@ -806,7 +832,7 @@ let cacheStats = { read: 0, written: 0, fresh: 0 };
 
 async function askClaude(userText) {
   const system = [{ type: "text", text: systemPrompt(false), cache_control: CACHE }];
-  const messages = [...claudeHistory(), { role: "user", content: `${userText}\n\n[senses]\n${sensorReport()}` }];
+  const messages = [...claudeHistory(), { role: "user", content: `${userText}\n\n[senses]\n${sensorReport()}\n\n[context]\n${window.Mind?.context() || ""}` }];
   for (let round = 0; round < 6; round++) {
     if (round > 0) {                       // move the 4th cache mark to the newest tool result
       for (const m of messages) if (Array.isArray(m.content)) for (const b of m.content) if (b.type === "tool_result") delete b.cache_control;
@@ -858,7 +884,7 @@ async function askGemini(userText) {
   const messages = [
     { role: "system", content: systemPrompt(false) },
     ...recentHistory(30),
-    { role: "user", content: `${userText}\n\n[senses]\n${sensorReport()}` }
+    { role: "user", content: `${userText}\n\n[senses]\n${sensorReport()}\n\n[context]\n${window.Mind?.context() || ""}` }
   ];
   for (let round = 0; round < 6; round++) {
     const r = await api("/api/gemini", { method: "POST", body: JSON.stringify({ messages, tools: GEMINI_TOOLS }) });
@@ -952,7 +978,7 @@ async function askLocalStreaming(msgs) {
 }
 
 async function askLocal(userText) {
-  const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + "\n" + quickSenses() }];
+  const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + "\n" + quickSenses() + "\n(" + (window.Mind?.context(true) || "") + ")" }];
   let text;
   try { text = await askLocalStreaming(msgs); localSpoke = true; }
   catch (e) { ({ text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) })); }
@@ -981,7 +1007,7 @@ async function ask(userText, opts = {}) {
   }
   busy = true; setFaceState("thinking", true);
   autoTurn = !!opts.auto;
-  if (!opts.quiet) { transcriptLine("me", userText); logEvent("heard", { text: userText }); lastTalk = Date.now(); }
+  if (!opts.quiet) { transcriptLine("me", userText); logEvent("heard", { text: userText }); lastTalk = Date.now(); window.Mind?.onUserSaid(userText); }
   window.Face?.poke();
   let reply = "", brain = "", failed = false;
   localSpoke = false;
@@ -1025,6 +1051,7 @@ async function ask(userText, opts = {}) {
   else if (!opts.quiet) history.push({ role: "user", content: userText });
   if (reply && !failed) {
     history.push({ role: "assistant", content: reply });
+    window.Mind?.onSheSaid(reply);
     transcriptLine("bot", reply);
     logEvent("said", { text: reply, brain, seconds: Math.round((Date.now() - started) / 1000) });
   }
@@ -1277,6 +1304,11 @@ async function speakUp(prompt, note) {
 function idleTick() {
   if (settings.auto === "off" || (settings.night && nightNow())) return;
   if (Date.now() < nextAuto || Date.now() - lastTalk < 90000) return;   // never right after a conversation
+  if (window.Mind) {
+    if (Mind.isSleeping() || Mind.presenceScore() < 0.5) return;        // nobody around: no talking to an empty room
+    if (Mind.activeLoops().some(l => l.when === "anytime") && Math.random() < 0.5) { Mind.triggerLoops("anytime"); scheduleAuto(); return; }
+    if (Mind.S.boredom < 0.35 && Math.random() < 0.7) { scheduleAuto(); return; }   // not bored enough to bother
+  }
   const online = status.online && (status.hasKey || status.geminiKeyCount > 0);
   const ideas = online ? IDEAS : IDEAS.filter(i => !i.includes("camera"));   // offline brain can't see
   const idea = ideas[Math.floor(Math.random() * ideas.length)];
@@ -1288,6 +1320,7 @@ function idleTick() {
 // ---- things happening to her ----
 const cooldown = {};
 function react(key, what, minutes = 2, important = false) {
+  if (window.Mind) return Mind.perceive(key, what, { minutes, important });
   if (!settings.react) return;
   if (settings.night && nightNow() && !important) return;
   if (cooldown[key] && Date.now() - cooldown[key] < minutes * 60000) return;
@@ -1324,8 +1357,9 @@ setTimeout(() => {
 // tipped over, lights, a hand near her face (Termux:API sensors)
 let wasTipped = false, lastLux = null, wasNear = false;
 function sensorEvents() {
-  if (tipped && !wasTipped) react("tip", "you just fell over / got tipped onto your side", 1, true);
-  if (!tipped && wasTipped) react("untip", "someone stood you back up after you fell over", 1);
+  // only a real fall counts (on her side / face down), and only if she was standing a moment ago
+  if (tipped && !wasTipped && pose !== "upside_down") react("tip", pose === "face_down" ? "you just fell flat on your face (screen down)" : "you just fell over onto your side", 1, true);
+  if (!tipped && wasTipped && pose === "upright") react("untip", "someone stood you back up after you fell over", 1);
   wasTipped = tipped;
 
   const lightName = hw?.sensors && Object.keys(hw.sensors).find(n => /light/i.test(n) && !/proximity/i.test(n));
@@ -1368,24 +1402,14 @@ if (window.Face) Face.onTouch = (kind, zone = "face", extra = "") => {
   window.Tricks?.bump("touch_" + kind);
   if (kind === "hold" && settings.listen === "push" && !listening && !busy) { Abilities.sfx("beep"); startListening(); return; }   // press and hold = talk
   if (kind === "swipe" && /all the way/.test(extra)) { Tricks.cyclePersona(extra.startsWith("left") ? -1 : 1); return; }
-  // poked over and over: she gets annoyed, then angry (no brain needed)
-  const pokes = recentTouches.filter(x => (x.kind === "tap" || x.kind === "double_tap") && Date.now() - x.t < 30000).length;
-  if (kind === "tap" || kind === "double_tap") { if (pokes >= 11) setMood("angry"); else if (pokes >= 5) setMood("annoyed"); }
-  logEvent("touch", { detail: `${kind} ${zone} ${extra}`.trim() });
-  const now = Date.now();
-  recentTouches.push({ kind, zone, t: now });
-  while (recentTouches.length && now - recentTouches[0].t > 60000) recentTouches.shift();
+  const felt = window.Mind ? Mind.touch(kind, zone) : null;      // irritation/amusement accumulate and fade; repeats escalate
   if (!settings.react) return;
-  const strong = kind === "slap" || (kind === "tap" && /eye/.test(zone));
-  if (now - lastTouchTalk < (strong ? 3000 : 7000)) return;   // don't comment on every single touch
-  const key = `touch-${kind}-${zone}`;
-  if (!strong && cooldown[key] && now - cooldown[key] < 20000) return;
-  if (!canSpeakUp()) return;
-  cooldown[key] = lastTouchTalk = now;
   const same = recentTouches.filter(x => x.kind === kind).length;
   const streak = same >= 3 ? ` That's the ${same}${same === 3 ? "rd" : "th"} time in the last minute.` : "";
   const desc = (TOUCH_VERB[kind] || (z => `he touched your ${z}`))(zone, extra);
-  speakUp(`(system: ${desc}.${streak} React out loud in character, one short sentence.)`, `touched: ${kind} ${zone}`);
+  const base = { slap: 0.95, tickle: 0.7, scratch: 0.6, stroke: 0.55, boop: 0.6, tap: /eye/.test(zone) ? 0.8 : 0.5, double_tap: 0.55, hold: 0.45, squish: 0.6, stretch: 0.55, rub: 0.5, swipe: 0.35 }[kind] ?? 0.5;
+  if (window.Mind) Mind.perceive(`touch-${kind}-${zone}`, `${desc}.${streak}`, { base, recoverMin: 3, source: "FELT" });
+  else if (canSpeakUp()) speakUp(`(system: ${desc}.${streak} React out loud in character, one short sentence.)`, `touched: ${kind} ${zone}`);
 };
 
 // ---- eyes follow movement seen by the camera ----
@@ -1437,7 +1461,7 @@ function trackTick() {
     if (frac > 0.006 && frac < 0.5) {
       let x = (sx / n) / 32 - 1, y = (sy / n) / 24 - 1;
       if (settings.facing === "user") x = -x;                // front camera: mirror so she looks AT you
-      if (mode === "motion" && !(performance.now() < (window.visionLookUntil || 0))) window.Face?.lookAt(x * 1.1, y * 0.8);   // a seen face wins
+      if (mode === "motion" && !(performance.now() < (window.visionLookUntil || 0)) && !window.Mind?.distracted()) window.Face?.lookAt(x * 1.1, y * 0.8);   // a seen face (or a distraction) wins
       if (Date.now() - stillSince > 120000 && frac > 0.05) {
         window.Tricks?.bump("visitors"); window.Tricks?.diary("someone walked in");
         if (mood === "bored" || mood === "sleepy") setMood("calm");
@@ -1727,7 +1751,7 @@ $("#setRemote").onchange = async () => {
   await loadRobotFiles();
   await loadConversation();
   await refreshStatus();
-  await Tricks.loadCustom(); await Tricks.loadStats();
+  await Tricks.loadCustom(); await Tricks.loadStats(); await Mind.loadWorld();
   Tricks.checkChangelog();
   setTimeout(() => Tricks.earsStart(), 3000);
   logEvent("boot", { detail: "face page opened" });

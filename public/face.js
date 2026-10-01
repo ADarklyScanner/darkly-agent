@@ -44,6 +44,7 @@
   // show effects: disco, rainbow, dance, dizzy, heart_eyes, shades, laser_eyes, glitch_storm, sparkle, strobe
   let fx = { name: null, until: 0 }, flashOn = false;
   let eyeScale = 1, noBlinkUntil = 0, highlight = null, nightDim = 0, gestureTimers = [];
+  let blend = {}, blinkRate = 1, sacc = { x: 0, y: 0, next: 0 };
   const fxOn = n => fx.name === n && nowMs() < fx.until;
   const nowMs = () => performance.now();
 
@@ -140,6 +141,7 @@
     const idle = (performance.now() - lastActivity) / 1000;
     const dozing = mood === "calm" && !st.talking && !st.listening && !st.thinking && idle > 180;
     const target = { ...BASE, ...MOODS[dozing ? "sleepy" : mood] };
+    for (const [k, v] of Object.entries(blend)) if (k in target) target[k] += v;      // the mind's continuous state, layered on
     if (trans && nowMs() < trans.until) Object.assign(target, trans.props); else trans = null;
     const k = 1 - Math.exp(-dt * (trans ? 14 : 5));
     for (const key of Object.keys(BASE)) {
@@ -169,6 +171,11 @@
     const following = ext && nowMs() < ext.until;
     if (following) { tx = ext.x; ty = ext.y; }
     else if (st._thinking) { tx = 0.55 + 0.1 * Math.sin(t * 1.3); ty = -0.6; }
+    // while thinking she mostly keeps looking at you, glancing away up-and-aside every couple of seconds
+    if (st._thinking && following && (t % 2.7) < 0.75) { tx = (Math.floor(t / 2.7) % 2 ? 0.6 : -0.6); ty = -0.55; }
+    // microsaccades: tiny involuntary corrections, so a fixed gaze never looks frozen
+    if (t > sacc.next) { sacc.x = rand(-0.05, 0.05); sacc.y = rand(-0.04, 0.04); sacc.next = t + rand(0.35, 1.4); }
+    tx += sacc.x; ty += sacc.y;
     if (st.talking && !following) { tx *= 0.3; ty *= 0.3; }
     if (!following) { tx += tiltIn.x * 0.6; ty += tiltIn.y * 0.4; }
     const lk = 1 - Math.exp(-dt * 12);
@@ -187,7 +194,7 @@
       blink.L = blink.wink ? 0 : v; blink.R = v;
       if (blink.t >= 2 * T) {
         if (blink.double) { blink.double = false; blink.t = 0; }
-        else { blink.phase = 0; blink.t = 0; blink.next = rand(2200, 6000); blink.L = blink.R = 0; }
+        else { blink.phase = 0; blink.t = 0; blink.next = (Math.random() < 0.15 ? rand(500, 1200) : rand(2200, 6500)) * blinkRate; blink.L = blink.R = 0; }
       }
     }
 
@@ -601,6 +608,7 @@
     tap:        { ms: 450,  props: { open: 1, low: 0, pupil: 0.3, browY: -0.8, mouth: -0.1 } },
     double_tap: { ms: 600,  props: { open: 1, low: 0, pupil: 0.25, browY: -1, mouth: -0.3, question: 0.6 }, shake: 150 },
     eye:        { ms: 900,  props: { open: 0.05, low: 0.5, browY: 0.7, browA: 0.9, mouth: -0.7, vents: 0.6 }, shake: 250, vib: [120] },
+    listen:     { ms: 700,  props: { browY: -0.35, open: 0.95 } },
     hold:       { ms: 1200, props: { open: 0.95, pupil: 0.6, browY: -0.3, browAsym: 0.6, mouth: 0.1, question: 0.5 } },
     stroke:     { ms: 1600, props: { open: 0.35, low: 0.55, browY: -0.4, browA: -0.2, mouth: 0.8, blush: 1, spin: 0.6 } },
     scratch:    { ms: 1800, props: { open: 0.15, low: 0.7, browY: -0.6, browA: -0.4, mouth: 1, blush: 1, sparkle: 0.6 }, vib: "purr" },
@@ -774,6 +782,8 @@
     },
     gestures: ["wink_left", "wink_right", "double_blink", "squint", "wide", "eye_roll", "side_eye_left", "side_eye_right",
       "look_left", "look_right", "look_up", "look_down", "scan_room", "startle", "reboot", "nod", "shake_head"],
+    setBlend(b) { blend = b || {}; },
+    setBlinkRate(r) { blinkRate = clamp(r, 0.4, 2.5); },
     noBlink(seconds) { noBlinkUntil = nowMs() + seconds * 1000; },
     eyeSize(mult) { eyeScale = clamp(eyeScale * mult, 0.65, 1.5); return eyeScale; },
     resetEyes() { eyeScale = 1; },
