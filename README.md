@@ -99,6 +99,13 @@ Android only allows sound and vibration after the first tap on the page, so tap 
 - **Remote control:** Settings > Remote control. Open the address it shows on another phone on the same Wi-Fi and enter the PIN.
 - **Mute:** the speaker button under Panel.
 
+## She can use the phone
+
+Ask her to do things on the phone ("open YouTube and search for cat videos", "turn the brightness down in settings",
+"check my email"). She reads the screen, taps, types and scrolls, then comes back to her face with a summary.
+It uses Wireless debugging (pair once with `robot-dedicate`), not root. A notification with a STOP button shows while she
+works. She won't buy, pay, send, post or delete anything unless that's what you asked for.
+
 ## Real eyes (offline vision)
 
 `robot-vision-download` fetches Google's open-source MediaPipe engine and two small models (about 40 MB, once).

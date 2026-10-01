@@ -13,7 +13,8 @@ const now = () => performance.now();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const BASE = "./vendor/mediapipe/";
 
-let faceTask = null, handTask = null, tick = 0, lastVideoTime = -1;
+let faceTask = null, handTask = null, objTask = null, poseTask = null, embedTask = null, audioTask = null, tick = 0, lastVideoTime = -1;
+let slowMs = 0;                                   // how long a frame of perception takes; extras back off when the phone is busy
 async function init() {
   let mp;
   try { mp = await import(BASE + "vision_bundle.mjs"); }
@@ -28,6 +29,10 @@ async function init() {
     };
     faceTask = await make(mp.FaceLandmarker, "face_landmarker.task", { numFaces: 4, outputFaceBlendshapes: true });
     handTask = await make(mp.GestureRecognizer, "gesture_recognizer.task", { numHands: 2 }).catch(() => null);
+    objTask = await make(mp.ObjectDetector, "efficientdet_lite0.tflite", { scoreThreshold: 0.45, maxResults: 8 }).catch(() => null);
+    poseTask = await make(mp.PoseLandmarker, "pose_landmarker_lite.task", { numPoses: 1 }).catch(() => null);
+    try { embedTask = await mp.ImageEmbedder.createFromOptions(files, { baseOptions: { modelAssetPath: BASE + "mobilenet_v3_small.tflite" }, runningMode: "IMAGE", quantize: true }); } catch {}
+    initAudio();
     V.available = true;
     logEvent("vision", { detail: "vision engine ready" + (handTask ? "" : " (no hand gestures)") });
     setInterval(loop, 110);
@@ -42,8 +47,14 @@ function loop() {
   lastVideoTime = v.currentTime;
   const ts = now();
   try {
+    const t0 = now(); tick++;
     if (faceTask) onFaces(faceTask.detectForVideo(v, ts));
-    if (handTask && tick++ % 2 === 0) onHands(handTask.detectForVideo(v, ts + 1));
+    if (handTask && tick % 2 === 0) onHands(handTask.detectForVideo(v, ts + 1));
+    const busyPhone = slowMs > 70;                          // the phone is struggling: run the extras less often
+    if (poseTask && tick % (busyPhone ? 9 : 3) === 1) onPose(poseTask.detectForVideo(v, ts + 2));
+    if (objTask && tick % (busyPhone ? 30 : 12) === 5) onObjects(objTask.detectForVideo(v, ts + 3));
+    if (embedTask && tick % 120 === 60) onScene(v);
+    slowMs = slowMs * 0.9 + (now() - t0) * 0.1;
   } catch (e) { /* a dropped frame is fine */ }
 }
 
@@ -194,17 +205,140 @@ async function rockPaperScissors() {
   return `Rock paper scissors: he threw ${his}, she threw ${mine}. Result: ${result}.`;
 }
 
+// ---------------- objects: what's around, where, and for how long ----------------
+// Feeds her world model: things she SAW, where in her view, familiarity, and "last seen" when they vanish.
+const objSeen = {};                                     // label → { firstAt, lastAt, hits, where, announced }
+const sideOf = x => x < -0.33 ? "on your left" : x > 0.33 ? "on your right" : "in front of you";
+function onObjects(r) {
+  const here = new Set();
+  for (const d of r.detections || []) {
+    const c = d.categories?.[0]; if (!c) continue;
+    const label = c.categoryName; if (label === "person") continue;
+    const b = d.boundingBox, w = video()?.videoWidth || 640;
+    const x = mirrorX((b.originX + b.width / 2) / w), size = b.width / w;
+    here.add(label);
+    const o = objSeen[label] ||= { firstAt: now(), lastAt: 0, hits: 0, where: "", announced: false };
+    o.hits++; o.lastAt = now(); o.where = `${sideOf(x)}${size > 0.4 ? ", close" : ""}`; o.x = x; o.size = size;
+    if (o.hits === 2) {                                     // seen twice in a row: it's really there
+      const w0 = window.Mind?.world?.().things?.[label];
+      const familiar = (w0?.seen || 0) > 2;
+      window.Mind?.event("object_seen", `${label} ${o.where}`, { source: "SAW", conf: c.score, salience: familiar ? 0.25 : 0.5 });
+      if (!familiar && !o.announced && window.Mind) {       // something new: curiosity (habituates, so #37 doesn't get question #37)
+        o.announced = true; Mind.S.curiosity = Math.min(1, Mind.S.curiosity + 0.15);
+        Mind.perceive("object-" + label, `you noticed a ${label} ${o.where} (you don't know this one well yet)`, { base: 0.45, recoverMin: 30 });
+      }
+    }
+    if (o.hits % 10 === 2) window.Mind && Mind.run("note_where", { thing: label, where: `${o.where} of the camera`, how: "saw" }).catch?.(() => {});
+  }
+  for (const [label, o] of Object.entries(objSeen)) {     // object permanence: gone from view ≠ gone
+    if (!here.has(label) && o.hits >= 2 && now() - o.lastAt > 8000 && !o.goneLogged) {
+      o.goneLogged = true; window.Mind?.event("object_gone", `${label} left your view (last seen ${o.where}); it's probably still nearby`, { source: "INFERRED", conf: 0.6, salience: 0.4 });
+    }
+    if (here.has(label)) o.goneLogged = false;
+    if (!here.has(label) && now() - o.lastAt > 600000) delete objSeen[label];
+  }
+}
+function objectsNow() {
+  const fresh = Object.entries(objSeen).filter(([, o]) => now() - o.lastAt < 4000);
+  if (!fresh.length) return "No objects recognized right now.";
+  const held = fresh.filter(([, o]) => o.size > 0.25 && Math.abs(o.x) < 0.5).sort((a, b) => b[1].size - a[1].size)[0];
+  return fresh.map(([l, o]) => `${l} ${o.where}`).join(", ") + (held ? `. Biggest and closest (maybe what he's holding): ${held[0]}.` : ".");
+}
+
+// ---------------- body pose: crouching, hands up, turned away ----------------
+let poseState = { posture: "", since: 0 };
+function onPose(r) {
+  const lm = r.landmarks?.[0]; if (!lm) { V.posture = null; return; }
+  const P = i => lm[i];
+  const [nose, ls, rs, lw, rw, lh, rh, lk, rk] = [P(0), P(11), P(12), P(15), P(16), P(23), P(24), P(25), P(26)];
+  const shoulderY = (ls.y + rs.y) / 2, hipY = (lh.y + rh.y) / 2, kneeY = (lk.y + rk.y) / 2;
+  let posture = "standing";
+  if (lw.y < nose.y && rw.y < nose.y) posture = "both hands up";
+  else if ((lw.y < nose.y) !== (rw.y < nose.y)) posture = "one hand raised";
+  else if (lk.visibility > 0.5 && rk.visibility > 0.5 && kneeY - hipY < (hipY - shoulderY) * 0.45) posture = "crouching down";
+  else if (Math.abs(ls.x - rs.x) < 0.05 && ls.visibility > 0.5) posture = "turned sideways";
+  if (ls.z > 0.1 && rs.z > 0.1 && nose.visibility < 0.3) posture = "turned away";
+  V.posture = posture;
+  if (posture !== poseState.posture) { poseState = { posture, since: now(), fired: false }; return; }
+  if (!poseState.fired && now() - poseState.since > 900) {
+    poseState.fired = true;
+    if (posture === "crouching down") { Face.gesture("look_down"); react("pose-crouch", "he crouched down to your level", 3); }
+    if (posture === "both hands up") { Face.gesture("wide"); react("pose-handsup", "he's holding both hands up in the air", 3); }
+    if (posture === "turned away") window.Mind?.event("pose", "he turned his back to you", { source: "SAW", salience: 0.3 });
+  }
+}
+
+// ---------------- scene memory: has she been here before? ----------------
+let scenes = null;
+async function onScene(v) {
+  try {
+    if (!scenes) { try { scenes = JSON.parse(await readFile("scenes.json")); } catch { scenes = []; } }
+    const e = embedTask.embed(v).embeddings?.[0]; if (!e) return;
+    const vec = Array.from(e.floatEmbedding || e.quantizedEmbedding || []);
+    if (!vec.length) return;
+    const cos = (a, b) => { let d = 0, na = 0, nb = 0; for (let i = 0; i < a.length; i++) { d += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; } return d / (Math.sqrt(na * nb) || 1); };
+    let best = -1, bi = -1; scenes.forEach((s, i) => { const c = cos(vec, s.v); if (c > best) { best = c; bi = i; } });
+    if (best > 0.82) { scenes[bi].seen++; scenes[bi].t = Date.now(); if (V.place !== bi) { V.place = bi; } }
+    else {
+      scenes.push({ v: vec, seen: 1, t: Date.now(), first: Date.now() }); scenes = scenes.slice(-60);
+      if (scenes.length > 1) react("scene-new", "your view changed to a place you don't recognize (you were moved somewhere new, or the room changed a lot)", 5);
+      V.place = scenes.length - 1;
+    }
+    writeFile("scenes.json", JSON.stringify(scenes)).catch(() => {});
+  } catch {}
+}
+
+// ---------------- hearing: what kind of sound is that? ----------------
+const SOUND_EVENTS = [
+  [/knock/i, "someone knocked (on a door or table)", 0.75], [/doorbell|ding-dong/i, "a doorbell rang", 0.85],
+  [/^dog|bark|bow-wow/i, "a dog barked", 0.6], [/^cat|meow|purr/i, "a cat meowed", 0.6], [/smoke detector|fire alarm|siren|alarm/i, "an alarm or siren is going off", 0.9],
+  [/telephone|ringtone/i, "a phone is ringing", 0.6], [/glass|shatter|breaking/i, "something like glass breaking", 0.9],
+  [/baby cry|crying|sobbing/i, "someone is crying", 0.8], [/laughter|giggle|chuckle/i, "someone laughed", 0.5], [/sneeze/i, "someone sneezed", 0.8],
+  [/cough/i, "someone coughed", 0.35], [/snoring/i, "someone is snoring", 0.5], [/applause|clapping/i, "applause", 0.5],
+  [/whistling/i, "someone is whistling", 0.4], [/singing|choir/i, "someone is singing", 0.55], [/^music$|musical instrument|guitar|piano|drum/i, "music is playing", 0.35],
+  [/microwave|blender|vacuum|hair dryer/i, "an appliance is running", 0.25], [/thunder/i, "thunder", 0.6], [/explosion|gunshot|bang/i, "a very loud bang", 0.9]
+];
+async function initAudio() {
+  try {
+    const am = await import("./vendor/mediapipe-audio/audio_bundle.mjs");
+    const files = await am.FilesetResolver.forAudioTasks("./vendor/mediapipe-audio/wasm");
+    audioTask = await am.AudioClassifier.createFromOptions(files, { baseOptions: { modelAssetPath: "./vendor/mediapipe-audio/yamnet.tflite" }, maxResults: 4, scoreThreshold: 0.25 });
+    V.hearing = true;
+    let lastSound = "", soundRun = 0, musicSince = 0;
+    setInterval(() => {
+      if (!settings.ears || document.hidden) return;
+      const s = Tricks.earsSamples?.(); if (!s) return;
+      let res; try { res = audioTask.classify(s.data, s.rate); } catch { return; }
+      const cats = (res?.[0]?.classifications?.[0]?.categories || []).filter(c => c.score > 0.3);
+      V.sounds = cats.map(c => c.categoryName);
+      for (const c of cats) {
+        const hit = SOUND_EVENTS.find(([re]) => re.test(c.categoryName)); if (!hit) continue;
+        const [, what, base] = hit;
+        soundRun = what === lastSound ? soundRun + 1 : 1; lastSound = what;
+        if (/music/.test(what)) { if (!musicSince) musicSince = now(); if (now() - musicSince > 4000 && settings.react) Face.effect("dance", 3); }
+        if (/sneezed/.test(what)) Face.gesture("startle");
+        if (/laughed/.test(what) && window.Mind) Mind.S.amusement = Math.min(1, Mind.S.amusement + 0.15);
+        if (/snoring/.test(what)) window.Mind?.event("sound", "snoring nearby (he's asleep?)", { source: "HEARD", salience: 0.3 });
+        else if (soundRun <= 2) react("sound-" + what, what + ` (you heard it: "${c.categoryName}", ${Math.round(c.score * 100)}% sure)`, 2);
+        break;
+      }
+      if (!V.sounds.some(n => /music|instrument|guitar|piano|drum/i.test(n))) musicSince = 0;
+    }, 1000);
+  } catch { V.hearing = false; }
+}
+
 function describe() {
   if (!V.available) return `Vision isn't running: ${V.error || "starting up"}.`;
   if (!settings.track) return "Your camera eyes are off (Settings > Eyes follow movement).";
   if (!V.faces) return `You see no faces right now.${V.gesture ? " A hand is showing: " + V.gesture : ""}`;
   return `You see ${V.faces} face${V.faces > 1 ? "s" : ""}. The closest is ${V.main.distance}, ${V.main.x < -0.3 ? "to your left" : V.main.x > 0.3 ? "to your right" : "in front of you"}, `
     + `${V.expression}, ${V.lookingAtMe ? "looking right at you" : "looking away"}. `
-    + `${V.gesture ? "Hand sign: " + V.gesture + ". " : ""}Blinks counted so far: ${V.blinks}.`;
+    + `${V.gesture ? "Hand sign: " + V.gesture + ". " : ""}${V.posture ? "Body: " + V.posture + ". " : ""}Blinks counted so far: ${V.blinks}.`;
 }
 
 V.run = async (name, input) => {
-  if (name === "see_people") return describe();
+  if (name === "see_people") return describe() + (objTask ? " Objects: " + objectsNow() : "") + (V.sounds?.length ? ` Hearing: ${V.sounds.join(", ")}.` : "");
+  if (name === "see_objects") return objTask ? objectsNow() : "FAILED: object recognition isn't downloaded (robot-vision-download).";
   if (name === "mirror_mode") { V.mirror = !!input.on; if (!V.mirror) setMood("calm"); return V.mirror ? "Mirroring his expressions." : "Stopped mirroring."; }
   if (name === "rock_paper_scissors") return await rockPaperScissors();
 };

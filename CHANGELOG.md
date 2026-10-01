@@ -2,6 +2,17 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-01 · v0.13 · Hands on the phone, more senses
+- She can drive the phone she lives on: open apps, read the screen, tap, scroll, type and press buttons, step by step until the job's done, then come back to her face and tell you what happened. Ask her things like "open YouTube and find cat videos" or "turn on dark mode". Uses Wireless debugging (paired by robot-dedicate), not root, and reconnects by itself when the port changes.
+- Guardrails: only when you ask, max 25 steps / 4 minutes, STOP (or the STOP button in the notification) cancels, and she refuses to tap anything that buys, pays, sends, posts or deletes unless your request asked for it.
+- Hears what kind of sound it is (offline, Google's YAMNet): knocks, doorbells, dogs, cats, alarms and sirens, phones ringing, glass breaking, crying, laughter, sneezes, coughs, snoring, applause, singing, music (she dances to it), thunder, bangs. Repeated sounds fade like everything else.
+- Sees everyday objects (offline): cups, bottles, phones, books, scissors, remotes, keyboards, pets... She remembers where she saw them, gets curious about new ones (not about every single one), and knows something that left her view is probably still nearby. "What am I holding?" works without internet.
+- Body pose: notices you crouching down to her level, hands up, turning away.
+- Scene memory: recognizes places she's been, and notices when she's somewhere new.
+- Perception backs off automatically when the phone is busy, so her face stays smooth.
+- Keeps her face portrait when the robot tilts (full screen / installed app), and notices network changes (Wi-Fi ↔ mobile data, slow connection).
+- robot-doctor checks the phone controls. Run robot-vision-download again to get the new models.
+
 ## 2026-10-01 · v0.12 · A mind underneath
 - Behavior engine (mind.js) under everything: perception → events → salience → attention → working memory → inner state → action.
 - Restraint: most things she notices don't get a comment. Each event gets a salience score; only salient ones become speech, smaller ones only a face reaction, small ones nothing. A speech budget stops her chattering.

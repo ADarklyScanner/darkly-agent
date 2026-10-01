@@ -47,6 +47,10 @@ V="$DIR/public/vendor/mediapipe"
 if [ -s "$V/vision_bundle.mjs" ] && [ -s "$V/face_landmarker.task" ] && [ -s "$V/gesture_recognizer.task" ]; then ok "Vision engine installed (faces, expressions, hand gestures)"
 else warn "Vision engine not downloaded" "With internet on: robot-vision-download"; fi
 
+if adb devices 2>/dev/null | grep -q "device$"; then ok "Phone controls connected (she can open apps and tap)"
+elif adb mdns services 2>/dev/null | grep -q adb-tls-connect; then warn "Phone controls paired but not connected" "She connects by herself when needed; or run robot-dedicate"
+else warn "Phone controls not set up (needed for 'use the phone' tasks)" "Turn on Wireless debugging and run robot-dedicate once to pair."; fi
+
 # --- keys ---
 echo "-- Online brains --"
 CLAUDE=$(grep -E '^sk-ant-' "$HOME/.robot-key" 2>/dev/null)

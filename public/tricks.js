@@ -290,6 +290,15 @@
       ears.ctx = new (window.AudioContext || window.webkitAudioContext)();
       const src = ears.ctx.createMediaStreamSource(ears.stream);
       ears.an = ears.ctx.createAnalyser(); ears.an.fftSize = 512; src.connect(ears.an);
+      // keep the last ~1 second of raw sound for the sound classifier (vision.js)
+      ears.ring = new Float32Array(Math.round(ears.ctx.sampleRate)); ears.ringPos = 0;
+      const tap = ears.ctx.createScriptProcessor(4096, 1, 1);
+      tap.onaudioprocess = e => {
+        const d = e.inputBuffer.getChannelData(0), r = ears.ring;
+        for (let i = 0; i < d.length; i++) { r[ears.ringPos] = d[i]; ears.ringPos = (ears.ringPos + 1) % r.length; }
+      };
+      const mute = ears.ctx.createGain(); mute.gain.value = 0;
+      src.connect(tap); tap.connect(mute); mute.connect(ears.ctx.destination);
       const buf = new Float32Array(ears.an.fftSize);
       ears.running = true;
       ears.timer = setInterval(() => {
@@ -580,6 +589,8 @@
     { name: "write_diary", description: "Write a line in your diary about something notable.", input_schema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { name: "see_people", description: "Instantly check who's in front of your camera (offline): how many faces, how close, their expression, whether they're looking at you, any hand sign.",
       input_schema: { type: "object", properties: {} } },
+    { name: "see_objects", description: "Instantly list the everyday objects your camera recognizes right now and where they are (offline), including what he's probably holding up.",
+      input_schema: { type: "object", properties: {} } },
     { name: "mirror_mode", description: "Turn on/off copying his facial expression with your own face.", input_schema: { type: "object", properties: { on: { type: "boolean" } }, required: ["on"] } },
     { name: "vibro_spin", description: "Spin your phone body in place using only your vibration motor (works best standing or lying on a smooth hard table). degrees: how far; or face: true to turn until his face is in front of you.",
       input_schema: { type: "object", properties: { degrees: { type: "number" }, face: { type: "boolean" } } } },
@@ -627,7 +638,7 @@
     }
     if (name === "read_diary") return await readDiary(input.date);
     if (name === "write_diary") { diary(String(input.text).slice(0, 300)); return "Written."; }
-    if (name === "see_people" || name === "mirror_mode") return window.Vision?.run ? await Vision.run(name, input) : "FAILED: vision isn't loaded.";
+    if (name === "see_people" || name === "mirror_mode" || name === "see_objects") return window.Vision?.run ? await Vision.run(name, input) : "FAILED: vision isn't loaded.";
     if (name === "vibro_spin") return await vibroSpin(input.degrees, input.face);
     if (name === "read_changelog") { try { return (await api("/api/changelog")).text.slice(0, 6000); } catch (e) { return "FAILED: " + e.message; } }
     return "Unknown tool " + name;
@@ -649,6 +660,13 @@
 
   window.Tricks = {
     tools: TOOLS, handles: n => NAMES.has(n), run, runTrick, list: () => Object.keys(all()), all,
+    // the last second of sound, oldest first (null if her ears are off or she's making noise herself)
+    earsSamples() {
+      if (!ears.running || !ears.ring || talking || Abilities.isPlaying()) return null;
+      const r = ears.ring, out = new Float32Array(r.length);
+      out.set(r.subarray(ears.ringPos)); out.set(r.subarray(0, ears.ringPos), r.length - ears.ringPos);
+      return { data: out, rate: ears.ctx.sampleRate };
+    },
     loadCustom, loadStats, bump, diary, earsStart, earsStop, scanTick, colorNow, colorName, hsv, cyclePersona, checkChangelog,
     renderTrickButtons, summary: () => Object.keys(all()).join(", ")
   };

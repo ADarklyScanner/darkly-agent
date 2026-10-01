@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import * as phone from "./phone.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DATA = process.env.ROBOT_DATA || path.join(ROOT, "data");
@@ -230,7 +231,7 @@ async function hardware(force = false) {
   return hwCache.data;
 }
 
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json", ".mjs": "text/javascript", ".wasm": "application/wasm", ".task": "application/octet-stream" };
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json", ".mjs": "text/javascript", ".wasm": "application/wasm", ".task": "application/octet-stream", ".tflite": "application/octet-stream" };
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -377,6 +378,19 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ---- driving the phone itself (Wireless debugging / adb; see phone.js) ----
+    if (p === "/api/phone/task" && req.method === "POST") {
+      const body = await readBody(req);
+      return send(res, 200, await phone.runTask(body.goal, { maxSteps: Math.min(40, body.maxSteps || 25) }));
+    }
+    if (p === "/api/phone/stop" && req.method === "POST") return send(res, 200, { stopped: phone.stop() });
+    if (p === "/api/phone/status") return send(res, 200, phone.status());
+    if (p === "/api/phone/quick" && req.method === "POST") {
+      const body = await readBody(req);
+      try { return send(res, 200, { result: await phone.quick(body.cmd, body.arg) }); }
+      catch (e) { return send(res, 200, { result: "FAILED: " + e.message }); }
+    }
+
     // ---- online brain: Claude ----
     if (p === "/api/claude" && req.method === "POST") {
       const keys = apiKeys();
@@ -484,6 +498,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 const PORT = Number(process.env.PORT) || config().port;
+phone.init({ apiKeys, geminiKeys, geminiModels, timedFetch, log, config: () => ({ ...config(), port: PORT }), GEMINI_BASE,
+  CLAUDE_URL: process.env.ROBOT_CLAUDE_URL || "https://api.anthropic.com/v1/messages" });
 // Listens on all interfaces so the optional remote page works; everything except /remote is refused
 // for other devices (see the isLocal check at the top of the handler).
 server.listen(PORT, "0.0.0.0", () => {

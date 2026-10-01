@@ -263,6 +263,7 @@ let motionToken = 0; // bumps on STOP to cancel running sequences
 
 async function stopAll(reason = "stop button") {
   motionToken++;
+  fetch("/api/phone/stop", { method: "POST" }).catch(() => {});
   window.Abilities?.stop(); singToken++; speakToken++; speechSynthesis.cancel?.(); talking = false; Face.setTalking(false);
   await link.send("X");
   logEvent("action", { detail: "STOP (" + reason + ")" });
@@ -591,6 +592,11 @@ async function snapshot() {
 const TOOLS = [
   ...(window.Tricks?.tools || []),
   ...(window.Mind?.tools || []),
+  { name: "use_phone", description: "Operate the phone you live on to do a multi-step task he asks for: open apps, read the screen, tap, scroll, type (e.g. 'open YouTube and search for cat videos', 'turn on dark mode', 'check if I have new emails'). It runs on its own and comes back to your face when done, with a summary. Only when he asks. Anything that spends money, sends messages, posts or deletes needs to be in his request.",
+    input_schema: { type: "object", properties: { goal: { type: "string" } }, required: ["goal"] } },
+  { name: "open_app", description: "Just open an app on the phone (instant). He'll see it instead of your face until he comes back.", input_schema: { type: "object", properties: { app: { type: "string" } }, required: ["app"] } },
+  { name: "phone_key", description: "Press a phone button: home, back, recents, volume_up, volume_down, mute, play_pause.", input_schema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } },
+  { name: "read_phone_screen", description: "Read the text that's on the phone's screen right now (the app behind your face).", input_schema: { type: "object", properties: {} } },
   { name: "take_photo", description: "Take a full-quality photo with your camera and save it to his phone's gallery (Pictures/Nessari).",
     input_schema: { type: "object", properties: { label: { type: "string", description: "a few words for the file name" } } } },
   { name: "record_video", description: "Record a video with your camera (and microphone) and save it to the gallery (Movies/Nessari). 1-60 seconds.",
@@ -647,6 +653,16 @@ async function runTool(name, input) {
 async function runToolInner(name, input) {
   try {
     if (window.Mind?.handles(name)) return await Mind.run(name, input);
+    if (["use_phone", "open_app", "phone_key", "read_phone_screen"].includes(name)) {
+      if (autoTurn) return "FAILED: you only operate the phone when he asks you to.";
+      if (name === "use_phone") {
+        await speak(["On it.", "Hang on, I'm driving.", "Give me a sec.", "Watch this."][Math.floor(Math.random() * 4)]);
+        const r = await api("/api/phone/task", { method: "POST", body: JSON.stringify({ goal: input.goal }) });
+        return r.text;
+      }
+      const cmd = { open_app: ["open_app", input.app], phone_key: ["key", input.key], read_phone_screen: ["read_screen"] }[name];
+      return (await api("/api/phone/quick", { method: "POST", body: JSON.stringify({ cmd: cmd[0], arg: cmd[1] }) })).result;
+    }
     if (autoTurn && !settings.autoMove && (name === "drive" || name === "use_part"))
       return "FAILED: you're not allowed to move on your own. He can turn on 'Lets her move her body on her own' in Settings. Ask him instead.";
     if (name === "drive") return await drive(input.direction, input.seconds);
@@ -1691,6 +1707,18 @@ $("#btnForget").onclick = () => {
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 // Opened from the browser instead of the home-screen icon? Go full screen on the first tap.
 const isApp = matchMedia("(display-mode: fullscreen)").matches || matchMedia("(display-mode: standalone)").matches;
+// keep her face upright even when the robot tilts (only works in full screen / as an installed app)
+const lockPortrait = () => screen.orientation?.lock?.("portrait").catch(() => {});
+document.addEventListener("fullscreenchange", lockPortrait); if (isApp) lockPortrait();
+// network type changes (Wi-Fi ↔ mobile data, slow connection)
+if (navigator.connection) {
+  let lastNet = navigator.connection.type || navigator.connection.effectiveType;
+  navigator.connection.addEventListener("change", () => {
+    const n = navigator.connection.type || navigator.connection.effectiveType;
+    if (n && n !== lastNet) window.Mind?.event("network", `connection changed from ${lastNet} to ${n}${navigator.connection.effectiveType === "2g" || navigator.connection.effectiveType === "slow-2g" ? " (very slow)" : ""}`, { source: "FELT", salience: 0.35 });
+    lastNet = n;
+  });
+}
 if (!isApp) window.addEventListener("pointerdown", function fs(e) {
   if (e.target.closest("#panel, button, input, select, textarea")) return;
   document.documentElement.requestFullscreen?.({ navigationUI: "hide" }).catch(() => {});
