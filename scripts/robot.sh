@@ -27,9 +27,14 @@ fi
 if pgrep -f llama-server >/dev/null; then
   echo "Offline brain already running."
 elif [ -n "$LLAMA" ] && [ -n "$MODEL" ]; then
+  # Personality adapter (LoRA) named in data/config.json as "localLora". Only works with the base model it was trained on.
+  LORA="$(grep -o '"localLora"[^,}]*' "$DIR/data/config.json" 2>/dev/null | sed 's/.*: *"\(.*\)"/\1/')"
+  LORA="${LORA/#\~/$HOME}"
+  EXTRA=()
+  if [ -n "$LORA" ] && [ -f "$LORA" ]; then EXTRA=(--lora "$LORA"); echo "Personality: $(basename "$LORA")"; fi
   echo "Offline brain: $(basename "$MODEL")"
   # S22: 4 fast cores. Whole context kept in RAM.
-  nohup "$LLAMA" -m "$MODEL" --host 127.0.0.1 --port 8080 -t 4 -c 4096 --no-webui \
+  nohup "$LLAMA" -m "$MODEL" "${EXTRA[@]}" --host 127.0.0.1 --port 8080 -t 4 -c 4096 --no-webui \
     > "$LOGS/llama.log" 2>&1 &
 else
   echo "No offline brain (need llama-server and a .gguf in ~/models). Claude-only for now."
