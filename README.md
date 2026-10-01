@@ -5,18 +5,24 @@ local Nessari model takes over when there isn't. The face is the home screen.
 Tap **Panel** for status, talk, body, sensors, files, logs and settings. The red **STOP**
 button is always on screen.
 
-## Install (Termux)
+## Install on a fresh phone
+
+1. Install **F-Droid**, then from F-Droid install **Termux**, **Termux:API** (every sensor, flashlight,
+   vibration, Wi-Fi, location) and **Termux:Boot** (starts her when the phone turns on). Open each one once.
+2. Open Termux and run `termux-setup-storage`, then tap **Allow**.
+3. Paste this (needs internet once):
 
 ```
-termux-setup-storage
-pkg install -y unzip && unzip -o ~/storage/downloads/darkly-robot.zip -d ~ && bash ~/darkly-robot/install.sh
+pkg install -y git && git clone -b robot --depth 1 https://github.com/ADarklyScanner/darkly-agent ~/darkly-robot && bash ~/darkly-robot/install.sh
 ```
 
-Also install these apps from F-Droid (same source as your Termux): **Termux:API** (gives her every
-sensor, the flashlight, vibration, Wi-Fi and location) and **Termux:Boot** (starts her when the phone turns on).
-Open each one once.
+No internet? If you copied `darkly-robot.zip` onto the phone instead:
 
-Then run `robot`.
+```
+pkg install -y unzip && unzip -o "$(find ~/storage/shared -iname 'darkly-robot*.zip' | head -1)" -d ~ && bash ~/darkly-robot/install.sh
+```
+
+Then run `robot`. The first time, Chrome asks for microphone and camera. Say yes.
 
 Your Claude key is saved in `~/.robot-key`. To change it, run `nano ~/.robot-key`.
 

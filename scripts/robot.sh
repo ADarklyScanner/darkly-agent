@@ -42,5 +42,9 @@ else
   cd "$DIR" && nohup node server.js > "$LOGS/server.log" 2>&1 &
   sleep 2
 fi
-termux-open-url "http://127.0.0.1:3000" 2>/dev/null || am start -a android.intent.action.VIEW -d "http://127.0.0.1:3000" >/dev/null 2>&1
+# Open the face in Chrome specifically. A fresh Galaxy defaults to Samsung Internet,
+# which doesn't have the speech and Bluetooth features she needs.
+am start -n com.android.chrome/com.google.android.apps.chrome.Main -a android.intent.action.VIEW -d "http://127.0.0.1:3000" >/dev/null 2>&1 \
+  || termux-open-url "http://127.0.0.1:3000" 2>/dev/null \
+  || am start -a android.intent.action.VIEW -d "http://127.0.0.1:3000" >/dev/null 2>&1
 echo "She's up. Face: http://127.0.0.1:3000"
