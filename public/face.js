@@ -29,6 +29,8 @@
     sad:      { hue: 215, open: 0.72, low: 0.1, tilt: -0.6, pupil: 0.52, browY: -0.1, browA: -0.85, mouth: -0.6, tear: 1, spin: 0.4, dim: 0.85 },
     sleepy:   { hue: 255, light: 55, open: 0.12, low: 0.14, pupil: 0.35, browY: 0.25, mouth: 0.02, zzz: 1, spin: 0.15, dim: 0.55 },
     confused: { hue: 170, open: 0.85, browAsym: -0.8, mouth: -0.12, skew: -0.7, glitch: 0.45, question: 1, spin: 0.5 },
+    bored:    { hue: 240, sat: 45, open: 0.45, low: 0.25, tilt: -0.1, pupil: 0.4, browY: 0.2, mouth: -0.05, skew: 0.5, spin: 0.25, dim: 0.8 },
+    suspicious: { hue: 95, open: 0.35, low: 0.35, tilt: 0.3, pupil: 0.3, browY: 0.35, browA: 0.4, browAsym: 0.5, mouth: -0.15, skew: -0.4, spin: 0.6 },
     flirty:   { hue: 330, open: 0.58, low: 0.32, browY: -0.3, browAsym: 0.3, mouth: 0.6, skew: 0.35, blush: 1, sparkle: 0.35, spin: 1 }
   };
   let mood = "calm";
@@ -41,6 +43,7 @@
   let shakeUntil = 0, ripples = [];
   // show effects: disco, rainbow, dance, dizzy, heart_eyes, shades, laser_eyes, glitch_storm, sparkle, strobe
   let fx = { name: null, until: 0 }, flashOn = false;
+  let eyeScale = 1, noBlinkUntil = 0, highlight = null, nightDim = 0, gestureTimers = [];
   const fxOn = n => fx.name === n && nowMs() < fx.until;
   const nowMs = () => performance.now();
 
@@ -173,7 +176,8 @@
 
     // blinking (sometimes double, flirty sometimes winks)
     blink.t += dt * 1000;
-    if (blink.phase === 0 && blink.t > blink.next) {
+    if (nowMs() < noBlinkUntil) { blink.phase = 0; blink.L = blink.R = 0; blink.t = 0; }
+    else if (blink.phase === 0 && blink.t > blink.next) {
       blink.phase = 1; blink.t = 0;
       blink.wink = mood === "flirty" && Math.random() < 0.35;
       blink.double = !blink.wink && Math.random() < 0.2;
@@ -272,7 +276,7 @@
   }
 
   function eye(side, t) {
-    const ex = side * 0.42 * U, ey = -0.12 * U, r = 0.25 * U;
+    const ex = side * 0.42 * U, ey = -0.12 * U, r = 0.25 * U * eyeScale;
     const inner = -side;                         // direction toward the middle of the face
     let bl = side < 0 ? blink.L : blink.R;
     if (eyeShut.side === side && nowMs() < eyeShut.until) bl = 1;
@@ -537,6 +541,13 @@
     mouth(t);
     extras(t);
     ctx.restore();
+    if (highlight && nowMs() < highlight.until) {
+      const a = (highlight.until - nowMs()) / highlight.ms;
+      ctx.save(); ctx.shadowColor = "#fff"; ctx.shadowBlur = U * 0.15;
+      ctx.fillStyle = `hsla(${highlight.hue},100%,70%,${0.65 * a})`;
+      ctx.beginPath(); ctx.arc(CX + highlight.x * U, CY + highlight.y * U, U * 0.22, 0, TAU); ctx.fill(); ctx.restore();
+    }
+    if (nightDim > 0.01) { ctx.fillStyle = `rgba(0,0,0,${nightDim})`; ctx.fillRect(0, 0, W, H); }
     if (flashOn) { ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fillRect(0, 0, W, H); }
     if (fxOn("strobe") && Math.floor(t * 3) % 2) { ctx.fillStyle = col(30, 0.3); ctx.fillRect(0, 0, W, H); }
     touchRipples(dt);
@@ -705,6 +716,7 @@
     else if (net / g2.dist > 0.75 && net / Math.max(dur, 1) > 0.7) {
       kind = "swipe";
       extra = Math.abs(lx - g2.x) > Math.abs(ly - g2.y) ? (lx > g2.x ? "right" : "left") : (ly > g2.y ? "down" : "up");
+      if ((extra === "left" || extra === "right") && Math.abs(lx - g2.x) > W * 0.6) extra += " (all the way across)";
     }
     else kind = "stroke";
     if (kind !== "tap" && kind !== "double_tap") taps = [];
@@ -719,6 +731,8 @@
     if ((kind === "scratch" || kind === "stroke") && zone === "chin") visual = "chin";
     if ((kind === "stroke" || kind === "rub") && /top of|forehead/.test(zone)) visual = "head_pat";
     if (kind === "slap") window.Abilities?.sfx("rimshot");
+    if (kind === "squish") Face.eyeSize(0.87);
+    if (kind === "stretch") Face.eyeSize(1.15);
     react(visual);
     Face.onTouch?.(kind, zone, extra);
   };
@@ -727,11 +741,54 @@
 
   window.Face = {
     react,
+    // little face moves: wink_left wink_right double_blink squint wide eye_roll side_eye_left side_eye_right
+    // look_left look_right look_up look_down scan_room startle reboot nod shake_head
+    gesture(name) {
+      gestureTimers.forEach(clearTimeout); gestureTimers = [];
+      const at = (ms, fn) => gestureTimers.push(setTimeout(fn, ms));
+      const gaze = (x, y, ms = 900) => { ext = { x, y, until: nowMs() + ms }; };
+      const hold = (props, ms) => { trans = { until: nowMs() + ms, props }; };
+      lastActivity = nowMs();
+      switch (name) {
+        case "wink_left": eyeShut = { side: 1, until: nowMs() + 450 }; hold({ mouth: 0.6, skew: 0.5, browAsym: -0.4 }, 900); break;
+        case "wink_right": eyeShut = { side: -1, until: nowMs() + 450 }; hold({ mouth: 0.6, skew: -0.5, browAsym: 0.4 }, 900); break;
+        case "double_blink": blink.phase = 1; blink.t = 0; blink.double = true; blink.wink = false; break;
+        case "squint": hold({ open: 0.25, low: 0.45, browY: 0.3, browA: 0.3 }, 1600); break;
+        case "wide": hold({ open: 1, low: 0, pupil: 0.22, browY: -1 }, 1300); break;
+        case "eye_roll": hold({ open: 0.6, low: 0.1, browY: -0.2, mouth: -0.1 }, 1500);
+          [[-0.9, -0.2], [-0.6, -0.9], [0, -1], [0.6, -0.9], [0.9, -0.2], [0, 0]].forEach(([x, y], i) => at(i * 170, () => gaze(x, y, 400))); break;
+        case "side_eye_left": gaze(-1, 0.1, 2500); hold({ open: 0.42, low: 0.32, browAsym: 0.6, mouth: -0.1, skew: -0.4 }, 2500); break;
+        case "side_eye_right": gaze(1, 0.1, 2500); hold({ open: 0.42, low: 0.32, browAsym: -0.6, mouth: -0.1, skew: 0.4 }, 2500); break;
+        case "look_left": gaze(-1, 0, 1500); break;
+        case "look_right": gaze(1, 0, 1500); break;
+        case "look_up": gaze(0, -1, 1500); break;
+        case "look_down": gaze(0, 1, 1500); break;
+        case "scan_room": for (let i = 0; i <= 20; i++) at(i * 200, () => gaze(-1 + (i / 10 <= 1 ? i / 10 : 2 - i / 10) * 2, -0.1, 300)); break;
+        case "startle": hold({ open: 1, low: 0, pupil: 0.18, browY: -1, mouth: -0.5 }, 900); shakeUntil = nowMs() + 400; break;
+        case "reboot": hold({ open: 0, low: 0.5, dim: 0.3, glitch: 0.8 }, 2200); at(2300, () => hold({ open: 1, pupil: 0.2, browY: -0.8 }, 700)); break;
+        case "nod": [0.5, -0.3, 0.5, -0.3, 0].forEach((y, i) => at(i * 160, () => gaze(0, y, 250))); break;
+        case "shake_head": [-0.7, 0.7, -0.7, 0.7, 0].forEach((x, i) => at(i * 150, () => gaze(x, 0, 250))); break;
+        default: return false;
+      }
+      return true;
+    },
+    gestures: ["wink_left", "wink_right", "double_blink", "squint", "wide", "eye_roll", "side_eye_left", "side_eye_right",
+      "look_left", "look_right", "look_up", "look_down", "scan_room", "startle", "reboot", "nod", "shake_head"],
+    noBlink(seconds) { noBlinkUntil = nowMs() + seconds * 1000; },
+    eyeSize(mult) { eyeScale = clamp(eyeScale * mult, 0.65, 1.5); return eyeScale; },
+    resetEyes() { eyeScale = 1; },
+    // light up a spot on her face (for games): zone names like the touch zones
+    highlightZone(zone, ms = 500, hue = 50) {
+      const Z = { "left eye": [0.42, -0.12], "right eye": [-0.42, -0.12], nose: [0, 0.08], mouth: [0, 0.45], "left cheek": [0.7, 0.2], "right cheek": [-0.7, 0.2], forehead: [0, -0.85], chin: [0, 0.8] };
+      const p = Z[zone]; if (!p) return;
+      highlight = { x: p[0], y: p[1], until: nowMs() + ms, ms, hue };
+    },
+    setNightDim(v) { nightDim = clamp(v, 0, 0.7); },
     effect(name, seconds = 6) { fx = { name, until: nowMs() + Math.min(seconds, 60) * 1000 }; lastActivity = nowMs(); },
     flash(on) { flashOn = !!on; },
     effects: ["disco", "rainbow", "dance", "dizzy", "heart_eyes", "shades", "laser_eyes", "glitch_storm", "sparkle", "strobe"],
     // something outside (the camera tracker) wants her to look at x,y in -1..1 (right / down positive)
-    lookAt(x, y, ms = 700) { if (!g) ext = { x: clamp(x, -1, 1), y: clamp(y, -1, 1), until: nowMs() + ms }; },
+    lookAt(x, y, ms = 700) { if (!gest) ext = { x: clamp(x, -1, 1), y: clamp(y, -1, 1), until: nowMs() + ms }; },
     onTouch: null,
     setMood(m) { if (MOODS[m]) { mood = m; lastActivity = performance.now(); } },
     setTalking(on) { st.talking = !!on; lastActivity = performance.now(); },

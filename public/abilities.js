@@ -7,12 +7,13 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // ---------- audio engine ----------
-  let ac = null, master = null, noiseBuf = null, unlocked = false, token = 0;
+  let ac = null, master = null, noiseBuf = null, unlocked = false, token = 0, soundUntil = 0, muted = false;
+  const VOL = () => muted ? 0 : 0.55;
   function audio() {
     if (!ac) {
       ac = new (window.AudioContext || window.webkitAudioContext)();
       const comp = ac.createDynamicsCompressor();
-      master = ac.createGain(); master.gain.value = 0.55;
+      master = ac.createGain(); master.gain.value = VOL();
       master.connect(comp); comp.connect(ac.destination);
       noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
       const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
@@ -200,6 +201,7 @@
       navigator.vibrate(vib[0] === 0 ? [1, ...vib.slice(1)] : vib);
     }
     for (const e of events) setTimeout(() => { if (my === token) { opts.onNote?.(e.midi, e.ms); if (e.midi != null) opts.body?.(e.midi, e.ms); } }, e.at + 80);
+    soundUntil = Date.now() + total * 1000 + 600;
     await sleep(total * 1000 + 150);
     return { ok: my === token, text: my === token ? `Played ${preset ? preset.title : "your tune"} (${total.toFixed(1)}s).` : "Stopped." };
   }
@@ -237,6 +239,7 @@
     if (ac.state !== "running") await ac.resume().catch(() => {});
     if (ac.state !== "running") return "My speaker is locked until he taps the screen once.";
     const secs = SFX[name]();
+    soundUntil = Math.max(soundUntil, Date.now() + secs * 1000 + 500);
     await sleep(secs * 1000);
     return `Played ${name}.`;
   }
@@ -281,11 +284,14 @@
     token++;
     if (canVibrate()) navigator.vibrate(0);
     if (ac) { master.gain.cancelScheduledValues(ac.currentTime); master.gain.setValueAtTime(0, ac.currentTime);
-      setTimeout(() => master.gain.setValueAtTime(0.55, ac.currentTime), 150); }
+      setTimeout(() => master.gain.setValueAtTime(VOL(), ac.currentTime), 150); }
   }
 
   window.Abilities = {
     play, sfx, vibrate, morse, morseUnits, stop, unlock, parseNotes, midiOf, freqOf,
+    ctx: () => audio(), out: () => { audio(); return master; },
+    isPlaying: () => Date.now() < soundUntil,
+    setMuted(m) { muted = !!m; if (master) master.gain.setValueAtTime(VOL(), ac.currentTime); },
     isUnlocked: () => unlocked,
     songs: SONGS, songList: Object.keys(SONGS), sfxList: Object.keys(SFX), vibeList: Object.keys(VIBES), instruments: Object.keys(INSTRUMENTS)
   };

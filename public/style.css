@@ -84,3 +84,7 @@ input[type=range]{width:100%}
 .tricks{display:flex;flex-wrap:wrap;gap:6px}
 .tricks button{padding:8px 10px;font-size:.85rem}
 .tricks button.on{border-color:var(--glow);color:var(--glow)}
+
+#muteBtn{position:absolute;top:calc(54px + env(safe-area-inset-top));right:10px;z-index:1;padding:6px 12px;font-size:1.1rem;background:rgba(20,10,30,.6)}
+#muteBtn.muted{border-color:var(--bad)}
+#chips{max-width:calc(100% - 90px)}

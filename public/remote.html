@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b0612">
+<title>Nessari Remote</title>
+<link rel="icon" href="icon-192.png">
+<style>
+  :root{--bg:#0b0612;--panel:#160c22;--line:#33204a;--ink:#efe6fa;--muted:#9a86b3;--glow:#e07ae0;--bad:#ff5a6e}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,sans-serif;padding:12px 12px 90px}
+  h1{font-size:1.2rem;margin:4px 0 10px} h3{font-size:.75rem;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:16px 0 6px}
+  button,input,select{font:inherit;color:inherit} button{background:#2a1740;border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  input,select{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;width:100%}
+  .row{display:flex;gap:8px;margin:6px 0} .row>*{flex:1} .grid{display:flex;flex-wrap:wrap;gap:6px} .grid button{font-size:.85rem}
+  #state{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:.9rem;white-space:pre-wrap}
+  #photo{width:100%;border-radius:10px;margin-top:8px;display:none}
+  #stop{position:fixed;bottom:14px;right:14px;width:72px;height:72px;border-radius:50%;background:#b3122b;border:3px solid #ff8193;font-weight:800}
+  #login{max-width:340px;margin:20vh auto;text-align:center}
+</style>
+</head>
+<body>
+<div id="login">
+  <h1>Nessari remote</h1>
+  <p style="color:var(--muted)">Enter the PIN shown in her Settings.</p>
+  <input id="pin" inputmode="numeric" placeholder="PIN"><div class="row"><button id="go">Connect</button></div>
+  <p id="err" style="color:var(--bad)"></p>
+</div>
+<div id="app" hidden>
+  <h1>Nessari remote</h1>
+  <div id="state">connecting…</div>
+  <h3>Make her talk</h3>
+  <div class="row"><input id="text" placeholder="Words"></div>
+  <div class="row"><button id="say">Say exactly this</button><button id="ask">Ask her this</button></div>
+  <h3>Camera</h3>
+  <div class="row"><button id="peek">See through her eyes</button><button id="snap">Save photo on her phone</button></div>
+  <img id="photo" alt="her camera">
+  <h3>Tricks</h3><div class="grid" id="tricks"></div>
+  <h3>Moods</h3><div class="grid" id="moods"></div>
+  <h3>Face moves</h3><div class="grid" id="gestures"></div>
+  <h3>Face effects</h3><div class="grid" id="effects"></div>
+  <h3>Sound effects</h3><div class="grid" id="sfx"></div>
+  <h3>Songs</h3><div class="grid" id="songs"></div>
+  <h3>Voice</h3><div class="grid" id="voices"></div>
+</div>
+<button id="stop" hidden>STOP</button>
+<script>
+let pin = localStorage.getItem("nessari-pin") || "";
+const $ = s => document.querySelector(s);
+const send = (cmd, arg) => fetch("/api/remote/send", { method: "POST", headers: { "content-type": "application/json", "x-pin": pin }, body: JSON.stringify({ cmd, arg }) });
+let lists = null, lastPhoto = 0;
+async function poll() {
+  const r = await fetch("/api/remote/state", { headers: { "x-pin": pin } });
+  if (r.status === 401) { localStorage.removeItem("nessari-pin"); location.reload(); return; }
+  const s = await r.json();
+  $("#state").textContent = s.at ? `Mood: ${s.mood}   Battery: ${s.battery ?? "?"}%${s.charging ? " ⚡" : ""}\n${s.brain} · ${s.body}${s.busy ? " · thinking…" : ""}\nLast said: ${s.said || "—"}` : "Waiting for her (is her face open?)";
+  if (s.lists && !lists) { lists = s.lists; build(); }
+  if (s.photoAt && s.photoAt !== lastPhoto) { lastPhoto = s.photoAt; $("#photo").src = "/api/remote/photo?pin=" + pin + "&t=" + lastPhoto; $("#photo").style.display = "block"; }
+}
+function grid(id, items, cmd) {
+  for (const it of items) { const b = document.createElement("button"); b.textContent = it.replace(/_/g, " "); b.onclick = () => send(cmd, it); $(id).append(b); }
+}
+function build() {
+  grid("#tricks", lists.tricks, "trick"); grid("#moods", lists.moods, "mood"); grid("#gestures", lists.gestures, "gesture");
+  grid("#effects", lists.effects, "effect"); grid("#sfx", lists.sfx, "sfx"); grid("#songs", lists.songs, "song"); grid("#voices", lists.voices, "voice");
+}
+function start() {
+  $("#login").hidden = true; $("#app").hidden = false; $("#stop").hidden = false;
+  poll(); setInterval(poll, 1500);
+}
+$("#go").onclick = async () => {
+  pin = $("#pin").value.trim();
+  const r = await fetch("/api/remote/state", { headers: { "x-pin": pin } });
+  if (r.ok) { localStorage.setItem("nessari-pin", pin); start(); } else $("#err").textContent = r.status === 401 ? "Wrong PIN" : "Remote control is off on her.";
+};
+$("#say").onclick = () => { send("say", $("#text").value); $("#text").value = ""; };
+$("#ask").onclick = () => { send("ask", $("#text").value); $("#text").value = ""; };
+$("#peek").onclick = () => send("photo");
+$("#snap").onclick = () => send("save_photo");
+$("#stop").onclick = () => send("stop");
+if (pin) fetch("/api/remote/state", { headers: { "x-pin": pin } }).then(r => r.ok ? start() : null);
+</script>
+</body>
+</html>

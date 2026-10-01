@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /* ================= settings ================= */
 const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true,
-  auto: "normal", react: true, night: true, autoMove: false, track: true };
+  auto: "normal", react: true, night: true, autoMove: false, track: true, ears: true, qr: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
 let settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("robot-settings") || "{}") };
 const saveSettings = () => localStorage.setItem("robot-settings", JSON.stringify(settings));
 
@@ -44,7 +44,7 @@ async function loadRobotFiles() {
 const saveBody = () => writeFile("body.json", JSON.stringify(body, null, 2));
 
 /* ================= face (drawn and animated by face.js) ================= */
-const MOOD_NAMES = ["calm", "happy", "excited", "smug", "annoyed", "angry", "sad", "sleepy", "confused", "flirty"];
+const MOOD_NAMES = ["calm", "happy", "excited", "smug", "annoyed", "angry", "sad", "sleepy", "confused", "flirty", "bored", "suspicious"];
 let talking = false;
 function drawFace() {}                      // face.js redraws itself every frame
 function setMood(x) { if (MOOD_NAMES.includes(x)) { mood = x; window.Face?.setMood(x); } }
@@ -66,22 +66,38 @@ const VOICE_STYLES = {
   whisper: { rate: 0.9, pitch: 1.1, volume: 0.35 }, dramatic: { rate: 0.75, pitch: 0.8 }, fast: { rate: 1.8, pitch: 1.05 },
   slow: { rate: 0.6, pitch: 0.95 }, villain: { rate: 0.8, pitch: 0.15 }, excited: { rate: 1.3, pitch: 1.5 }
 };
+// Android Chrome drops speech that starts right after cancel(), and cuts off long utterances,
+// so text is spoken in sentence-sized pieces with a short gap after cancelling.
+let speakToken = 0, speakingNow = [];
 function speak(text) {
-  return new Promise(resolve => {
+  return new Promise(async resolve => {
     $("#said").textContent = text;
     if (!("speechSynthesis" in window) || !text) return resolve();
+    const my = ++speakToken;
     speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    const v = voices.find(v => v.voiceURI === settings.voice); if (v) u.voice = v;
+    if (settings.muted) { Face.setTalking(true); setTimeout(() => { if (my === speakToken) Face.setTalking(false); resolve(); }, Math.min(8000, 300 + text.length * 45)); return; }
+    await sleep(80);
+    const parts = String(text).match(/[^.!?…]+[.!?…]*["')\]]*\s*/g)?.reduce((acc, p) => {
+      if (acc.length && (acc[acc.length - 1] + p).length < 170) acc[acc.length - 1] += p; else acc.push(p); return acc;
+    }, []) || [text];
+    const v = voices.find(v => v.voiceURI === settings.voice);
     const vs = VOICE_STYLES[settings.voiceStyle] || VOICE_STYLES.normal;
-    u.rate = clamp(settings.rate * vs.rate, 0.3, 3);
-    u.pitch = clamp(settings.pitch * vs.pitch + (mood === "excited" ? 0.15 : mood === "sad" ? -0.15 : 0), 0, 2);
-    u.volume = vs.volume ?? 1;
     stopListening(true);
     talking = true; window.Face?.setTalking(true);
-    u.onboundary = () => window.Face?.kick();          // each spoken word pulses the mouth
-    u.onend = u.onerror = () => { talking = false; window.Face?.setTalking(false); resumeListening(); resolve(); };
-    speechSynthesis.speak(u);
+    const finish = () => { if (my !== speakToken) return resolve(); talking = false; window.Face?.setTalking(false); speakingNow = []; resumeListening(); resolve(); };
+    speakingNow = parts.map(p => {
+      const u = new SpeechSynthesisUtterance(p.trim());
+      if (v) u.voice = v;
+      u.rate = clamp(settings.rate * vs.rate, 0.3, 3);
+      u.pitch = clamp(settings.pitch * vs.pitch + (mood === "excited" ? 0.15 : mood === "sad" ? -0.15 : 0), 0, 2);
+      u.volume = vs.volume ?? 1;
+      u.onboundary = () => window.Face?.kick();          // each spoken word pulses the mouth
+      return u;
+    });                                                  // kept in a list so Chrome can't garbage-collect them mid-sentence
+    speakingNow[speakingNow.length - 1].onend = finish;
+    speakingNow.forEach(u => { u.onerror = e => { if (e.error !== "interrupted" && e.error !== "canceled") logEvent("error", { where: "speech", detail: e.error }); finish(); }; speechSynthesis.speak(u); });
+    // safety: if the speech engine never reports back, don't leave her stuck "talking"
+    setTimeout(() => { if (my === speakToken && talking && !speechSynthesis.speaking) finish(); }, 4000 + text.length * 120);
   });
 }
 
@@ -90,6 +106,7 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, listening = false, pausedForSpeech = false;
 
 function startListening() {
+  window.Tricks?.earsStop();
   if (!SR) { transcriptLine("act", "Speech recognition isn't available in this browser. Use the Talk tab."); return; }
   if (listening) return;
   rec = new SR();
@@ -107,6 +124,7 @@ function startListening() {
   };
   rec.onerror = ev => { if (ev.error !== "no-speech" && ev.error !== "aborted") logEvent("error", { where: "hearing", detail: ev.error }); };
   rec.onend = () => {
+    setTimeout(() => { if (!listening) window.Tricks?.earsStart(); }, 900);
     listening = false; setFaceState("listening", false); $("#micBtn").classList.remove("live");
     if (settings.listen === "always" && !pausedForSpeech && !talking) setTimeout(startListening, 300);
   };
@@ -242,7 +260,7 @@ let motionToken = 0; // bumps on STOP to cancel running sequences
 
 async function stopAll(reason = "stop button") {
   motionToken++;
-  window.Abilities?.stop(); singToken++; speechSynthesis.cancel?.();
+  window.Abilities?.stop(); singToken++; speakToken++; speechSynthesis.cancel?.(); talking = false; Face.setTalking(false);
   await link.send("X");
   logEvent("action", { detail: "STOP (" + reason + ")" });
 }
@@ -345,7 +363,7 @@ async function playSong(input = {}) {
   }).catch(e => ({ ok: false, text: "FAILED: " + e.message }));
   Face.setTalking(false); Face.effect("dance", 0);
   if (!r.ok && /locked/.test(r.text)) showUnlockHint();
-  logEvent("action", { detail: "song: " + (input.song || "own tune") });
+  logEvent("action", { detail: "song: " + (input.song || "own tune") }); if (r.ok) window.Tricks?.bump("songs");
   return r.ok ? r.text : (r.text.startsWith("FAILED") ? r.text : "FAILED: " + r.text);
 }
 
@@ -420,9 +438,64 @@ function renderTricks() {
   fill("#trFx", Face.effects, s => { $("#panel").hidden = true; document.body.classList.remove("panel-open"); Face.effect(s, 8); });
   fill("#trVibe", Abilities.vibeList, s => Abilities.vibrate(s));
   fill("#trVoice", Object.keys(VOICE_STYLES), s => { settings.voiceStyle = s; saveSettings(); speak("This is my " + s + " voice."); });
+  fill("#trGesture", Face.gestures, g => { $("#panel").hidden = true; document.body.classList.remove("panel-open"); Face.gesture(g); });
+  Tricks.renderTrickButtons();
 }
 $("#trMorseGo").onclick = () => sendMorse($("#trMorse").value || "SOS", $("#trTorch").checked);
 $("#trStop").onclick = () => stopAll("tricks stop");
+const tricksClose = () => { $("#panel").hidden = true; document.body.classList.remove("panel-open"); };
+$("#trPhoto").onclick = async () => transcriptLine("act", await takePhoto("button"));
+$("#trVideo").onclick = async () => { tricksClose(); transcriptLine("act", await recordVideo(10, "button")); };
+$("#trVoiceMemo").onclick = async () => transcriptLine("act", await recordVoice(15, "memo"));
+
+/* ================= photos, videos, voice memos ================= */
+async function uploadMedia(blob, kind, label) {
+  const r = await fetch(`/api/media?kind=${kind}&label=${encodeURIComponent(label || "")}`, { method: "PUT", body: blob });
+  const j = await r.json(); if (!r.ok) throw new Error(j.error || "save failed");
+  window.Tricks?.diary(`saved a ${kind}: ${j.shown}`);
+  return j.shown;
+}
+async function takePhoto(label = "") {
+  await camOn(); const v = $("#cam");
+  for (let i = 0; i < 20 && !v.videoWidth; i++) await sleep(100);
+  if (!v.videoWidth) return "FAILED: camera gave no picture.";
+  const c = document.createElement("canvas"); c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext("2d").drawImage(v, 0, 0);
+  Face.flash(true); Abilities.sfx("beep"); setTimeout(() => Face.flash(false), 150);
+  const blob = await new Promise(r => c.toBlob(r, "image/jpeg", 0.92));
+  return `Photo saved: ${await uploadMedia(blob, "photo", label)}`;
+}
+let recording = false;
+async function recordMedia(kind, seconds, label) {
+  if (recording) return "FAILED: already recording.";
+  const secs = clamp(+seconds || 10, 1, kind === "voice" ? 120 : 60);
+  recording = true; window.Tricks?.earsStop(); stopListening(true);
+  let mic = null;
+  try {
+    mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const tracks = [...mic.getAudioTracks()];
+    if (kind === "video") { await camOn(); tracks.push(...camStream.getVideoTracks()); }
+    const types = kind === "video" ? ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"] : ["audio/webm;codecs=opus", "audio/webm"];
+    const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || "";
+    const rec = new MediaRecorder(new MediaStream(tracks), mimeType ? { mimeType } : {});
+    const chunks = []; rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+    const stopped = new Promise(r => rec.onstop = r);
+    Abilities.sfx("beep"); Face.setState("listening", true);
+    $("#heard").textContent = `● recording ${kind} (${secs}s)`;
+    rec.start(1000);
+    const my = motionToken;
+    for (let i = 0; i < secs * 10 && my === motionToken; i++) await sleep(100);   // STOP ends it early
+    rec.stop(); await stopped;
+    Abilities.sfx("boop");
+    return `${kind === "video" ? "Video" : "Voice memo"} saved (${secs}s): ${await uploadMedia(new Blob(chunks, { type: rec.mimeType || "video/webm" }), kind, label)}`;
+  } catch (e) { return "FAILED: " + e.message; }
+  finally {
+    mic?.getTracks().forEach(t => t.stop()); recording = false; Face.setState("listening", false);
+    $("#heard").textContent = ""; resumeListening(); setTimeout(() => window.Tricks?.earsStart(), 800);
+  }
+}
+const recordVideo = (s, l) => recordMedia("video", s, l);
+const recordVoice = (s, l) => recordMedia("voice", s, l);
 
 /* ================= sensors ================= */
 let motion = null, orient = null, battery = null, tipped = false, light = null;
@@ -495,6 +568,21 @@ async function snapshot() {
 
 /* ================= the brain ================= */
 const TOOLS = [
+  ...(window.Tricks?.tools || []),
+  { name: "take_photo", description: "Take a full-quality photo with your camera and save it to his phone's gallery (Pictures/Nessari).",
+    input_schema: { type: "object", properties: { label: { type: "string", description: "a few words for the file name" } } } },
+  { name: "record_video", description: "Record a video with your camera (and microphone) and save it to the gallery (Movies/Nessari). 1-60 seconds.",
+    input_schema: { type: "object", properties: { seconds: { type: "number" }, label: { type: "string" } } } },
+  { name: "record_voice", description: "Record a voice memo from the microphone and save it (Recordings/Nessari). 1-120 seconds.",
+    input_schema: { type: "object", properties: { seconds: { type: "number" }, label: { type: "string" } } } },
+  { name: "save_note", description: "Save or add to a note (shopping list, idea, reminder text...). Same title adds to the existing note unless replace is true.",
+    input_schema: { type: "object", properties: { title: { type: "string" }, text: { type: "string" }, replace: { type: "boolean" } }, required: ["title", "text"] } },
+  { name: "list_notes", description: "List all saved notes.", input_schema: { type: "object", properties: {} } },
+  { name: "read_note", description: "Read a note out.", input_schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"] } },
+  { name: "delete_note", description: "Delete a note when he asks.", input_schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"] } },
+  { name: "read_memory", description: "Read everything in your permanent memory file.", input_schema: { type: "object", properties: {} } },
+  { name: "forget_memory", description: "Remove lines from your permanent memory that contain this text (when he asks you to forget something).",
+    input_schema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
   { name: "drive", description: "Drive on your tank tracks. Fails if tracks are missing or the body isn't connected.",
     input_schema: { type: "object", properties: { direction: { type: "string", enum: ["forward", "back", "left", "right"] }, seconds: { type: "number", description: "0.1 to 5" } }, required: ["direction"] } },
   { name: "use_part", description: "Move one of your parts (arm, crane, claw, light...) with one of its named actions, or action 'angle' plus an angle for servos.",
@@ -537,6 +625,35 @@ async function runTool(name, input) {
     if (name === "use_part") return await usePart(input.part, input.action, input.seconds, input.angle);
     if (name === "stop_all") { await stopAll("her own decision"); return "Everything stopped."; }
     if (name === "read_sensors") { try { hw = await api("/api/hw?fresh"); } catch {} return sensorReport(true); }
+    if (window.Tricks?.handles(name)) return await Tricks.run(name, input);
+    if (name === "take_photo") return await takePhoto(input.label);
+    if (name === "record_video") return await recordVideo(input.seconds, input.label);
+    if (name === "record_voice") return await recordVoice(input.seconds, input.label);
+    if (name === "save_note") {
+      const f = `notes/${slugOf(input.title)}.md`;
+      let old = ""; if (!input.replace) { try { old = await readFile(f); } catch {} }
+      await writeFile(f, (old ? old.trimEnd() + "\n" : `# ${input.title}\n`) + input.text.trim() + "\n");
+      return `Saved to note "${input.title}".`;
+    }
+    if (name === "list_notes") {
+      const j = await api("/api/files?path=notes").catch(() => ({ items: [] }));
+      return (j.items || []).map(i => i.name.replace(/\.md$/, "").replace(/-/g, " ")).join(", ") || "No notes yet.";
+    }
+    if (name === "read_note") { try { return (await readFile(`notes/${slugOf(input.title)}.md`)).slice(0, 4000); } catch { return `FAILED: no note called "${input.title}". Use list_notes.`; } }
+    if (name === "delete_note") {
+      try { await readFile(`notes/${slugOf(input.title)}.md`); } catch { return `FAILED: no note called "${input.title}".`; }
+      await writeFile(`notes/.deleted/${slugOf(input.title)}-${Date.now()}.md`, await readFile(`notes/${slugOf(input.title)}.md`));
+      await api("/api/files", { method: "PUT", body: JSON.stringify({ path: `notes/${slugOf(input.title)}.md`, content: "" }) });
+      return `Deleted note "${input.title}" (a copy is kept in notes/.deleted).`;
+    }
+    if (name === "read_memory") return memory.slice(0, 6000) || "Your memory is empty.";
+    if (name === "forget_memory") {
+      const needle = String(input.text).toLowerCase(), lines = memory.split("\n");
+      const kept = lines.filter(l => !(l.startsWith("- ") && l.toLowerCase().includes(needle)));
+      if (kept.length === lines.length) return `FAILED: nothing in memory mentions "${input.text}".`;
+      memory = kept.join("\n"); await writeFile("memory.md", memory);
+      return `Forgot ${lines.length - kept.length} line(s).`;
+    }
     if (name === "play_song") return await playSong(input);
     if (name === "sing") return await sing(input);
     if (name === "sound_effect") return await Abilities.sfx(input.name);
@@ -608,7 +725,9 @@ Only use commands for parts listed as installed. If something is MISSING, compla
 You are running on your small offline backup brain: no internet, no camera vision.`
     : `Start every reply with your mood like [mood:happy]. Moods: ${MOOD_NAMES.join(", ")}.
 Use your tools to act. Tool results that start with FAILED mean nothing happened: react to that honestly.
-You have a synthesizer (play songs, compose your own, sing), sound effects, a vibration motor, face effects, Morse code, timers, a flashlight and screen brightness. Use them freely for bits, reactions and comedic timing, but don't overdo it every reply.`;
+You have a synthesizer (play songs, compose your own, sing), sound effects, a vibration motor, face effects and face gestures, Morse code, timers, a flashlight, screen brightness, games, a camera that can save photos and videos, voice memos and notes. Use them freely for bits, reactions and comedic timing, but don't overdo it every reply.
+Your trick book (do_trick; "random" for a surprise): ${window.Tricks?.summary() || ""}. When something you just did was cool, you may save it as a new trick with save_trick.
+Morning you're groggy, late at night you're quieter and weirder.`;
   // Both brains reuse work when the start of the prompt stays the same (offline: llama's
   // cache, Claude: prompt caching, billed at a fraction of the price). So things that change
   // every second (sensors, clock) are NOT in here; they ride along at the end of your message.
@@ -1178,6 +1297,12 @@ const recentTouches = [];
 let lastTouchTalk = 0;
 if (window.Face) Face.onTouch = (kind, zone = "face", extra = "") => {
   lastTalk = Date.now();
+  window.Tricks?.bump("touch_" + kind);
+  if (kind === "hold" && settings.listen === "push" && !listening && !busy) { Abilities.sfx("beep"); startListening(); return; }   // press and hold = talk
+  if (kind === "swipe" && /all the way/.test(extra)) { Tricks.cyclePersona(extra.startsWith("left") ? -1 : 1); return; }
+  // poked over and over: she gets annoyed, then angry (no brain needed)
+  const pokes = recentTouches.filter(x => (x.kind === "tap" || x.kind === "double_tap") && Date.now() - x.t < 30000).length;
+  if (kind === "tap" || kind === "double_tap") { if (pokes >= 11) setMood("angry"); else if (pokes >= 5) setMood("annoyed"); }
   logEvent("touch", { detail: `${kind} ${zone} ${extra}`.trim() });
   const now = Date.now();
   recentTouches.push({ kind, zone, t: now });
@@ -1201,7 +1326,7 @@ let trackVid = null, trackCtx = null, prevFrame = null, trackTimer = null, still
 async function startTracking() {
   if (!settings.track || trackTimer) return;
   try { await camOn(); } catch (e) { logEvent("error", { where: "tracking", detail: "camera: " + e.message }); return; }
-  trackVid = document.createElement("video");
+  trackVid = window.trackVid = document.createElement("video");
   trackVid.muted = true; trackVid.playsInline = true;
   const c = document.createElement("canvas"); c.width = 64; c.height = 48;
   trackCtx = c.getContext("2d", { willReadFrequently: true });
@@ -1216,17 +1341,39 @@ function trackTick() {
   const d = trackCtx.getImageData(0, 0, 64, 48).data;
   const gray = new Uint8Array(64 * 48);
   for (let i = 0; i < gray.length; i++) gray[i] = (d[i * 4] * 3 + d[i * 4 + 1] * 6 + d[i * 4 + 2]) / 10;
+  window.Tricks?.scanTick();
+  const mode = settings.eyeMode || "motion";
+  if (mode !== "motion") {                         // follow a bright light or a color instead of movement
+    let n = 0, sx = 0, sy = 0, maxL = 0;
+    if (mode === "bright") for (let i = 0; i < gray.length; i++) maxL = Math.max(maxL, gray[i]);
+    for (let i = 0; i < gray.length; i++) {
+      let hit;
+      if (mode === "bright") hit = maxL > 200 && gray[i] > maxL * 0.92;
+      else { const [h, sat, val] = Tricks.hsv(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); hit = sat > 0.4 && val > 0.3 && Tricks.colorName(h, sat, val) === mode; }
+      if (hit) { n++; sx += i % 64; sy += (i / 64) | 0; }
+    }
+    if (n > gray.length * 0.004) {
+      let x = (sx / n) / 32 - 1, y = (sy / n) / 24 - 1;
+      if (settings.facing === "user") x = -x;
+      window.Face?.lookAt(x * 1.1, y * 0.8);
+    }
+  }
   if (prevFrame) {
     let n = 0, sx = 0, sy = 0;
     for (let i = 0; i < gray.length; i++) {
       if (Math.abs(gray[i] - prevFrame[i]) > 28) { n++; sx += i % 64; sy += (i / 64) | 0; }
     }
     const frac = n / gray.length;
+    window.lastMotion = { frac, t: performance.now() };
     // ignore tiny noise, and whole-picture changes (lights flicking, the robot itself moving)
     if (frac > 0.006 && frac < 0.5) {
       let x = (sx / n) / 32 - 1, y = (sy / n) / 24 - 1;
       if (settings.facing === "user") x = -x;                // front camera: mirror so she looks AT you
-      window.Face?.lookAt(x * 1.1, y * 0.8);
+      if (mode === "motion") window.Face?.lookAt(x * 1.1, y * 0.8);
+      if (Date.now() - stillSince > 120000 && frac > 0.05) {
+        window.Tricks?.bump("visitors"); window.Tricks?.diary("someone walked in");
+        if (mood === "bored" || mood === "sleepy") setMood("calm");
+      }
       if (Date.now() - stillSince > 120000 && frac > 0.05)
         react("motion", "you just saw someone or something move in front of your camera after it was still for a while", 5);
       stillSince = Date.now();
@@ -1244,6 +1391,13 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) unlo
 
 $("#openPanel").onclick = () => { $("#panel").hidden = false; document.body.classList.add("panel-open"); showTab("status"); };
 $("#openTalk").onclick = () => { $("#panel").hidden = false; document.body.classList.add("panel-open"); showTab("talk"); $("#typeBox").focus(); };
+function renderMute() { $("#muteBtn").textContent = settings.muted ? "🔇" : "🔊"; $("#muteBtn").classList.toggle("muted", !!settings.muted); }
+$("#muteBtn").onclick = () => {
+  settings.muted = !settings.muted; saveSettings(); renderMute();
+  Abilities.setMuted(settings.muted);
+  if (settings.muted) speechSynthesis.cancel();
+};
+renderMute(); Abilities.setMuted(!!settings.muted);
 $("#openTermux").onclick = () => {
   location.href = "intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=com.termux;end";
 };
@@ -1257,6 +1411,7 @@ function showTab(name) {
   if (name === "logs") loadLogs();
   if (name === "persona") { renderPersonaForm(); renderVersions(); }
   if (name === "tricks") renderTricks();
+  if (name === "settings") renderRemoteInfo();
   if (name === "sensors") $("#sensorDump").textContent = sensorReport(true);
 }
 
@@ -1416,13 +1571,14 @@ function bindSetting(id, key, cast = v => v) {
 function onSettingChange(key) {
   if (key === "listen") { stopListening(); if (settings.listen === "always") startListening(); }
   if (key === "facing" && camStream) { camOff(); camOn().catch(() => {}); }
+  if (key === "ears") { if (settings.ears) Tricks.earsStart(); else Tricks.earsStop(); }
   if (key === "track") { if (settings.track) startTracking(); else { stopTracking(); camOff(); } }
   refreshChips();
 }
 bindSetting("#setBrain", "brain"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
 bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bindSetting("#setPitch", "pitch", Number);
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
-bindSetting("#setTrack", "track");
+bindSetting("#setTrack", "track"); bindSetting("#setEars", "ears"); bindSetting("#setQr", "qr");
 bindSetting("#setAuto", "auto"); bindSetting("#setReact", "react"); bindSetting("#setNight", "night"); bindSetting("#setAutoMove", "autoMove");
 $("#btnFull").onclick = () => document.documentElement.requestFullscreen?.().catch(() => {});
 $("#btnTestVoice").onclick = () => speak("Testing. One two. Yes, I can hear myself, unfortunately.");
@@ -1441,12 +1597,63 @@ if (!isApp) window.addEventListener("pointerdown", function fs(e) {
   window.removeEventListener("pointerdown", fs);
 });
 
+/* ================= remote control (another phone) ================= */
+async function remoteTick() {
+  if (!status.remote) return;
+  let cmds = [];
+  try { cmds = (await api("/api/remote/poll")).commands || []; } catch { return; }
+  for (const c of cmds) {
+    try {
+      transcriptLine("act", `remote: ${c.cmd} ${c.arg ?? ""}`);
+      if (c.cmd === "say") await speak(String(c.arg || ""));
+      else if (c.cmd === "ask") ask(String(c.arg || ""));
+      else if (c.cmd === "trick") Tricks.runTrick(c.arg);
+      else if (c.cmd === "sfx") Abilities.sfx(c.arg);
+      else if (c.cmd === "song") playSong({ song: c.arg });
+      else if (c.cmd === "effect") Face.effect(c.arg, 8);
+      else if (c.cmd === "gesture") Face.gesture(c.arg);
+      else if (c.cmd === "mood") setMood(c.arg);
+      else if (c.cmd === "vibrate") Abilities.vibrate(c.arg);
+      else if (c.cmd === "voice") { settings.voiceStyle = c.arg; saveSettings(); }
+      else if (c.cmd === "photo") { const data = await snapshot(); await fetch("/api/remote/photo", { method: "PUT", body: await (await fetch("data:image/jpeg;base64," + data)).blob() }); }
+      else if (c.cmd === "save_photo") transcriptLine("act", await takePhoto("remote"));
+      else if (c.cmd === "stop") stopAll("remote");
+    } catch (e) { logEvent("error", { where: "remote", detail: e.message }); }
+  }
+  api("/api/remote/report", { method: "POST", body: JSON.stringify({
+    mood, said: $("#said").textContent.slice(0, 300), battery: battery ? Math.round(battery.level * 100) : null, charging: battery?.charging,
+    brain: $("#chipBrain").textContent, body: $("#chipBody").textContent, busy,
+    lists: { tricks: Tricks.list(), sfx: Abilities.sfxList, songs: Abilities.songList, effects: Face.effects, gestures: Face.gestures, moods: MOOD_NAMES, voices: Object.keys(VOICE_STYLES) }
+  }) }).catch(() => {});
+}
+setInterval(remoteTick, 1200);
+
+async function renderRemoteInfo() {
+  try {
+    const r = await api("/api/remote/info");
+    $("#setRemote").checked = r.enabled;
+    $("#remoteInfo").textContent = r.enabled
+      ? `On. On the other phone (same Wi-Fi or hotspot), open:\n${r.urls.join("\n") || "(no Wi-Fi address yet)"}\nPIN: ${r.pin}`
+      : "Off. Other devices can't control her.";
+  } catch {}
+}
+$("#setRemote").onchange = async () => {
+  const cfg = JSON.parse(await readFile("config.json").catch(() => "{}"));
+  cfg.remote = $("#setRemote").checked;
+  if (cfg.remote && !cfg.remotePin) cfg.remotePin = String(Math.floor(1000 + Math.random() * 9000));
+  await writeFile("config.json", JSON.stringify(cfg, null, 2));
+  await refreshStatus(); renderRemoteInfo();
+};
+
 /* ================= boot ================= */
 (async function boot() {
   drawFace();
   await loadRobotFiles();
   await loadConversation();
   await refreshStatus();
+  await Tricks.loadCustom(); await Tricks.loadStats();
+  Tricks.checkChangelog();
+  setTimeout(() => Tricks.earsStart(), 3000);
   logEvent("boot", { detail: "face page opened" });
   if (settings.listen === "always") startListening();
   $("#said").textContent = "Tap the mic and talk to me.";

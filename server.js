@@ -18,6 +18,27 @@ const LOG_FILE = path.join(DATA, "logs", "robot-log.jsonl");
 
 fs.mkdirSync(path.join(DATA, "logs"), { recursive: true });
 
+// Photos, videos and voice memos go to the phone's gallery (Pictures/Nessari) when Termux has storage access.
+const SHARED = path.join(os.homedir(), "storage", "shared");
+function mediaDir(kind) {
+  const base = fs.existsSync(SHARED) ? path.join(SHARED, kind === "voice" ? "Recordings" : kind === "video" ? "Movies" : "Pictures", "Nessari")
+                                     : path.join(DATA, "media", kind);
+  fs.mkdirSync(base, { recursive: true });
+  return base;
+}
+async function readRaw(req, limit) {
+  let size = 0; const chunks = [];
+  for await (const c of req) { size += c.length; if (size > limit) throw new Error("File too large"); chunks.push(c); }
+  return Buffer.concat(chunks);
+}
+
+// ---- remote control from another phone on the same Wi-Fi (off unless config.json has "remote": true) ----
+const remote = { queue: [], state: {}, photo: null };
+const isLocal = req => { const a = req.socket.remoteAddress || ""; return a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1"; };
+function lanIPs() {
+  return Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === "IPv4" && !i.internal).map(i => i.address);
+}
+
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
 }
@@ -215,12 +236,61 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   const p = url.pathname;
   try {
+    // Anything not from this phone may ONLY use the remote page, and only if remote is switched on with a PIN.
+    if (!isLocal(req)) {
+      const cfg = config();
+      if (!cfg.remote || !cfg.remotePin) return send(res, 403, { error: "Remote control is off. Turn it on in her Settings." });
+      const okFiles = ["/remote", "/remote.html", "/icon-192.png", "/manifest.webmanifest"];
+      if (req.method === "GET" && okFiles.includes(p)) {
+        const f = path.join(PUBLIC, p === "/remote" ? "remote.html" : p.slice(1));
+        return send(res, 200, fs.readFileSync(f), MIME[path.extname(f)] || "text/html");
+      }
+      const pin = url.searchParams.get("pin") || req.headers["x-pin"];
+      if (String(pin) !== String(cfg.remotePin)) return send(res, 401, { error: "Wrong PIN" });
+      if (p === "/api/remote/send" && req.method === "POST") {
+        const body = await readBody(req, 64 * 1024);
+        remote.queue.push({ ...body, at: Date.now() }); remote.queue = remote.queue.slice(-50);
+        log({ kind: "remote", detail: JSON.stringify(body).slice(0, 200) });
+        return send(res, 200, { ok: true });
+      }
+      if (p === "/api/remote/state") return send(res, 200, { ...remote.state, photoAt: remote.photo?.at || 0 });
+      if (p === "/api/remote/photo" && remote.photo) return send(res, 200, remote.photo.buf, "image/jpeg");
+      return send(res, 404, { error: "Not found" });
+    }
+
+    // ---- remote control: the robot's own page picks up commands and reports its state ----
+    if (p === "/api/remote/poll") { const q = remote.queue; remote.queue = []; return send(res, 200, { commands: q }); }
+    if (p === "/api/remote/report" && req.method === "POST") { remote.state = { ...(await readBody(req, 256 * 1024)), at: Date.now() }; return send(res, 200, { ok: true }); }
+    if (p === "/api/remote/photo" && req.method === "PUT") { remote.photo = { buf: await readRaw(req, 8 * 1024 * 1024), at: Date.now() }; return send(res, 200, { ok: true }); }
+    if (p === "/api/remote/info") {
+      const cfg = config();
+      return send(res, 200, { enabled: !!cfg.remote, pin: cfg.remotePin || null, urls: lanIPs().map(ip => `http://${ip}:${PORT}/remote`) });
+    }
+
+    // ---- her changelog (ships with the code, so updates bring a new one) ----
+    if (p === "/api/changelog") {
+      let text = ""; try { text = fs.readFileSync(path.join(ROOT, "CHANGELOG.md"), "utf8"); } catch {}
+      return send(res, 200, { text });
+    }
+
+    // ---- save a photo / video / voice memo to the phone's gallery ----
+    if (p === "/api/media" && req.method === "PUT") {
+      const kind = ["photo", "video", "voice"].includes(url.searchParams.get("kind")) ? url.searchParams.get("kind") : "photo";
+      const ext = { photo: "jpg", video: "webm", voice: "webm" }[kind];
+      const label = String(url.searchParams.get("label") || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+      const file = path.join(mediaDir(kind), `nessari-${stamp}${label ? "-" + label : ""}.${ext}`);
+      fs.writeFileSync(file, await readRaw(req, 150 * 1024 * 1024));
+      run("termux-media-scan", [file], 5000);                 // so it shows up in the Gallery app
+      log({ kind: "media", detail: file });
+      return send(res, 200, { ok: true, file, shown: file.replace(os.homedir() + "/storage/shared/", "") });
+    }
     // ---- status ----
     if (p === "/api/status") {
       const [online, local] = await Promise.all([checkOnline(), checkLocal()]);
       const keys = apiKeys();
       const gkeys = geminiKeys();
-      return send(res, 200, { online, local, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
+      return send(res, 200, { online, local, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
         geminiKeyCount: gkeys.length, geminiKeyInUse: gkeys.length ? Math.min(activeGemini, gkeys.length - 1) + 1 : 0, geminiModel: geminiModelCache,
         model: config().claudeModel, time: new Date().toISOString() });
     }
@@ -401,7 +471,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 const PORT = Number(process.env.PORT) || config().port;
-server.listen(PORT, "127.0.0.1", () => {
+// Listens on all interfaces so the optional remote page works; everything except /remote is refused
+// for other devices (see the isLocal check at the top of the handler).
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`Darkly robot brain on http://127.0.0.1:${PORT}  (files: ${DATA})`);
   log({ kind: "boot", port: PORT });
 });

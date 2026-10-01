@@ -25,6 +25,7 @@
     <button id="openTalk" class="ghost" aria-label="Open chat">Chat</button>
     <button id="openPanel" class="ghost" aria-label="Open control panel">Panel</button>
   </div>
+  <button id="muteBtn" class="ghost" aria-label="Mute">🔊</button>
 
   <canvas id="face" aria-label="Robot face"></canvas>
 
@@ -112,6 +113,11 @@
 
   <div class="tab" id="tab-tricks" hidden>
     <p class="muted">Tap to make her do it. Or just ask her ("play something", "do a drumroll", "put your shades on", "sing about my cat").</p>
+    <h3>Trick book (★ = ones she invented)</h3><div class="tricks" id="trBook"></div>
+    <h3>Camera</h3>
+    <div class="row"><button id="trPhoto">Take photo</button><button id="trVideo">Record 10s video</button><button id="trVoiceMemo">15s voice memo</button></div>
+    <p class="muted">Saved to the phone's gallery: Pictures, Movies and Recordings › Nessari.</p>
+    <h3>Face moves</h3><div class="tricks" id="trGesture"></div>
     <h3>Songs</h3><div class="tricks" id="trSongs"></div>
     <h3>Sound effects</h3><div class="tricks" id="trSfx"></div>
     <h3>Face effects</h3><div class="tricks" id="trFx"></div>
@@ -165,16 +171,22 @@
       <option value="chatty">A lot (every 2–5 min)</option>
     </select></label>
     <label class="check"><input id="setReact" type="checkbox"> Reacts to things (touches, picked up, charger, lights, battery, someone walking in)</label>
+    <label class="check"><input id="setEars" type="checkbox"> Hears claps and loud noises (2 claps = listen, 3 claps = random trick; pauses while she's listening to you)</label>
+    <label class="check"><input id="setQr" type="checkbox"> Reads QR codes and barcodes she sees</label>
     <label class="check"><input id="setTrack" type="checkbox"> Eyes follow movement (keeps the camera on, uses more battery)</label>
     <label class="check"><input id="setNight" type="checkbox"> Quiet at night (11 PM – 7 AM)</label>
     <label class="check"><input id="setAutoMove" type="checkbox"> Lets her move her body on her own (careful near table edges)</label>
     <p class="muted">Every time she speaks up uses the online brain, so "A lot" costs more.</p>
+    <h3>Remote control</h3>
+    <label class="check"><input id="setRemote" type="checkbox"> Let another phone on the same Wi-Fi control her (with a PIN)</label>
+    <pre id="remoteInfo"></pre>
     <div class="row"><button id="btnFull">Full screen</button><button id="btnTestVoice" class="ghost">Test voice</button><button id="btnForget" class="ghost">Clear conversation</button></div>
   </div>
 </section>
 
 <script src="abilities.js"></script>
 <script src="face.js"></script>
+<script src="tricks.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

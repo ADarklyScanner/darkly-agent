@@ -21,7 +21,7 @@ fi
 
 echo "== Copying robot to $DEST =="
 mkdir -p "$DEST"
-cp -r "$SRC/server.js" "$SRC/package.json" "$SRC/public" "$SRC/firmware" "$SRC/README.md" "$DEST/"
+cp -r "$SRC/server.js" "$SRC/package.json" "$SRC/public" "$SRC/firmware" "$SRC/README.md" "$SRC/CHANGELOG.md" "$DEST/"
 mkdir -p "$DEST/data/logs" "$HOME/models"
 for f in config.json body.json persona.md memory.md; do
   [ -f "$DEST/data/$f" ] || cp "$SRC/data/$f" "$DEST/data/$f"     # never overwrite her existing files
