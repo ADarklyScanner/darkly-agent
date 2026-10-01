@@ -85,6 +85,20 @@ Just ask her, or use Panel > **Tricks** to trigger anything yourself for videos.
 
 Android only allows sound and vibration after the first tap on the page, so tap her face once after she starts.
 
+## Tricks, games and the rest
+
+- **Trick Book:** 44 built-in tricks, plus any she invents and saves herself (marked ★ on the Tricks tab).
+  Say "do a trick" for a random one, or name one ("do the possessed thing", "fortune teller"). Ask "what tricks do you know?"
+- **Games:** Simon Says, reaction test, staring contest, red light green light, color hunt, clap-back, Twenty Questions, trivia, riddles, rock paper scissors.
+- **Claps:** clap twice and she listens; clap three times for a random trick.
+- **Camera:** photos, videos and voice memos are saved to the phone's gallery (Pictures, Movies and Recordings › Nessari).
+  She reads QR codes; print `nessari:trick:possessed` as a QR code and showing it to her starts that trick.
+- **Notes and memory:** "make a note…", "what's on my shopping list?", "forget that my cat is named Pixel".
+- **Diary and achievements:** she keeps a daily diary in `data/diary` and announces milestones.
+- **Changelog:** `CHANGELOG.md`. After an update she reads it and tells you what's new.
+- **Remote control:** Settings > Remote control. Open the address it shows on another phone on the same Wi-Fi and enter the PIN.
+- **Mute:** the speaker button under Panel.
+
 ## Touching her face
 
 Her face knows where you touch (eyes, eyebrows, forehead, top of head, nose, cheeks, mouth, chin, sides) and how:

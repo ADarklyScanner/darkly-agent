@@ -3,7 +3,7 @@
 Newest first. She reads this herself after an update.
 
 ## 2026-10-01 · v0.9 · The big trick update
-- Trick Book: 45 built-in tricks (possessed, deal with it, dramatic death, magic trick, fortune teller, roast, beatbox, countdown and more). She can list them, do one at random, and invent and save her own tricks.
+- Trick Book: 44 built-in tricks (possessed, deal with it, dramatic death, magic trick, fortune teller, roast, beatbox, countdown and more). She can list them, do one at random, and invent and save her own tricks.
 - Games: Simon Says on her face, reaction-time test, staring contest, red light green light with the camera, color hunt, clap-back.
 - Ears: hears claps (2 claps = she listens, 3 claps = random trick), bangs and shouting.
 - Echo: records you and plays it back as a chipmunk, deep, backwards or robot voice.
