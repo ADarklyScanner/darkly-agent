@@ -63,7 +63,8 @@
   <div class="tab" id="tab-talk" hidden>
     <div id="transcript"></div>
     <div id="talkStatus" style="min-height:1.3em;font-size:13px;opacity:.7;padding:2px 4px"></div>
-    <form id="typeForm"><input id="typeBox" placeholder="Type to her instead of talking" autocomplete="off"><button>Send</button></form>
+    <div id="picPreview" hidden><div style="display:flex;align-items:center;gap:8px;padding:4px"><img id="picThumb" alt="picture to send" style="max-height:64px;max-width:40%;border-radius:8px"><span style="font-size:13px;opacity:.75;flex:1">Picture ready to send</span><button type="button" id="picClear" class="ghost" aria-label="Remove picture">✕</button></div></div>
+    <form id="typeForm"><button type="button" id="picBtn" class="ghost" aria-label="Send her a picture or screenshot" title="Send her a picture or screenshot">🖼</button><input id="picFile" type="file" accept="image/*" hidden><input id="typeBox" placeholder="Type to her instead of talking" autocomplete="off"><button>Send</button></form>
   </div>
 
   <div class="tab" id="tab-body" hidden>
@@ -184,6 +185,7 @@
     <label class="check"><input id="setFaces" type="checkbox"> Recognizes people you've introduced ("this is ..."); face prints stay on this phone</label>
     <label class="check"><input id="setTags" type="checkbox"> Reads printed marker tags (<a href="/tags.html" target="_blank" style="color:inherit">print a sheet of tags</a>)</label>
     <label class="check"><input id="setNfc" type="checkbox"> NFC stickers as triggers (tap one to the back of the phone)</label>
+    <label class="check"><input id="setHands" type="checkbox"> Shows her hands (two floating hands she gestures with)</label>
     <label class="check"><input id="setOffListen" type="checkbox"> Keeps listening when the screen is off (she answers to her name; uses the phone's own hearing)</label>
     <label class="check"><input id="setLockCard" type="checkbox"> Shows on the lock screen as a card with her face, last line and buttons (pauses other apps' music while her page is open)</label>
     <label class="check"><input id="setAutoPhoto" type="checkbox"> Takes a photo by herself when something interesting happens (saved to the gallery only)</label>
@@ -203,6 +205,7 @@
 
 <script src="abilities.js"></script>
 <script src="face.js"></script>
+<script src="hands.js"></script>
 <script src="attention.js"></script>
 <script src="tricks.js"></script>
 <script src="hearing.js"></script>

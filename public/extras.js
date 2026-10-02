@@ -42,6 +42,8 @@
     { name: "which_room", description: "Which room are you in, going by how it looks?", input_schema: obj() },
     { name: "learn_thing", description: "He's holding up a particular object and telling you its name ('this is Frank', 'this is my good screwdriver'). Remember what it looks like so you recognize that exact thing later. He must hold it in the middle of your view.", input_schema: obj({ name: { type: "string" } }, ["name"]) },
     { name: "remember_place", description: "Remember where you are right now under a name (home, workshop, mom's house), using the phone's location. Later you'll know when you're there again.", input_schema: obj({ name: { type: "string" } }, ["name"]) },
+    { name: "hands", description: "Use your two floating hands. gesture: one of " + (window.Hands?.list || []).join(", ") + ". Or count: show a number 0-10 on your fingers. Or show: false to put your hands away, true to bring them back. Use them like a person would: wave hello, thumbs up, shrug, facepalm, count along.",
+      input_schema: obj({ gesture: { type: "string" }, count: { type: "number" }, show: { type: "boolean" } }) },
     { name: "screen", description: "Turn your screen dark (pure black; you keep seeing, hearing and talking, it just saves the display and the battery) or bring your face back. Use when he says 'go dark', 'screen off', 'lights out', 'screen on', 'show your face'.", input_schema: obj({ state: { type: "string", enum: ["dark", "on"] } }, ["state"]) },
     { name: "where_am_i", description: "Check the phone's location and tell which remembered place you're at or near (or that it's somewhere new).", input_schema: obj() }
   ];
@@ -59,6 +61,14 @@
     if (name === "forget_phone_routine") { try { return (await api("/api/phone/routines?goal=" + encodeURIComponent(input.goal || ""), { method: "DELETE" })).forgotten ? "Forgotten." : "No routine matched that."; } catch (err) { return "FAILED: " + err.message; } }
     if (name === "calibrate_ears") return await calibrateEars();
     if (name === "screen") return window.Dark ? Dark.set(input.state) : "FAILED: not loaded.";
+    if (name === "hands") {
+      const Hd = window.Hands; if (!Hd) return "FAILED: not loaded.";
+      if (typeof input.show === "boolean") { settings.hands = input.show; saveSettings(); Hd.show(input.show); try { $("#setHands").checked = input.show; } catch {} if (!input.gesture && input.count == null) return input.show ? "Your hands are out." : "Your hands are put away."; }
+      if (!settings.hands) { settings.hands = true; saveSettings(); Hd.show(true); }
+      if (input.count != null) { Hd.count(input.count); return `You're holding up ${Math.max(0, Math.min(10, Math.round(input.count)))} fingers.`; }
+      const g = String(input.gesture || "wave"); const d = Hd.gesture(g);
+      return d ? `Did it: ${g.replace(/_/g, " ")}.` : `FAILED: you don't know a "${g}" gesture. You know: ${Hd.list.join(", ")}.`;
+    }
     if (name === "self_check") return window.selfCheck ? await selfCheck() : "FAILED: not loaded.";
     if (name === "see_tags") return window.Tags?.available ? Tags.describe() : "FAILED: the tag reader didn't load.";
     if (name === "name_tag") return window.Tags ? await Tags.name(input.name, input.id, input.trick) : "FAILED: the tag reader didn't load.";
@@ -288,6 +298,12 @@
     [/forget (\w+)'?s? face/i, m => ["forget_face", { name: m[1] }]],
     [/who do you know|list (?:the )?people/i, () => ["list_people", {}]],
     [/calibrate (?:your )?ears/i, () => ["calibrate_ears", {}]],
+    [/what do you look like|look at (?:yourself|your(?: own)? face)|(?:can you )?see your(?: own)? face|look in (?:the|a) mirror|describe your(?: own)? face|how do you look/i, () => ["see_my_face", {}]],
+    [/\b(?:hide|put away|lose) your hands\b/i, () => ["hands", { show: false }]],
+    [/\b(?:show (?:me )?your hands|get your hands out|where are your hands)\b/i, () => ["hands", { show: true, gesture: "jazz_hands" }]],
+    [/\b(?:show(?: me)?|hold up|count to) (zero|one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2}) ?(?:fingers?)?\b/i, m => { const w = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"].indexOf(m[1].toLowerCase()); const n = w >= 0 ? w : +m[1]; return n <= 10 ? ["hands", { count: n }] : null; }],
+    [/\bhigh[- ]?five\b/i, () => ["hands", { gesture: "high_five" }]],
+    [/\b(?:give me a |do a |can you )?(wave|thumbs up|thumbs down|peace sign|shrug|facepalm|salute|clap|jazz hands|rock on|finger guns?|fist pump|blow (?:me )?a kiss)\b(?: (?:for|at|to) me)?[.!?]*$/i, m => ["hands", { gesture: { "peace sign": "peace", "finger guns": "finger_gun", "finger gun": "finger_gun", "blow me a kiss": "blow_kiss", "blow a kiss": "blow_kiss" }[m[1].toLowerCase()] || m[1].toLowerCase().replace(/ /g, "_") }]],
     [/\b(?:go dark|screen off|lights out|(?:turn|switch) (?:off )?(?:your|the) (?:screen|face|display)(?: off)?\b(?!.* on\b)|hide your face|black ?out)/i, () => ["screen", { state: "dark" }]],
     [/\b(?:screen on|(?:turn|switch) (?:your|the) (?:screen|face|display) (?:back )?on|show (?:me )?your face|lights on|face on)\b/i, () => ["screen", { state: "on" }]],
     [/systems? check|self.?(?:check|test)|diagnostic|are you (?:ok|okay|working|broken)|what(?:'s| is) wrong with you/i, () => ["self_check", {}]],

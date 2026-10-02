@@ -2,6 +2,18 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.20 · A whole face, hands, and eyes on herself
+Tested here in a simulated browser at phone size, including pictures of every expression and gesture. How smoothly it draws on the S22 is for you to tell me.
+- Mouth: two real lips instead of a row of bars. They part when she talks, and the shape wanders between wide, tall and small-round so it isn't the same flap for every word. Teeth show when it opens, a tongue when it's wide (yawns), the corners lift into a smile with dimples or pull down in a frown. Her voice bars now live inside the mouth.
+- The rest of her head: a jawline that drops when her mouth opens, a hexagon node on her chin that pulses with her voice, nodes at the temples, cheekbones and jaw, a band across the forehead with a sensor that lights up while she thinks, and a nose (it glows when you boop it). The side meters became ear housings, with sound rings when she's listening. Her pointed ears on top are still there.
+- Hands: two floating hands that rest below her chin. They lift and open while she talks, fidget now and then, and do 29 gestures: wave, thumbs up and down, point, peace, rock on, OK, finger gun, fist pump, clap, cover her eyes, peekaboo, cover her mouth, cover her ears, stroke her chin, shrug, facepalm, jazz hands, drum her fingers, stop, salute, please, high five, blow a kiss, and more. She can count from 0 to 10 on her fingers.
+- She uses them without being told: a wave when someone arrives or she says hi, a shrug with "I don't know", thumbs up back at yours, a peace sign back at yours, a hand over her mouth when she yawns, chin-stroking when an answer is taking a while, peekaboo when you cover her camera. Tap the hand she holds up for a high five.
+- You can ask: "wave", "give me a thumbs up", "show me three fingers", "high five", "hide your hands". Both brains can use them (the online ones as a tool; offline through those phrases and through what she says).
+- Seven new tricks use the hands: wave hello, finger countdown, peekaboo, high five, applause, no idea, finger guns. 72 tricks in all.
+- Seeing her own face: ask "what do you look like?" or "look at yourself". Her online brain gets an actual picture of what her screen is showing. Her offline brain can't look at pictures, so it gets the same thing in words (mood, eyes, brows, mouth, hands).
+- Sending her pictures: the Chat tab has a picture button next to the text box (you can also paste). Send a screenshot or photo with or without a message. Online she looks at it. Offline she can't see it, but the phone reads any text in it and she works from that.
+- Settings: "Shows her hands".
+
 ## 2026-10-02 · v0.19 · Screen off, and a card on the lock screen
 Tested here in a simulated browser. How Chrome on your phone behaves with the screen really off is the part I can't see from here.
 - Go dark: say "go dark", "screen off" or "lights out" (or she can do it herself as a tool). Her page stays up but shows pure black, which on this kind of screen means the pixels are off. Everything keeps running: camera, eyes, ears, voice, brain. Touch the screen or say "screen on" and her face is back. This is the way to have the screen off and lose nothing.

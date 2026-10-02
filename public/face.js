@@ -309,7 +309,7 @@
     ctx.beginPath(); ctx.arc(0, -0.02 * U, 1.32 * U, a + Math.PI, a + Math.PI + 0.35); ctx.stroke();
 
     // corner brackets
-    const bx = Math.min(1.12 * U, W / 2 / 1.02 - 10), top = -0.82 * U, bot = 0.78 * U, L = 0.16 * U;
+    const bx = Math.min(1.12 * U, W / 2 / 1.02 - 10), top = -0.82 * U, bot = 1.03 * U, L = 0.16 * U;
     ctx.strokeStyle = col(10, 0.45 * cur.dim); ctx.lineWidth = 2;
     for (const [x, y, sx, sy] of [[-bx, top, 1, 1], [bx, top, -1, 1], [-bx, bot, 1, -1], [bx, bot, -1, -1]]) {
       ctx.beginPath(); ctx.moveTo(x, y + sy * L); ctx.lineTo(x, y); ctx.lineTo(x + sx * L, y); ctx.stroke();
@@ -322,6 +322,20 @@
     const hex = (Math.floor(t * 7) * 2654435761 >>> 0).toString(16).slice(-6).toUpperCase();
     ctx.fillText(`0x${hex}`, bx - 6, bot - U * 0.04);
     if (st.label) { ctx.textAlign = "right"; ctx.fillText(st.label.toUpperCase(), bx - 6, top + U * 0.09); }
+    // side ears: a housing around each meter, tied to the temple and cheekbone, with sound rings when she's listening
+    for (const s of [-1, 1]) {
+      const xe = s * (bx - U * 0.0475), hw2 = U * 0.043, y0 = -0.35 * U, y1 = 0.285 * U;
+      ctx.strokeStyle = col(10, 0.5 * cur.dim); ctx.lineWidth = U * 0.008; ctx.fillStyle = "rgba(7,3,13,0.55)";
+      ctx.beginPath(); ctx.roundRect(xe - hw2, y0, hw2 * 2, y1 - y0, hw2); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = col(5, 0.25 * cur.dim); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(xe - s * hw2, -0.3 * U); ctx.lineTo(s * 0.8 * U, -0.44 * U); ctx.moveTo(xe - s * hw2, 0.22 * U); ctx.lineTo(s * 0.77 * U, 0.2 * U); ctx.stroke();
+      const hear = Math.max(st.listening, prim.earTw);
+      if (hear > 0.03) for (let i = 0; i < 2; i++) {
+        const ph = (t * 1.3 + i * 0.5) % 1;
+        ctx.strokeStyle = `hsla(190,100%,65%,${(1 - ph) * 0.6 * hear})`; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(xe + s * hw2, -0.03 * U, U * (0.03 + ph * 0.07), s > 0 ? -1.1 : Math.PI - 1.1, s > 0 ? 1.1 : Math.PI + 1.1); ctx.stroke();
+      }
+    }
     // side meters
     for (const s of [-1, 1]) {
       for (let i = 0; i < 8; i++) {
@@ -456,26 +470,98 @@
     }
   }
 
-  function mouth(t) {
+  // Her mouth: two lips that part when she talks, corners that lift into a smile, teeth, a tongue when it's wide
+  // open, and her voice (the dancing bars) living inside. The shape wanders between wide, tall and small-round
+  // while she talks, so it isn't the same flap for every word. mouthGeo() is shared with the jaw and chin.
+  let mg = { w: 1, my: 0, open: 0, round: 0, chewOpen: 0 };
+  function mouthGeo(t) {
     const chewOpen = prim.chew * Math.max(0, Math.sin(prim.chewPh));
-    const N = 30, w = 0.66 * U * cur.mouthW * (1 - prim.chew * 0.25) * (1 - prim.yawn * 0.45), my = 0.45 * U + chewOpen * 0.025 * U;
+    const loud = Math.min(1, amp * 1.6);
+    const round = st.talking ? clamp((noise(3, t * 0.33) - 0.42) * 2.4, 0, 1) : 0;       // "oo"
+    const wide = st.talking ? clamp((noise(7, t * 0.27) - 0.5) * 2.2, 0, 1) : 0;         // "ee"
+    const w = 0.66 * U * cur.mouthW * (1 - prim.chew * 0.25) * (1 - prim.yawn * 0.4) * (1 - 0.3 * round * loud) * (1 + 0.08 * wide * loud);
+    const my = 0.45 * U + chewOpen * 0.025 * U;
+    const open = clamp(amp * (0.8 + 0.4 * round - 0.35 * wide) + prim.yawn * 1.9 + chewOpen * 0.35 + st.listening * 0.05, 0, 2.2) * (prim.swallowT >= 0 ? 0.4 : 1);
+    return { w, my, open, round, chewOpen };
+  }
+  function mouth(t) {
+    const { w, my, open, round, chewOpen } = mg;
+    const hw = w / 2, oh = open * 0.15 * U;
     const cy = f => my + cur.mouth * 0.11 * U * (1 - f * f) + cur.skew * 0.05 * U * f + cur.question * 0.018 * U * Math.sin(f * 6 + t * 3);
-    // faint baseline
-    ctx.strokeStyle = col(0, 0.25 * cur.dim); ctx.lineWidth = 1;
-    ctx.beginPath(); for (let i = 0; i <= 40; i++) { const f = i / 20 - 1; ctx.lineTo(f * w / 2, cy(f)); } ctx.stroke();
-    // equalizer bars, drawn as one shape so the glow is cheap
-    ctx.beginPath();
-    const bw = (w / N) * 0.55;
-    for (let i = 0; i < N; i++) {
-      const f = i / (N - 1) * 2 - 1, x = f * w / 2;
-      let h = U * 0.014 + U * 0.006 * (1 + Math.sin(t * 2 + i * 0.5));
-      h += amp * (0.3 + 0.7 * noise(i, t)) * (1 - 0.6 * f * f) * 0.17 * U;
-      h += st.listening * Math.abs(Math.sin(t * 5 + i * 0.45)) * 0.035 * U;
-      h += chewOpen * (1 - 0.7 * f * f) * 0.06 * U + prim.yawn * (1 - f * f) * 0.3 * U;
-      if (prim.swallowT >= 0) h *= 0.5;
-      ctx.roundRect(x - bw / 2, cy(f) - h / 2, bw, h, bw / 2);
+    const prof = f => Math.pow(Math.max(0, 1 - f * f), 0.75 - 0.3 * round);
+    const yU = f => cy(f) - oh * 0.3 * prof(f), yL = f => cy(f) + oh * 0.7 * prof(f);            // the inner edges of the lips
+    const lipU = U * 0.024, lipL = U * 0.034;
+    const oU = f => yU(f) - lipU * (Math.sqrt(Math.max(0, 1 - f * f)) - 0.42 * Math.exp(-((f / 0.17) ** 2)));   // outer upper lip, with a cupid's bow
+    const oL = f => yL(f) + lipL * Math.pow(Math.max(0, 1 - f * f), 0.6);
+    const S = 28, pts = fn => { for (let i = 0; i <= S; i++) { const f = i / S * 2 - 1; ctx.lineTo(f * hw, fn(f)); } };
+    const rpts = fn => { for (let i = S; i >= 0; i--) { const f = i / S * 2 - 1; ctx.lineTo(f * hw, fn(f)); } };
+
+    // philtrum: the two faint lines from her nose to her upper lip
+    ctx.strokeStyle = col(5, 0.2 * cur.dim); ctx.lineWidth = 1;
+    for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 0.022 * U, 0.215 * U); ctx.lineTo(s * 0.03 * U, oU(0) - U * 0.008); ctx.stroke(); }
+
+    // inside of the mouth
+    ctx.save();
+    ctx.beginPath(); pts(yU); rpts(yL); ctx.closePath();
+    ctx.fillStyle = "#06020b"; ctx.fill(); ctx.clip();
+    if (oh > U * 0.02) {
+      const depth = clamp(oh / (U * 0.12), 0, 1);
+      // tongue
+      if (oh > U * 0.06) {
+        ctx.fillStyle = col(-2, 0.42 * depth * cur.dim, 25);
+        ctx.beginPath(); ctx.ellipse(Math.sin(t * 2.3) * hw * 0.05, yL(0) + oh * 0.05, hw * (0.5 - 0.12 * round), oh * 0.42, 0, 0, TAU); ctx.fill();
+        ctx.strokeStyle = col(-20, 0.35 * depth); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, yL(0) - oh * 0.3); ctx.lineTo(0, yL(0)); ctx.stroke();
+      }
+      // upper teeth: little plates
+      const th = Math.min(U * 0.034, oh * 0.4), n = 8, tw = hw * 1.24 / n;
+      ctx.fillStyle = col(38, 0.8 * depth * cur.dim, 10);
+      for (let i = 0; i < n; i++) { const f = ((i + 0.5) / n * 2 - 1) * 0.62; ctx.beginPath(); ctx.roundRect(f * hw - tw * 0.42, yU(f) - 1, tw * 0.84, th * (1 - 0.35 * f * f), tw * 0.2); ctx.fill(); }
+      if (prim.yawn > 0.25 || oh > U * 0.13) {                                              // lower teeth show when it's really wide
+        const lt = Math.min(U * 0.02, oh * 0.18);
+        ctx.fillStyle = col(30, 0.55 * depth * cur.dim, 10);
+        for (let i = 0; i < n; i++) { const f = ((i + 0.5) / n * 2 - 1) * 0.5; ctx.beginPath(); ctx.roundRect(f * hw - tw * 0.36, yL(f) - lt, tw * 0.72, lt + 1, tw * 0.2); ctx.fill(); }
+      }
     }
-    glow(true, 0.07); ctx.fillStyle = col(12, 0.95 * cur.dim); ctx.fill(); glow(false);
+    ctx.restore();
+
+    // her voice: bars along the seam of the lips, growing into the opening as she speaks
+    ctx.beginPath();
+    const N = 30, bw = (w / N) * 0.5;
+    for (let i = 0; i < N; i++) {
+      const f = i / (N - 1) * 2 - 1, x = f * hw * 0.94, room = (yL(f) - yU(f));
+      let h = U * 0.011 + U * 0.005 * (1 + Math.sin(t * 2 + i * 0.5));
+      h += Math.min(room * 0.8, amp * (0.3 + 0.7 * noise(i, t)) * (1 - 0.6 * f * f) * 0.15 * U);
+      h += st.listening * Math.abs(Math.sin(t * 5 + i * 0.45)) * 0.03 * U;
+      const mid = (yU(f) + yL(f)) / 2 + room * 0.12;
+      ctx.roundRect(x - bw / 2, mid - h / 2, bw, h, bw / 2);
+    }
+    glow(true, 0.07); ctx.fillStyle = col(14, (oh > U * 0.02 ? 0.8 : 0.95) * cur.dim); ctx.fill(); glow(false);
+
+    // lips
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.fillStyle = col(-18, 0.5 * cur.dim);
+    ctx.beginPath(); pts(oU); rpts(yU); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); pts(yL); rpts(oL); ctx.closePath(); ctx.fill();
+    glow(true, 0.05); ctx.strokeStyle = col(12, 0.9 * cur.dim); ctx.lineWidth = U * 0.011;
+    ctx.beginPath(); pts(oU); ctx.stroke();
+    ctx.beginPath(); pts(oL); ctx.stroke();
+    glow(false);
+    ctx.strokeStyle = col(25, 0.55 * cur.dim); ctx.lineWidth = 1;
+    ctx.beginPath(); pts(yU); ctx.stroke(); ctx.beginPath(); pts(yL); ctx.stroke();
+    // a highlight on the lower lip
+    ctx.strokeStyle = col(40, 0.35 * cur.dim); ctx.lineWidth = U * 0.006;
+    ctx.beginPath(); for (let i = 0; i <= 10; i++) { const f = (i / 10 * 2 - 1) * 0.4; ctx.lineTo(f * hw, yL(f) + lipL * 0.55); } ctx.stroke();
+
+    // the corners: small nodes, and dimples when she's really smiling
+    for (const s of [-1, 1]) {
+      const x = s * hw, y = cy(s);
+      ctx.fillStyle = "#07030d"; ctx.strokeStyle = col(15, 0.85 * cur.dim); ctx.lineWidth = U * 0.008;
+      ctx.beginPath(); ctx.arc(x + s * U * 0.012, y, U * 0.016, 0, TAU); ctx.fill(); ctx.stroke();
+      const sm = clamp((cur.mouth - 0.4) / 0.6, 0, 1), fr = clamp((-cur.mouth - 0.3) / 0.7, 0, 1);
+      if (sm > 0.02) { ctx.strokeStyle = col(15, 0.6 * sm * cur.dim); ctx.lineWidth = U * 0.008; ctx.beginPath(); ctx.arc(x + s * U * 0.03, y - U * 0.01, U * 0.055, s > 0 ? -0.9 : Math.PI - 0.9, s > 0 ? 0.9 : Math.PI + 0.9); ctx.stroke(); }
+      if (fr > 0.02) { ctx.strokeStyle = col(5, 0.45 * fr * cur.dim); ctx.lineWidth = U * 0.007; ctx.beginPath(); ctx.moveTo(x + s * U * 0.03, y + U * 0.01); ctx.lineTo(x + s * U * 0.055, y + U * 0.07); ctx.stroke(); }
+    }
+
     // swallow: a little "gulp" of light slides down from the mouth
     if (prim.swallowT >= 0) {
       const p = prim.swallowT / 0.8;
@@ -488,12 +574,61 @@
       ctx.strokeStyle = col(30, (1 - p) * 0.7); ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(pf.x * U + Math.sin(p * 8) * U * 0.02, my - U * 0.05 - p * U * 0.4, U * (0.03 + p * 0.05) * pf.s, 0, TAU); ctx.stroke();
     }
-    // end brackets
-    ctx.strokeStyle = col(10, 0.5 * cur.dim); ctx.lineWidth = 2;
+  }
+
+  // The rest of her head: a jawline that drops when her mouth opens, a chin node that pulses with her voice,
+  // cheekbone, jaw and temple nodes, a band across the forehead with a sensor in the middle, and a nose.
+  function structure(t) {
+    const jaw = mg.open * 0.05 * U, smile = clamp(cur.mouth, -1, 1), a = cur.dim;
+    const Tn = [0.8 * U, -0.44 * U], Cn = [0.77 * U, (0.2 - smile * 0.035) * U], Jn = [0.55 * U, 0.68 * U + jaw * 0.6], CHy = 0.9 * U + jaw;
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    // jawline and forehead band
+    ctx.strokeStyle = col(5, 0.34 * a); ctx.lineWidth = U * 0.009;
     for (const s of [-1, 1]) {
-      const x = s * (w / 2 + U * 0.05), y = cy(s);
-      ctx.beginPath(); ctx.moveTo(x - s * U * 0.02, y - U * 0.05); ctx.lineTo(x, y - U * 0.05); ctx.lineTo(x, y + U * 0.05); ctx.lineTo(x - s * U * 0.02, y + U * 0.05); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s * Tn[0], Tn[1]);
+      ctx.quadraticCurveTo(s * 0.87 * U, -0.1 * U, s * Cn[0], Cn[1]);
+      ctx.quadraticCurveTo(s * 0.75 * U, 0.52 * U + jaw * 0.3, s * Jn[0], Jn[1]);
+      ctx.quadraticCurveTo(s * 0.3 * U, CHy + 0.03 * U, s * 0.075 * U, CHy);
+      ctx.stroke();
     }
+    ctx.beginPath(); ctx.moveTo(-Tn[0], Tn[1]); ctx.quadraticCurveTo(0, -1.06 * U, Tn[0], Tn[1]); ctx.stroke();
+    // fine lines tying things together: cheekbone to the corner of the mouth, jaw to chin
+    ctx.strokeStyle = col(5, 0.14 * a); ctx.lineWidth = 1;
+    for (const s of [-1, 1]) {
+      ctx.beginPath(); ctx.moveTo(s * Cn[0], Cn[1]); ctx.lineTo(s * (mg.w / 2 + U * 0.03), mg.my + cur.skew * 0.05 * U * s); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s * Jn[0], Jn[1]); ctx.lineTo(s * 0.06 * U, CHy - 0.03 * U); ctx.stroke();
+      // smile lines from the nose to the mouth, only when she's beaming
+      const sm = clamp((smile - 0.35) / 0.65, 0, 1);
+      if (sm > 0.02) { ctx.strokeStyle = col(8, 0.3 * sm * a); ctx.beginPath(); ctx.moveTo(s * 0.11 * U, 0.2 * U); ctx.quadraticCurveTo(s * 0.3 * U, 0.3 * U, s * (mg.w / 2 + U * 0.07), mg.my - 0.03 * U); ctx.stroke(); ctx.strokeStyle = col(5, 0.14 * a); }
+    }
+    // nodes
+    const node = (x, y, r) => { ctx.fillStyle = "#07030d"; ctx.strokeStyle = col(15, 0.75 * a); ctx.lineWidth = U * 0.008; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.stroke(); };
+    for (const s of [-1, 1]) { node(s * Tn[0], Tn[1], U * 0.016); node(s * Cn[0], Cn[1], U * 0.02); node(s * Jn[0], Jn[1], U * 0.016); }
+    // forehead sensor: a diamond that lights up while she's thinking
+    const fy = -0.75 * U, fr = U * 0.036, think = st.thinking;
+    ctx.fillStyle = "#07030d"; ctx.strokeStyle = col(15, 0.75 * a); ctx.lineWidth = U * 0.008;
+    ctx.beginPath(); ctx.moveTo(0, fy - fr); ctx.lineTo(fr * 0.8, fy); ctx.lineTo(0, fy + fr); ctx.lineTo(-fr * 0.8, fy); ctx.closePath(); ctx.fill(); ctx.stroke();
+    glow(true, 0.05); ctx.fillStyle = col(30, (0.35 + 0.6 * think * (0.6 + 0.4 * Math.sin(t * 9)) + 0.15 * Math.sin(t * 1.7)) * a);
+    ctx.beginPath(); ctx.arc(0, fy, fr * (0.3 + 0.12 * think), 0, TAU); ctx.fill(); glow(false);
+    // chin node: a hexagon with a core that pulses with her voice
+    const cr = U * 0.05;
+    ctx.strokeStyle = col(5, 0.3 * a); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, CHy - cr); ctx.lineTo(0, mg.my + mg.open * 0.105 * U + U * 0.05); ctx.stroke();
+    ctx.fillStyle = "#07030d"; ctx.strokeStyle = col(15, 0.85 * a); ctx.lineWidth = U * 0.01;
+    ctx.beginPath(); for (let i = 0; i < 6; i++) { const an = TAU * i / 6 + Math.PI / 6; ctx.lineTo(Math.cos(an) * cr, CHy + Math.sin(an) * cr); } ctx.closePath(); ctx.fill();
+    glow(true, 0.05); ctx.stroke();
+    ctx.fillStyle = col(28, (0.45 + 0.55 * Math.min(1, amp * 1.4)) * a);
+    ctx.beginPath(); ctx.arc(0, CHy, cr * (0.28 + 0.3 * Math.min(1, amp)), 0, TAU); ctx.fill(); glow(false);
+    for (const s of [-1, 1]) { ctx.strokeStyle = col(15, 0.5 * a); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(s * cr * 1.25, CHy); ctx.lineTo(s * cr * 1.7, CHy); ctx.stroke(); }
+    // nose: bridge, tip and nostrils (it glows when it's booped)
+    const boop = nowMs() < crossUntil ? 1 : 0;
+    ctx.strokeStyle = col(10 + 25 * boop, (0.42 + 0.5 * boop) * a); ctx.lineWidth = U * 0.008;
+    if (boop) glow(true, 0.06);
+    for (const s of [-1, 1]) {
+      ctx.beginPath(); ctx.moveTo(s * 0.045 * U, -0.03 * U); ctx.quadraticCurveTo(s * 0.03 * U, 0.1 * U, s * 0.068 * U, 0.165 * U);
+      ctx.quadraticCurveTo(s * 0.075 * U, 0.2 * U, s * 0.04 * U, 0.198 * U); ctx.stroke();
+    }
+    ctx.beginPath(); ctx.moveTo(-0.028 * U, 0.2 * U); ctx.quadraticCurveTo(0, 0.222 * U, 0.028 * U, 0.2 * U); ctx.stroke();
+    glow(false);
   }
 
   function cheeks(t) {
@@ -610,6 +745,9 @@
   }
 
   // ---------- frame loop ----------
+  // what hands.js needs from here to draw her hands in the same style, in the same place
+  const handEnv = { ctx, col, glow, cur, st, prim, get U() { return U; }, get CX() { return CX; }, get CY() { return CY; }, get W() { return W; }, get H() { return H; },
+    get amp() { return amp; }, get mood() { return mood; }, get mouth() { return mg; }, get look() { return look; } };
   let last = performance.now();
   let paused = false;                                   // her screen is dark (dark.js): keep time, draw nothing
   function frame(now) {
@@ -632,7 +770,9 @@
     ctx.rotate(tiltIn.x * 0.05 + Math.sin(t * 0.5) * 0.012 + cur.skew * 0.02 + prim.tilt);
     const breathe = (1 + Math.sin(t * 1.1) * 0.01) * (1 + prim.lean * 0.09);
     ctx.scale(breathe, breathe);
+    mg = mouthGeo(t);
     hud(t);
+    structure(t);
     ears(t);
     cheeks(t);
     eye(-1, t); eye(1, t);
@@ -643,6 +783,7 @@
     mouth(t);
     extras(t);
     ctx.restore();
+    try { window.Hands?.frame(handEnv, t, dt); } catch (e) { if (!frame.warned) { frame.warned = true; console.error(e); } }   // her floating hands (hands.js)
     if (highlight && nowMs() < highlight.until) {
       const a = (highlight.until - nowMs()) / highlight.ms;
       ctx.save(); ctx.shadowColor = "#fff"; ctx.shadowBlur = U * 0.15;
@@ -737,6 +878,7 @@
 
   // Zones are named from HER point of view: the eye on your left is her right eye.
   function zoneAt(x, y) {
+    const hz = window.Hands?.hit?.(x, y); if (hz) return hz;
     const fx = (x - CX) / U, fy = (y - CY) / U, her = fx < 0 ? "right" : "left";
     if (Math.hypot(Math.abs(fx) - 0.42, fy + 0.12) < 0.33) return her + " eye";
     if (fy < -1.15) return "top of your head";
@@ -744,8 +886,8 @@
     if (fy < -0.38 && Math.abs(fx) > 0.12 && Math.abs(fx) < 0.75) return her + " eyebrow";
     if (Math.abs(fx) < 0.16 && fy < 0.28) return "nose";
     if (Math.abs(fx) < 0.46 && fy >= 0.28 && fy < 0.62) return "mouth";
-    if (Math.abs(fx) < 0.55 && fy >= 0.62 && fy < 1.05) return "chin";
-    if (fy >= 1.05) return "neck";
+    if (Math.abs(fx) < 0.55 && fy >= 0.62 && fy < 1.08) return "chin";
+    if (fy >= 1.08) return "neck";
     if (Math.abs(fx) > 0.95) return "side of your head (" + her + ")";
     return her + " cheek";
   }
@@ -886,11 +1028,34 @@
     resetEyes() { eyeScale = 1; },
     // light up a spot on her face (for games): zone names like the touch zones
     highlightZone(zone, ms = 500, hue = 50) {
-      const Z = { "left eye": [0.42, -0.12], "right eye": [-0.42, -0.12], nose: [0, 0.08], mouth: [0, 0.45], "left cheek": [0.7, 0.2], "right cheek": [-0.7, 0.2], forehead: [0, -0.85], chin: [0, 0.8] };
+      const Z = { "left eye": [0.42, -0.12], "right eye": [-0.42, -0.12], nose: [0, 0.08], mouth: [0, 0.45], "left cheek": [0.7, 0.2], "right cheek": [-0.7, 0.2], forehead: [0, -0.85], chin: [0, 0.9] };
       const p = Z[zone]; if (!p) return;
       highlight = { x: p[0], y: p[1], until: nowMs() + ms, ms, hue };
     },
     pause(on) { paused = !!on; },
+    // A picture of her face exactly as it's drawn right now (JPEG, base64), for her own brain to look at.
+    picture(max = 900) {
+      const k = Math.min(1, max / Math.max(canvas.width, canvas.height));
+      const c = document.createElement("canvas"); c.width = Math.round(canvas.width * k); c.height = Math.round(canvas.height * k);
+      const g = c.getContext("2d"); g.fillStyle = "#000"; g.fillRect(0, 0, c.width, c.height); g.drawImage(canvas, 0, 0, c.width, c.height);
+      return c.toDataURL("image/jpeg", 0.8).split(",")[1];
+    },
+    // The same thing in words, for the offline brain (which can't look at pictures).
+    describe() {
+      const hueName = h => ["red", "orange", "yellow", "lime green", "green", "teal", "cyan", "sky blue", "blue", "violet", "purple", "magenta pink", "red"][Math.round(((h % 360) + 360) % 360 / 30)];
+      const open = cur.open, m = cur.mouth, parts = [];
+      parts.push(`glowing ${hueName(cur.hue)} lines on a dark screen, showing the mood "${mood}"`);
+      parts.push(`two big round eyes with rings around them, ${open < 0.2 ? "almost shut" : open < 0.5 ? "half-lidded" : open > 0.92 ? "wide open" : "open"}, looking ${Math.abs(look.x) < 0.2 && Math.abs(look.y) < 0.2 ? "straight ahead" : `${look.y < -0.2 ? "up" : look.y > 0.2 ? "down" : ""}${look.x < -0.2 ? " to the viewer's left" : look.x > 0.2 ? " to the viewer's right" : ""}`.trim()}`);
+      parts.push(`eyebrows ${cur.browA > 0.4 ? "angled down in a scowl" : cur.browA < -0.4 ? "tilted up in worry" : cur.browY < -0.3 ? "raised" : cur.browY > 0.3 ? "lowered" : "level"}`);
+      parts.push(`a mouth with two lips, ${mg.open > 0.5 ? "wide open with teeth showing" : mg.open > 0.12 ? "open" : "closed"}, ${m > 0.5 ? "in a big smile" : m > 0.15 ? "in a small smile" : m < -0.5 ? "in a deep frown" : m < -0.15 ? "turned down" : "flat"}`);
+      parts.push("a small nose, a jawline with little nodes at the temples, cheekbones and jaw, a hexagon node on the chin, a diamond sensor on the forehead, two pointed ears on top and a meter in a capsule on each side of your head");
+      if (cur.blush > 0.3) parts.push("blushing cheeks");
+      if (cur.tear > 0.5) parts.push("tears");
+      if (cur.zzz > 0.5) parts.push("little Z's floating up");
+      const Hd = window.Hands;
+      if (Hd) parts.push(!Hd.shown ? "your hands are put away" : Hd.playing ? `your two floating hands are doing "${Hd.playing.replace(/_/g, " ")}"` : "your two floating hands rest below your chin");
+      return parts.join("; ") + ".";
+    },
     setNightDim(v) { nightDim = clamp(v, 0, 0.7); },
     setIdleDim(v) { idleDim = clamp(v, 0, 0.8); },                  // nobody around: dim the screen (saves battery and the display)
     effect(name, seconds = 6) { fx = { name, until: nowMs() + Math.min(seconds, 60) * 1000 }; lastActivity = nowMs(); },

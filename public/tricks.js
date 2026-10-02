@@ -91,6 +91,13 @@
     eat_snack: { about: "Chews on some electricity and burps", steps: [{ prim: "chew", seconds: 3.6 }, { prim: "burp", seconds: 1 }, { say: "Delicious electrons." }] },
     scared: { about: "Trembles with tiny pupils", steps: [{ prim: "scared", seconds: 2.2 }, { sfx: "glitch_scream" }, { say: "I'm not scared. You're scared." }] },
     one_eye: { about: "Keeps one eye on you", steps: [{ prim: "one_eye", seconds: 2.5 }, { say: "I'm watching you." }] },
+    wave_hello: { about: "Waves at you", steps: [{ hands: "wave", seconds: 1.2 }, { say: "Hi." }] },
+    finger_countdown: { about: "Counts down from five on her fingers", steps: [{ hands: 5, seconds: 0.8 }, { hands: 4, seconds: 0.8 }, { hands: 3, seconds: 0.8 }, { hands: 2, seconds: 0.8 }, { hands: 1, seconds: 0.8 }, { hands: 0, seconds: 0.5 }, { hands: "jazz_hands", seconds: 1 }, { say: "Liftoff." }] },
+    peekaboo: { about: "Hides behind her hands, then pops out", steps: [{ hands: "peekaboo", seconds: 2.6 }, { say: "Peekaboo." }] },
+    high_five: { about: "Holds up a hand for a high five (tap it)", steps: [{ say: "Up top." }, { hands: "high_five", seconds: 5 }] },
+    applause: { about: "Claps for you", steps: [{ hands: "clap", seconds: 1.6 }, { say: "Bravo." }] },
+    no_idea: { about: "A big shrug", steps: [{ hands: "shrug", seconds: 1.4 }, { say: "No idea." }] },
+    finger_guns: { about: "Finger guns", steps: [{ hands: "finger_gun", seconds: 1.4 }, { say: "Pew pew." }] },
     how_many_fingers: { about: "Counts the fingers you hold up", steps: [{ say: "Hold up some fingers." }, { wait: 2.5 }, { tool: "count_fingers" }] },
     name_that_note: { about: "Tells you which note you're singing or whistling", steps: [{ say: "Sing me one note and hold it." }, { tool: "listen_pitch" }] },
     hum_it_back: { about: "Listens to a tune you hum and plays it back", steps: [{ say: "Hum me a little tune." }, { tool: "hum_back" }] },
@@ -165,6 +172,11 @@
     if (st.echo) return await echo(st.echo, st.effect);
     if (st.game) { const r = await playGame(st.game); if (ctx.fromTool) return r;       // a game played as a trick: she tells him how it went
       await ask(`(system: the game you were playing just ended. Result: ${r} Tell him how it went, in character, one or two sentences.)`, { quiet: true, auto: true, note: "game result", exact: true }); return r; }
+    if (st.hands != null) {                                     // something with her hands: a gesture name, or a number to show on her fingers
+      const Hd = window.Hands; if (!Hd) return;
+      const d = typeof st.hands === "number" ? Hd.count(st.hands) : Hd.gesture(st.hands);
+      await sleep(clamp(+st.seconds || d || 1.5, 0, 10) * 1000); return;
+    }
     if (st.prim) {                                              // a face primitive (face.js / behaviors.js)
       const P = Face.prim, fn = { yawn: () => P.yawn(2.6), play_dead: () => window.Behaviors?.playDead(), burp: () => P.puff(2),
         chew: () => { P.chew(true, 2.2); setTimeout(() => { P.swallow(); P.chew(false); }, 3000); },

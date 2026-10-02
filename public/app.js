@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /* ================= settings ================= */
 const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true,
-  auto: "normal", chatter: "offline", hearing: "auto", faces: true, tags: true, nfc: false, autoPhoto: false, offListen: true, lockCard: true, react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
+  auto: "normal", chatter: "offline", hearing: "auto", faces: true, tags: true, nfc: false, autoPhoto: false, offListen: true, lockCard: true, hands: true, react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
 let settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("robot-settings") || "{}") };
 const saveSettings = () => localStorage.setItem("robot-settings", JSON.stringify(settings));
 
@@ -686,6 +686,7 @@ const TOOLS = [
     input_schema: { type: "object", properties: { part: { type: "string" }, action: { type: "string" }, seconds: { type: "number" }, angle: { type: "number" } }, required: ["part", "action"] } },
   { name: "stop_all", description: "Stop every motor immediately.", input_schema: { type: "object", properties: {} } },
   { name: "look", description: "Take a photo with your camera and see it.", input_schema: { type: "object", properties: {} } },
+  { name: "see_my_face", description: "Look at your own face: a picture of exactly what your screen is showing right now (your eyes, mouth, hands, colors). Use it when he asks what you look like, or to check an expression or a hand gesture you just made.", input_schema: { type: "object", properties: {} } },
   { name: "read_sensors", description: "Read every sensor the phone has (motion, gyro, magnetometer, light, proximity, pressure, hall, steps...), plus battery, RAM, storage, CPU temperature and time.", input_schema: { type: "object", properties: {} } },
   { name: "phone", description: "Use a phone ability: torch_on / torch_off (flashlight), location, wifi, wifiscan (nearby networks), cell (towers), brightness (value 0-255), volume (value 0-15, your speaker), notify (text: a notification on his phone screen), toast (text: quick pop-up).",
     input_schema: { type: "object", properties: { what: { type: "string", enum: ["torch_on", "torch_off", "location", "wifi", "wifiscan", "cell", "brightness", "volume", "notify", "toast"] }, value: { type: "number" }, text: { type: "string" } }, required: ["what"] } },
@@ -793,6 +794,11 @@ async function runToolInner(name, input) {
       const s = typeof r.result === "string" ? r.result : JSON.stringify(r.result);
       return (s || "done").slice(0, 3000);
     }
+    if (name === "see_my_face") {
+      const data = Face.picture();
+      return [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
+        { type: "text", text: `This is your own face as your screen shows it right now${window.Dark?.on ? " (your screen is dark at the moment, so this is how it looked before it went dark)" : ""}. The app's buttons and captions aren't part of your face and aren't in the picture. In words: ${Face.describe()}` }];
+    }
     if (name === "look") {
       const data = await snapshot();
       return [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data } }, { type: "text", text: "This is what your camera sees right now." }];
@@ -843,6 +849,7 @@ You are running on your offline brain: no internet, and you can't study a photo.
 When a bracket says "(You just did this for him: ...)", that really happened: tell him the result in your own words. Never claim you did something that no bracket confirms.`
     : `Start every reply with your mood like [mood:happy]. Moods: ${MOOD_NAMES.join(", ")}.
 Use your tools to act. Tool results that start with FAILED mean nothing happened: react to that honestly.
+You can look at your own face (see_my_face) and at pictures or screenshots he sends you in the chat.
 You have a synthesizer (play songs, compose your own, sing), sound effects, a vibration motor, face effects and face gestures, Morse code, timers, a flashlight, screen brightness, games, a camera that can save photos and videos, voice memos and notes. Use them freely for bits, reactions and comedic timing, but don't overdo it every reply.
 Your trick book (do_trick; "random" for a surprise): ${window.Tricks?.summary() || ""}. When something you just did was cool, you may save it as a new trick with save_trick.
 Morning you're groggy, late at night you're quieter and weirder.
@@ -938,7 +945,10 @@ let cacheStats = { read: 0, written: 0, fresh: 0 };
 
 async function askClaude(userText) {
   const system = [{ type: "text", text: systemPrompt(false), cache_control: CACHE }];
-  const messages = [...claudeHistory(), { role: "user", content: `${userText}\n\n[senses]\n${sensorReport()}\n\n[context]\n${window.Mind?.context() || ""}` }];
+  const words = `${userText}\n\n[senses]\n${sensorReport()}\n\n[context]\n${window.Mind?.context() || ""}`;
+  const messages = [...claudeHistory(), { role: "user", content: pendingImage
+    ? [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pendingImage } }, { type: "text", text: "(He sent you this picture with his message. Look at it.)\n" + words }]
+    : words }];
   for (let round = 0; round < 6; round++) {
     if (round > 0) {                       // move the 4th cache mark to the newest tool result
       for (const m of messages) if (Array.isArray(m.content)) for (const b of m.content) if (b.type === "tool_result") delete b.cache_control;
@@ -990,7 +1000,9 @@ async function askGemini(userText) {
   const messages = [
     { role: "system", content: systemPrompt(false) },
     ...recentHistory(30),
-    { role: "user", content: `${userText}\n\n[senses]\n${sensorReport()}\n\n[context]\n${window.Mind?.context() || ""}` }
+    { role: "user", content: pendingImage
+      ? [{ type: "text", text: `(He sent you this picture with his message. Look at it.)\n${userText}\n\n[senses]\n${sensorReport()}\n\n[context]\n${window.Mind?.context() || ""}` }, { type: "image_url", image_url: { url: "data:image/jpeg;base64," + pendingImage } }]
+      : `${userText}\n\n[senses]\n${sensorReport()}\n\n[context]\n${window.Mind?.context() || ""}` }
   ];
   for (let round = 0; round < 6; round++) {
     const r = await api("/api/gemini", { method: "POST", signal: askAbort?.signal, body: JSON.stringify({ messages, tools: GEMINI_TOOLS, ...(autoTurn ? { temperature: 1.15 } : {}) }) });
@@ -1009,13 +1021,13 @@ async function askGemini(userText) {
       let content = out;
       if (Array.isArray(out)) {                                   // a photo: tools can't carry images here
         const img = out.find(b => b.type === "image");
-        if (img) photos.push(img.source.data);
-        content = "Photo taken. It's attached in the next message.";
+        if (img) photos.push([img.source.data, out.find(b => b.type === "text")?.text || "This is what your camera sees right now."]);
+        content = "Picture taken. It's attached in the next message.";
       } else transcriptLine("act", out);
       messages.push({ role: "tool", tool_call_id: c.id || `call_${round}_${n}`, content });
     }
-    for (const data of photos) messages.push({ role: "user", content: [
-      { type: "text", text: "This is what your camera sees right now." },
+    for (const [data, caption] of photos) messages.push({ role: "user", content: [
+      { type: "text", text: caption },
       { type: "image_url", image_url: { url: "data:image/jpeg;base64," + data } }
     ] });
   }
@@ -1103,6 +1115,7 @@ async function askLocalStreaming(msgs) {
 // exactly the same text. So: earlier turns are sent word for word as it saw and wrote them (kept on each history
 // entry as .x), and the window of turns it's sent only moves in big steps, never one turn at a time.
 let lastLocalExact = null, localFirst = null;
+let pendingImage = null;                                 // a picture he sent with this turn (base64 JPEG), for whichever brain answers
 function localWindow(newLen) {
   const room = status.localChatRoom || 1900;
   const text = m => typeof (m.x ?? m.content) === "string" ? (m.x ?? m.content) : JSON.stringify(m.content);
@@ -1121,11 +1134,11 @@ async function askLocal(userText, { lively = false, temperature } = {}) {
   // Offline skills: the offline brain can't call tools, so a plain request ("how many fingers", "play scavenger hunt")
   // is recognized here, really done, and the result handed over for it to say.
   let did = "";
-  const intent = !lively && window.Extras?.offlineIntent(userText);
+  const intent = !lively && !pendingImage && window.Extras?.offlineIntent(userText);     // (a picture he sent is about the picture, not a request to do something)
   if (intent) {
     $("#heard").textContent = "on it…";
     let out; try { out = await runTool(intent.tool, intent.input); } catch (e) { out = "FAILED: " + e.message; }
-    if (Array.isArray(out)) out = "(done)";
+    if (Array.isArray(out)) out = out.filter(b => b.type === "text").map(b => b.text).join(" ") || "(done)";   // the offline brain can't see pictures: it gets the words that came with one
     transcriptLine("act", `${intent.tool} ${JSON.stringify(intent.input)} → ${String(out).slice(0, 160)}`);
     did = `\n(You just did this for him: ${intent.tool.replace(/_/g, " ")}. Result: ${String(out).slice(0, 700)}. Tell him the result in your own words, briefly.)`;
   }
@@ -1193,6 +1206,8 @@ async function ask(userText, opts = {}) {
   window.Face?.poke();
   let reply = "", brain = "", failed = false;
   localSpoke = false; lastLocalExact = null;
+  pendingImage = opts.image || null;
+  if (pendingImage && !opts.quiet) { const im = new Image(); im.src = "data:image/jpeg;base64," + pendingImage; im.style.cssText = "display:block;max-width:45%;max-height:180px;border-radius:8px;margin-top:6px"; $("#transcript").lastElementChild?.append(im); scrollChat(); }
   const started = Date.now();
   try {
     // Brain order comes from Settings. Each online brain is tried in turn; offline is last.
@@ -1224,7 +1239,13 @@ async function ask(userText, opts = {}) {
     if (!brain) {
       setFaceState("offline", true); window.Face?.thinkStyle("local");
       $("#heard").textContent = "thinking with the offline brain…";
-      reply = await askLocal(brainText, { lively: !!opts.auto }); brain = "nessari-offline";
+      let localText = brainText;
+      if (pendingImage) {                                   // the offline brain can't see: read whatever text is in the picture for it
+        let read = ""; try { read = (await api("/api/ocr", { method: "POST", headers: { "content-type": "image/jpeg" }, body: await (await fetch("data:image/jpeg;base64," + pendingImage)).blob() })).text || ""; } catch {}
+        localText += read.trim() ? `\n(He sent you a picture. Your offline brain can't see pictures, but the phone read the text in it: "${read.trim().replace(/\s+/g, " ").slice(0, 500)}". Tell him you can only read the words in it right now.)`
+          : "\n(He sent you a picture, but you're on your offline brain, which can't see pictures, and there was no readable text in it. Tell him that, and that you can look once the internet is back.)";
+      }
+      reply = await askLocal(localText, { lively: !!opts.auto }); brain = "nessari-offline";
     } else setFaceState("offline", false);
   } catch (e) {
     if (gen !== askGen) return;                                        // this turn was cancelled; a newer one is running
@@ -1257,10 +1278,12 @@ async function ask(userText, opts = {}) {
   else if (opts.auto) { if (reply) history.push({ role: "user", content: "(" + (opts.note || "you spoke up on your own") + ")", auto: true }); }
   const exact = brain === "nessari-offline" && !opts.auto && !opts.quiet && !failed ? lastLocalExact : null;
   if (failed || opts.auto) {}
-  else if (!opts.quiet) history.push(exact ? { role: "user", content: userText, x: exact.user } : { role: "user", content: userText });
+  else if (!opts.quiet) history.push(exact ? { role: "user", content: userText, x: exact.user } : { role: "user", content: userText + (opts.image ? " [he sent a picture with this]" : "") });
+  pendingImage = null;
   if (reply && !failed) {
     history.push(exact ? { role: "assistant", content: reply, x: exact.assistant } : { role: "assistant", content: reply });
     window.Mind?.onSheSaid(reply);
+    if (settings.hands) window.Hands?.fromText(reply);            // a wave with "hi", a shrug with "I don't know"
     window.Variety?.record(reply, opts.topic || (opts.auto ? "auto" : "chat"));
     transcriptLine("bot", reply);
     logEvent("said", { text: reply, brain, seconds: Math.round((Date.now() - started) / 1000) });
@@ -1746,7 +1769,30 @@ function transcriptLine(who, text) {
   t.append(d); while (t.children.length > 200) t.firstChild.remove();
   if (nearBottom || who === "me" || t.offsetParent === null) t.scrollTop = t.scrollHeight;
 }
-$("#typeForm").onsubmit = e => { e.preventDefault(); const v = $("#typeBox").value.trim(); if (v) { $("#typeBox").value = ""; ask(v); } };
+// A picture to send her (a screenshot, a photo): shrunk to a size the brain can take, shown as a small preview until sent.
+let attached = null;
+async function attachPicture(file) {
+  if (!file || !/^image\//.test(file.type)) return;
+  try {
+    const bmp = await createImageBitmap(file), k = Math.min(1, 1568 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement("canvas"); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    attached = c.toDataURL("image/jpeg", 0.82).split(",")[1];
+    $("#picPreview").hidden = false; $("#picThumb").src = "data:image/jpeg;base64," + attached;
+    $("#typeBox").placeholder = "Say something about it (or just Send)"; $("#typeBox").focus();
+  } catch (e) { transcriptLine("act", "Couldn't open that picture: " + e.message); }
+}
+function clearPicture() { attached = null; $("#picPreview").hidden = true; $("#typeBox").placeholder = "Type to her instead of talking"; }
+$("#picBtn").onclick = () => $("#picFile").click();
+$("#picFile").onchange = e => { const f = e.target.files[0]; e.target.value = ""; attachPicture(f); };
+$("#picClear").onclick = clearPicture;
+$("#typeBox").addEventListener("paste", e => { const f = [...(e.clipboardData?.files || [])].find(f => /^image\//.test(f.type)); if (f) { e.preventDefault(); attachPicture(f); } });
+$("#typeForm").onsubmit = e => {
+  e.preventDefault(); const v = $("#typeBox").value.trim();
+  if (!v && !attached) return;
+  $("#typeBox").value = ""; const image = attached; if (image) clearPicture();
+  ask(v || "Look at this picture.", image ? { image } : {});
+};
 // what she's doing right now, shown in the Talk tab so a typed message never seems to vanish
 setInterval(() => {
   const el = $("#talkStatus"); if (!el || $("#tab-talk").hidden) return;
@@ -1929,6 +1975,7 @@ function bindSetting(id, key, cast = v => v) {
 function onSettingChange(key) {
   if (key === "listen") { stopListening(); if (settings.listen === "always") startListening(); }
   if (key === "nfc" && settings.nfc) window.Extras?.startNfc();
+  if (key === "hands") window.Hands?.show(settings.hands);
   if (key === "lockCard") settings.lockCard ? window.Dark?.startCard() : window.Dark?.stopCard();
   if (key === "hearing") { stopListening(); window.Hearing?.stop(); if (settings.listen === "always") setTimeout(startListening, 400); }
   if (key === "facing" && camStream) { camOff(); camOn().catch(() => {}); }
@@ -1937,7 +1984,7 @@ function onSettingChange(key) {
   refreshChips();
 }
 bindSetting("#setBrain", "brain"); bindSetting("#setChatter", "chatter"); bindSetting("#setHearing", "hearing");
-bindSetting("#setFaces", "faces"); bindSetting("#setTags", "tags"); bindSetting("#setNfc", "nfc"); bindSetting("#setOffListen", "offListen"); bindSetting("#setLockCard", "lockCard"); bindSetting("#setAutoPhoto", "autoPhoto"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
+bindSetting("#setFaces", "faces"); bindSetting("#setTags", "tags"); bindSetting("#setNfc", "nfc"); bindSetting("#setHands", "hands"); window.Hands?.show(settings.hands); bindSetting("#setOffListen", "offListen"); bindSetting("#setLockCard", "lockCard"); bindSetting("#setAutoPhoto", "autoPhoto"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
 bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bindSetting("#setPitch", "pitch", Number);
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
 bindSetting("#setTrack", "track"); bindSetting("#setVision", "vision"); bindSetting("#setEars", "ears"); bindSetting("#setQr", "qr");

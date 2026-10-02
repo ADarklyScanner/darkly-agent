@@ -105,7 +105,7 @@ Android only allows sound and vibration after the first tap on the page, so tap 
 
 ## Tricks, games and the rest
 
-- **Trick Book:** 65 built-in tricks, plus any she invents and saves herself (marked ★ on the Tricks tab).
+- **Trick Book:** 72 built-in tricks, plus any she invents and saves herself (marked ★ on the Tricks tab).
   Say "do a trick" for a random one, or name one ("do the possessed thing", "fortune teller"). Ask "what tricks do you know?"
 - **Games:** Simon Says, reaction test, staring contest, red light green light, color hunt, clap-back, Twenty Questions, trivia, riddles, rock paper scissors,
   scavenger hunt, what's missing, Simon Says with your body, finger math, follow my finger, balance, guess the sound, match my note.
@@ -126,6 +126,16 @@ Ask her to do things on the phone ("open YouTube and search for cat videos", "tu
 It uses Wireless debugging (set up once with `robot-dedicate`), not root. After that she keeps her own connection:
 you don't need to leave Wireless debugging open, and after a restart she switches it back on herself. A notification with a STOP button shows while she
 works. She won't buy, pay, send, post or delete anything unless that's what you asked for.
+
+## Her face and hands
+
+- **Face** (`public/face.js`): canvas-drawn. Eyes, brows, a two-lipped mouth with teeth and tongue (shape varies while she
+  talks), jawline with nodes, chin node, forehead sensor, nose, ear housings around the side meters, pointed ears on top.
+- **Hands** (`public/hands.js`): two floating hands, 29 gestures plus counting 0-10. `Hands.gesture("wave")`,
+  `Hands.count(7)`, the `hands` tool, trick steps `{ hands: "wave" }` or `{ hands: 3 }`. She also gestures on her own
+  from what she sees and says.
+- **Seeing herself:** the `see_my_face` tool hands the online brain a picture of her canvas; offline it gets a description.
+- **Pictures from you:** the picture button in Chat (or paste). Online brains see the image; offline, tesseract reads its text.
 
 ## Screen off
 

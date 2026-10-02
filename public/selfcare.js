@@ -53,7 +53,7 @@
       if (C.covered) {                                   // uncovered again
         const secs = (now() - coveredSince) / 1000; C.covered = false; toldCovered = false;
         window.Face?.prim?.squint(1.2, 1.2, 700); window.Face?.prim?.pupils(1.4, 900);
-        if (secs < 15) { window.Abilities?.sfx?.("boing"); if (typeof react === "function") react("peekaboo", "your view suddenly went black and came back (he covered your camera with his hand, or flicked the lights): peekaboo", 2); }
+        if (secs < 15) { window.Abilities?.sfx?.("boing"); window.Hands?.gesture("peekaboo"); if (typeof react === "function") react("peekaboo", "your view suddenly went black and came back (he covered your camera with his hand, or flicked the lights): peekaboo", 2); }
         else window.Mind?.event("camera", `your camera was covered for ${Math.round(secs)} seconds and can see again`, { source: "SAW", salience: 0.4 });
       }
       bright = bright * 0.9 + mean * 0.1; if (mean > 45) lastBrightAt = now(); coveredSince = 0; return;

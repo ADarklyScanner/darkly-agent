@@ -318,7 +318,7 @@ const MIRROR = { smiling: "happy", surprised: "excited", frowning: "sad", "mouth
 const askedRecently = () => { const h = history[history.length - 1]; return h?.role === "assistant" && /\?\s*$/.test(h.content) && Date.now() - lastTalk < 20000; };
 const answer = text => { if (!busy) { lastTalk = Date.now(); ask(text); } };
 
-V.on("arrive", ({ count }) => { Tricks.bump("visitors"); Tricks.diary(`saw ${count > 1 ? count + " people" : "someone"} arrive`);
+V.on("arrive", ({ count }) => { Tricks.bump("visitors"); window.Hands?.gesture("wave"); Tricks.diary(`saw ${count > 1 ? count + " people" : "someone"} arrive`);
   if (mood === "bored" || mood === "sleepy") setMood("calm"); Face.gesture("wide");
   const generic = () => react("face-arrive", count > 1 ? `${count} faces just appeared in front of your camera` : "a face just appeared in front of your camera (someone came to you)", 3);
   // if she knows people by face, give her a few seconds to work out WHO it is before reacting
@@ -346,11 +346,11 @@ V.on("wave", () => {
 V.on("gesture", g => {
   if (rpsWaiting) return;
   const quick = {
-    Thumb_Up: () => { window.Variety?.feedback(1, "thumbs up"); setMood("happy"); if (askedRecently()) answer("(he gives you a thumbs up)"); else if (Math.random() < 0.4) react("thumbup", "he gave you a thumbs up", 2); },
+    Thumb_Up: () => { window.Variety?.feedback(1, "thumbs up"); setMood("happy"); window.Hands?.gesture("thumbs_up"); if (askedRecently()) answer("(he gives you a thumbs up)"); else if (Math.random() < 0.4) react("thumbup", "he gave you a thumbs up", 2); },
     Thumb_Down: () => { window.Variety?.feedback(-1, "thumbs down"); setMood("sad"); if (askedRecently()) answer("(he gives you a thumbs down)"); else react("thumbdown", "he gave you a thumbs down", 2); },
-    Victory: () => { Face.effect("sparkle", 2); if (Math.random() < 0.3) react("peace", "he's flashing a peace sign at you", 3); },
-    ILoveYou: () => { Face.effect("heart_eyes", 4); react("ily", "he's making the 'I love you' hand sign at you", 3); },
-    Pointing_Up: () => Face.gesture("look_up"),
+    Victory: () => { Face.effect("sparkle", 2); window.Hands?.gesture("peace"); if (Math.random() < 0.3) react("peace", "he's flashing a peace sign at you", 3); },
+    ILoveYou: () => { Face.effect("heart_eyes", 4); window.Hands?.gesture("blow_kiss"); react("ily", "he's making the 'I love you' hand sign at you", 3); },
+    Pointing_Up: () => { Face.gesture("look_up"); window.Hands?.gesture("point_up"); },
     Open_Palm: () => { if (talking) window.shush?.("he held up his hand: stop"); },
     Closed_Fist: () => { if (Math.random() < 0.3) react("fist", "he's holding up a fist at you (fist bump? threat?)", 3); }
   };
