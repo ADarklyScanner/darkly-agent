@@ -14,6 +14,7 @@ pkg update -y || true
 pkg upgrade "${KEEP[@]}" || true
 pkg install "${KEEP[@]}" nodejs-lts termux-api android-tools procps \
   || pkg install "${KEEP[@]}" nodejs termux-api android-tools procps
+pkg install "${KEEP[@]}" tesseract || echo "(Couldn't install the offline text reader. Everything else still works; try later: pkg install tesseract)"
 command -v llama-server >/dev/null 2>&1 || [ -x "$HOME/llama.cpp/build/bin/llama-server" ] \
   || pkg install "${KEEP[@]}" llama-cpp \
   || echo "(Couldn't install the offline brain program. Claude still works.)"

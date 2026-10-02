@@ -27,6 +27,15 @@ for f in audio_wasm_internal audio_wasm_nosimd_internal audio_wasm_module_intern
   get "$ACDN/wasm/$f.js" "$A/wasm/$f.js"; get "$ACDN/wasm/$f.wasm" "$A/wasm/$f.wasm"
 done
 get "$M/audio_classifier/yamnet/float32/latest/yamnet.tflite" "$A/yamnet.tflite"
+echo "== Memory by meaning (finds notes that mean the same thing in different words; about 10 MB) =="
+T="$HOME/robot/public/vendor/mediapipe-text"; mkdir -p "$T/wasm"
+TCDN="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-text@$V"
+get "$TCDN/text_bundle.mjs" "$T/text_bundle.mjs"
+for f in text_wasm_internal text_wasm_nosimd_internal text_wasm_module_internal; do
+  get "$TCDN/wasm/$f.js" "$T/wasm/$f.js"; get "$TCDN/wasm/$f.wasm" "$T/wasm/$f.wasm"
+done
+get "$M/text_embedder/universal_sentence_encoder/float32/latest/universal_sentence_encoder.tflite" "$T/universal_sentence_encoder.tflite" \
+  || get "$M/text_embedder/universal_sentence_encoder/float32/1/universal_sentence_encoder.tflite" "$T/universal_sentence_encoder.tflite"
 ls "$DEST/vision_bundle.mjs" "$DEST/face_landmarker.task" "$DEST/gesture_recognizer.task" >/dev/null 2>&1 \
   && echo "Vision ready. Reload her face (or run robot-stop; robot)." \
   || echo "Some vision files didn't download. Run robot-vision-download again when the internet is on."

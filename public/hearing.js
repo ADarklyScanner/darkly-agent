@@ -26,7 +26,8 @@
   let floor = 0.006;                      // the room's background level, learned as it goes
   let pre = [], rec = null, speechBlocks = 0, silentBlocks = 0, startedAt = 0, quietSince = 0, rate = 48000, idleSince = 0, busySending = false;
   const PRE_BLOCKS = 4;                   // keep a little sound from just before speech started
-  function reset() { rec = null; speechBlocks = 0; silentBlocks = 0; }
+  let recLevels = [];
+  function reset() { rec = null; speechBlocks = 0; silentBlocks = 0; recLevels = []; }
 
   H.onAudio = (block, sampleRate) => {
     if (!H.active || busySending) return;
@@ -37,7 +38,7 @@
     let sum = 0; for (let i = 0; i < block.length; i++) sum += block[i] * block[i];
     const rms = Math.sqrt(sum / block.length);
     const blockMs = block.length / sampleRate * 1000;
-    const loud = rms > Math.max(0.012, floor * 3.2);
+    const loud = rms > Math.max(0.008, floor * 3.2);
     if (!rec) {
       if (!loud) floor = floor * 0.95 + rms * 0.05;                // only learn the background from quiet moments
       pre.push(new Float32Array(block)); if (pre.length > PRE_BLOCKS) pre.shift();
@@ -49,11 +50,14 @@
       } else if (H.oneShot && now() - idleSince > 9000) H.stop();   // tapped the mic, said nothing
       return;
     }
-    rec.push(new Float32Array(block));
+    rec.push(new Float32Array(block)); if (loud) recLevels.push(rms);
     silentBlocks = loud ? 0 : silentBlocks + 1;
     const long = now() - startedAt > 15000;
     if (silentBlocks * blockMs >= 850 || long) {
       const blocks = rec, spoken = (blocks.length - silentBlocks - PRE_BLOCKS) * blockMs;
+      // how loudly he spoke: a whisper gets a whisper back; a noisy room is worth knowing about
+      const lv = [...recLevels].sort((a, b) => a - b), level = lv.length ? lv[lv.length >> 1] : 0;
+      H.lastLevel = { level, floor, quiet: level > 0 && level < 0.025 && floor < 0.006, noisy: floor > 0.03 };
       reset();
       if (spoken < 280) { H.state = "listening"; try { listening = false; setFaceState("listening", !!H.oneShot); } catch {} return; }   // a click or a cough, not words
       send(blocks, sampleRate);
@@ -97,7 +101,7 @@
     if (!text) { if (H.oneShot) H.stop(); return; }
     H.heardCount++;
     if (H.oneShot) H.stop();
-    try { onHeard(text, 0.9); } catch (e) { console.error(e); }
+    try { onHeard(text, 0.9, H.lastLevel || {}); } catch (e) { console.error(e); }
   }
 
   // ---- start / stop ----

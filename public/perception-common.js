@@ -2,6 +2,17 @@
 // Builds the MediaPipe tasks and turns their results into plain data that can cross to the page.
 export const BASE = new URL("./vendor/mediapipe/", import.meta.url).href;
 export const ABASE = new URL("./vendor/mediapipe-audio/", import.meta.url).href;
+export const TBASE = new URL("./vendor/mediapipe-text/", import.meta.url).href;
+
+// Sentences as numbers, so memories can be found by meaning rather than exact words (MediaPipe Text Embedder).
+export async function makeTextTask(useModule) {
+  const tm = await import(TBASE + "text_bundle.mjs");
+  const files = await tm.FilesetResolver.forTextTasks(TBASE + "wasm", useModule);
+  return tm.TextEmbedder.createFromOptions(files, { baseOptions: { modelAssetPath: TBASE + "universal_sentence_encoder.tflite" } });
+}
+export function embedTexts(task, texts) {
+  return texts.map(t => { const e = task.embed(String(t).slice(0, 300)).embeddings?.[0]; return Array.from(e?.floatEmbedding || e?.quantizedEmbedding || []); });
+}
 
 export async function makeVisionTasks(useModule) {
   const mp = await import(BASE + "vision_bundle.mjs");

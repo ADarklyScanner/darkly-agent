@@ -37,7 +37,8 @@ function workerEngine() {
         if (d.error) throw new Error(d.error);
         return d;
       },
-      async sound(data, rate) { return (await this.call({ type: "audio", data, rate }, [data.buffer], 3000)).cats; }
+      async sound(data, rate) { return (await this.call({ type: "audio", data, rate }, [data.buffer], 3000)).cats; },
+      async embedTexts(texts) { return (await this.call({ type: "embed-text", texts }, [], 20000)).vecs; }
     };
     const fail = e => { eng.dead = true; w.terminate(); for (const f of pending.values()) f({ error: "worker died" }); pending.clear(); if (!ready) reject(e); else V.emit("engine-died", e); };
     const timer = setTimeout(() => fail(new Error("worker took too long to start")), 60000);
@@ -57,7 +58,8 @@ async function pageEngine() {
   const t = await C.makeVisionTasks(false);
   const eng = { mode: "page", have: Object.fromEntries(Object.entries(t).map(([k, v]) => [k, !!v])), audio: false,
     async frame(v, ts, want) { const t0 = now(); const res = C.detect(t, v, ts, want, v.videoWidth || 640, v.videoHeight || 480); return { res, ms: now() - t0 }; },
-    async sound(data, rate) { return C.classify(eng.audioTask, data, rate); }
+    async sound(data, rate) { return C.classify(eng.audioTask, data, rate); },
+    async embedTexts(texts) { eng.textTask ||= await C.makeTextTask(false); return C.embedTexts(eng.textTask, texts); }
   };
   try { eng.audioTask = await C.makeAudioTask(false); eng.audio = true; } catch {}
   return eng;
@@ -82,6 +84,19 @@ async function init() {
   initAudio();
 }
 const hasTask = k => !!engine?.have?.[k];
+// Sentence embeddings for memory-by-meaning. Null when the text model isn't downloaded (callers fall back to plain matching).
+const textCache = new Map(); let textBroken = false;
+V.embedTexts = async texts => {
+  if (!engine?.embedTexts || textBroken) return null;
+  const need = texts.filter(t => !textCache.has(t));
+  if (need.length) {
+    let vecs = null; try { vecs = await engine.embedTexts(need); } catch { vecs = null; }
+    if (!vecs || vecs.some(v => !v?.length)) { textBroken = true; setTimeout(() => { textBroken = false; }, 10 * 60000); return null; }
+    need.forEach((t, i) => textCache.set(t, vecs[i]));
+    while (textCache.size > 600) textCache.delete(textCache.keys().next().value);
+  }
+  return texts.map(t => textCache.get(t));
+};
 V.engineInfo = () => engine ? { mode: engine.mode, have: engine.have, hearing: !!engine.audio, frameMs: V.frameMs } : { mode: "none", error: V.error };
 
 function video() { const v = window.trackVid; return v && v.readyState >= 2 ? v : null; }
@@ -420,6 +435,7 @@ function onObjects(r) {
     if (!here.has(label) && now() - o.lastAt > 600000) delete objSeen[label];
   }
 }
+V.objectsVisible = () => Object.entries(objSeen).filter(([, o]) => now() - o.lastAt < 2500).map(([l]) => l);
 function objectsNow() {
   const fresh = Object.entries(objSeen).filter(([, o]) => now() - o.lastAt < 4000);
   if (!fresh.length) return "No objects recognized right now.";

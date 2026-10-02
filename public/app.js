@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /* ================= settings ================= */
 const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true,
-  auto: "normal", chatter: "offline", hearing: "auto", react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
+  auto: "normal", chatter: "offline", hearing: "auto", tags: true, nfc: false, autoPhoto: false, react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
 let settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("robot-settings") || "{}") };
 const saveSettings = () => localStorage.setItem("robot-settings", JSON.stringify(settings));
 
@@ -97,7 +97,7 @@ function speak(text) {
     }, []) || [text];
     let v = voices.find(v => v.voiceURI === settings.voice);
     if (v && v.localService === false && !navigator.onLine) v = voices.find(x => x.localService && x.lang === v.lang) || null;   // an online-only voice can't speak offline
-    const vs = VOICE_STYLES[settings.voiceStyle] || VOICE_STYLES.normal;
+    const vs = VOICE_STYLES[styleOnce || settings.voiceStyle] || VOICE_STYLES.normal;
     stopListening(true);
     if (Date.now() < ttsBrokenUntil) { await phoneSay(text, my, vs); return resolve(); }
     let started = false;
@@ -187,7 +187,8 @@ function resumeListening() {
   if (pausedForSpeech && settings.listen === "always") { pausedForSpeech = false; setTimeout(startListening, 250); }
   pausedForSpeech = false;
 }
-function onHeard(text, conf = 1) {
+let styleOnce = null;                                    // a voice style for just the next reply (whisper back to a whisper)
+function onHeard(text, conf = 1, how = {}) {
   if (settings.listen === "always" && settings.wake.trim()) {
     const w = settings.wake.trim().toLowerCase();
     const i = text.toLowerCase().indexOf(w);
@@ -196,7 +197,9 @@ function onHeard(text, conf = 1) {
   }
   if (settings.listen === "push") stopListening();
   // unsure speech recognition: tell her, so she can check instead of guessing
-  ask(conf < 0.55 ? `${text}\n(speech recognition was unsure about that: ${Math.round(conf * 100)}% confident)` : text);
+  styleOnce = how.quiet ? "whisper" : null;
+  const note = how.quiet ? "\n(he whispered that: answer quietly and briefly)" : how.noisy ? "\n(the room is noisy right now: keep it short and clear)" : "";
+  ask(text, { hint: (conf < 0.55 ? `\n(speech recognition was unsure about that: ${Math.round(conf * 100)}% confident)` : "") + note });
 }
 $("#micBtn").onclick = () => {
   unlockExtras();
@@ -644,6 +647,7 @@ async function snapshot() {
 const TOOLS = [
   ...(window.Tricks?.tools || []),
   ...(window.Mind?.tools || []),
+  ...(window.Extras?.tools || []),
   { name: "use_phone", description: "Operate the phone you live on to do a multi-step task he asks for: open apps, read the screen, tap, scroll, type (e.g. 'open YouTube and search for cat videos', 'turn on dark mode', 'check if I have new emails'). It runs on its own and comes back to your face when done, with a summary. Only when he asks. Anything that spends money, sends messages, posts or deletes needs to be in his request.",
     input_schema: { type: "object", properties: { goal: { type: "string" } }, required: ["goal"] } },
   { name: "open_app", description: "Just open an app on the phone (instant). He'll see it instead of your face until he comes back.", input_schema: { type: "object", properties: { app: { type: "string" } }, required: ["app"] } },
@@ -708,6 +712,7 @@ async function runTool(name, input) {
 async function runToolInner(name, input) {
   try {
     if (window.Mind?.handles(name)) return await Mind.run(name, input);
+    if (window.Extras?.handles(name)) return await Extras.run(name, input);
     if (["use_phone", "open_app", "phone_key", "read_phone_screen"].includes(name)) {
       if (autoTurn) return "FAILED: you only operate the phone when he asks you to.";
       if (name === "use_phone") {
@@ -821,7 +826,8 @@ function systemPrompt(offline) {
 To act, put commands in your reply: [drive:forward:2] (forward, back, left, right; seconds), [part:left arm:wave] (part name, action), [stop].
 Fun commands: [song:NAME] (${Abilities.songList.join(", ")}), [sfx:NAME] (${Abilities.sfxList.join(", ")}), [vibrate:NAME] (${Abilities.vibeList.join(", ")}), [effect:NAME] (${Face.effects.join(", ")}).
 Only use commands for parts listed as installed. If something is MISSING, complain instead.
-You are running on your small offline backup brain: no internet, no camera vision.`
+You are running on your offline brain: no internet, and you can't study a photo. But your on-phone senses still work (faces, hands, objects, marker tags, sounds), and you can still play games, do tricks, read text and remember things.
+When a bracket says "(You just did this for him: ...)", that really happened: tell him the result in your own words. Never claim you did something that no bracket confirms.`
     : `Start every reply with your mood like [mood:happy]. Moods: ${MOOD_NAMES.join(", ")}.
 Use your tools to act. Tool results that start with FAILED mean nothing happened: react to that honestly.
 You have a synthesizer (play songs, compose your own, sing), sound effects, a vibration motor, face effects and face gestures, Morse code, timers, a flashlight, screen brightness, games, a camera that can save photos and videos, voice memos and notes. Use them freely for bits, reactions and comedic timing, but don't overdo it every reply.
@@ -837,7 +843,9 @@ ${window.Mind?.RULES || ""}`;
 function quickSenses() {
   const b = battery ? `battery ${Math.round(battery.level * 100)}%${battery.charging ? " charging" : ""}` : "";
   const t = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return `(Robot status, don't repeat this: ${[b, tipped ? "you are TIPPED OVER" : pose === "flat" ? "lying flat" : "upright", "time " + t].filter(Boolean).join(", ")})`;
+  const low = battery && !battery.charging && battery.level <= 0.12 ? "LOW BATTERY: you're running out of energy, so keep it short and ask to be put on the charger" : "";
+  const h = new Date().getHours(), tod = h < 5 ? "the middle of the night" : h < 9 ? "early morning" : h < 12 ? "morning" : h < 17 ? "afternoon" : h < 22 ? "evening" : "late at night";
+  return `(Robot status, don't repeat this: ${[b, low, tod, tipped ? "you are TIPPED OVER" : pose === "flat" ? "lying flat" : "upright", "time " + t].filter(Boolean).join(", ")})`;
 }
 
 // Conversation survives reloads and restarts: saved to data/conversation.json
@@ -998,7 +1006,7 @@ function speakAppend(text) {
     $("#said").textContent = ($("#said").dataset.stream === "1" ? $("#said").textContent + " " : "") + text;
     $("#said").dataset.stream = "1";
     if (settings.muted || !("speechSynthesis" in window)) return setTimeout(res, 200 + text.length * 40);
-    const vs = VOICE_STYLES[settings.voiceStyle] || VOICE_STYLES.normal;
+    const vs = VOICE_STYLES[styleOnce || settings.voiceStyle] || VOICE_STYLES.normal;
     talking = true; Face.setTalking(true); stopListening(true);
     if (Date.now() < ttsBrokenUntil) return phoneVoice(text, vs).then(res);      // Chrome's voice isn't working: the phone's own
     const u = new SpeechSynthesisUtterance(text);
@@ -1066,7 +1074,18 @@ async function askLocalStreaming(msgs) {
 }
 
 async function askLocal(userText, { lively = false, temperature } = {}) {
-  const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + "\n" + quickSenses() + "\n(" + (window.Mind?.context(true) || "") + ")" }];
+  // Offline skills: the offline brain can't call tools, so a plain request ("how many fingers", "play scavenger hunt")
+  // is recognized here, really done, and the result handed over for it to say.
+  let did = "";
+  const intent = !lively && window.Extras?.offlineIntent(userText);
+  if (intent) {
+    $("#heard").textContent = "on it…";
+    let out; try { out = await runTool(intent.tool, intent.input); } catch (e) { out = "FAILED: " + e.message; }
+    if (Array.isArray(out)) out = "(done)";
+    transcriptLine("act", `${intent.tool} ${JSON.stringify(intent.input)} → ${String(out).slice(0, 160)}`);
+    did = `\n(You just did this for him: ${intent.tool.replace(/_/g, " ")}. Result: ${String(out).slice(0, 700)}. Tell him the result in your own words, briefly.)`;
+  }
+  const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + did + "\n" + quickSenses() + "\n(" + (window.Mind?.context(true) || "") + ")" }];
   let text;
   // her own chatter isn't streamed: it gets checked for repeats before she says it
   if (lively) ({ text } = await api("/api/local", { method: "POST", signal: askAbort?.signal, body: JSON.stringify({ messages: msgs, max_tokens: 120, lively, temperature }) }));
@@ -1116,6 +1135,7 @@ async function ask(userText, opts = {}) {
     }
   }
   const gen = ++askGen;
+  const brainText = userText + (opts.hint || "");          // notes for the brain only (how he said it), not shown in the chat
   busy = true; busySince = Date.now(); busyIsAuto = !!opts.auto; askAbort = new AbortController();
   setFaceState("thinking", true);
   autoTurn = !!opts.auto;
@@ -1139,7 +1159,7 @@ async function ask(userText, opts = {}) {
     for (const b of order) {
       if (!have[b] || !online) continue;
       $("#heard").textContent = `thinking (${NAMES[b]})…`;
-      try { reply = await (b === "gemini" ? askGemini : askClaude)(userText); brain = b; break; }
+      try { reply = await (b === "gemini" ? askGemini : askClaude)(brainText); brain = b; break; }
       catch (e) {
         logEvent("error", { where: b, detail: e.message });
         window.Behaviors?.netFail();
@@ -1154,7 +1174,7 @@ async function ask(userText, opts = {}) {
     if (!brain) {
       setFaceState("offline", true); window.Face?.thinkStyle("local");
       $("#heard").textContent = "thinking with the offline brain…";
-      reply = await askLocal(userText, { lively: !!opts.auto }); brain = "nessari-offline";
+      reply = await askLocal(brainText, { lively: !!opts.auto }); brain = "nessari-offline";
     } else setFaceState("offline", false);
   } catch (e) {
     if (gen !== askGen) return;                                        // this turn was cancelled; a newer one is running
@@ -1165,11 +1185,11 @@ async function ask(userText, opts = {}) {
   if (gen !== askGen) return;
   // Her own chatter: never repeat herself. Too close to something she already said → one more try, then silence.
   const quietReply = r => !r || /\[quiet\]/i.test(r) || r.replace(/[^a-z]/gi, "").length < 2;
-  if (opts.auto && !failed && window.Variety) {
+  if (opts.auto && !opts.exact && !failed && window.Variety) {        // (not for trick and game results: those must be said)
     let same = quietReply(reply) ? null : Variety.mostSimilar(reply);
     if (same && same.sim > 0.55) {
       logEvent("auto", { detail: `caught a repeat (${Math.round(same.sim * 100)}% like "${same.text}"), trying again` });
-      const again = userText + `\n(You were about to say "${reply}", but that's basically what you already said ${same.text ? `("${same.text}")` : ""}. Say something completely different in idea and wording, or reply [quiet].)`;
+      const again = brainText + `\n(You were about to say "${reply}", but that's basically what you already said ${same.text ? `("${same.text}")` : ""}. Say something completely different in idea and wording, or reply [quiet].)`;
       try { reply = brain === "gemini" ? await askGemini(again) : brain === "claude" ? await askClaude(again) : await askLocal(again, { lively: true, temperature: 1.2 }); }
       catch { reply = ""; }
       if (gen !== askGen) return;
@@ -1198,6 +1218,7 @@ async function ask(userText, opts = {}) {
   if (pendingAsk) { const p = pendingAsk; pendingAsk = null; setTimeout(() => ask(p.userText, p.opts), 50); }   // what he said while she was busy
   if (localSpoke && !failed) { await endAppend(); $("#said").textContent = reply; }      // already said it while streaming
   else if (reply) await speak(reply);
+  if (gen === askGen) styleOnce = null;
 }
 let localSpoke = false;
 
@@ -1575,6 +1596,7 @@ function trackTick() {
   const gray = new Uint8Array(64 * 48);
   for (let i = 0; i < gray.length; i++) gray[i] = (d[i * 4] * 3 + d[i * 4 + 1] * 6 + d[i * 4 + 2]) / 10;
   window.Tricks?.scanTick();
+  try { window.Tags?.tick(trackVid); } catch {}       // printed marker tags (tags.js)
   const mode = settings.eyeMode || "motion";
   if (mode !== "motion") {                         // follow a bright light or a color instead of movement
     let n = 0, sx = 0, sy = 0, maxL = 0;
@@ -1620,6 +1642,7 @@ setTimeout(startTracking, 2500);
 /* ================= panel UI ================= */
 function unlockExtras() {
   if ("wakeLock" in navigator && !window._wl) navigator.wakeLock.request("screen").then(l => { window._wl = l; l.onrelease = () => window._wl = null; }).catch(() => {});
+  if (settings.nfc) window.Extras?.startNfc();           // NFC stickers as triggers (asks permission the first time)
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) unlockExtras(); });
 
@@ -1828,13 +1851,15 @@ function bindSetting(id, key, cast = v => v) {
 }
 function onSettingChange(key) {
   if (key === "listen") { stopListening(); if (settings.listen === "always") startListening(); }
+  if (key === "nfc" && settings.nfc) window.Extras?.startNfc();
   if (key === "hearing") { stopListening(); window.Hearing?.stop(); if (settings.listen === "always") setTimeout(startListening, 400); }
   if (key === "facing" && camStream) { camOff(); camOn().catch(() => {}); }
   if (key === "ears") { if (settings.ears) Tricks.earsStart(); else if (!window.Hearing?.active) Tricks.earsStop(); }
   if (key === "track") { if (settings.track) startTracking(); else { stopTracking(); camOff(); } }
   refreshChips();
 }
-bindSetting("#setBrain", "brain"); bindSetting("#setChatter", "chatter"); bindSetting("#setHearing", "hearing"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
+bindSetting("#setBrain", "brain"); bindSetting("#setChatter", "chatter"); bindSetting("#setHearing", "hearing");
+bindSetting("#setTags", "tags"); bindSetting("#setNfc", "nfc"); bindSetting("#setAutoPhoto", "autoPhoto"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
 bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bindSetting("#setPitch", "pitch", Number);
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
 bindSetting("#setTrack", "track"); bindSetting("#setVision", "vision"); bindSetting("#setEars", "ears"); bindSetting("#setQr", "qr");

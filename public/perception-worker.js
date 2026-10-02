@@ -1,8 +1,8 @@
 // Nessari's perception, off the main page: camera frames and sound clips come in, plain results go out.
 // The face animation and touch keep running smoothly while the models work here.
-import { makeVisionTasks, makeAudioTask, detect, classify } from "./perception-common.js";
+import { makeVisionTasks, makeAudioTask, makeTextTask, embedTexts, detect, classify } from "./perception-common.js";
 
-let tasks = null, audio = null;
+let tasks = null, audio = null, text = null, textFailed = false;
 self.onmessage = async ({ data: m }) => {
   if (m.type === "init") {
     try {
@@ -21,6 +21,13 @@ self.onmessage = async ({ data: m }) => {
     catch (e) { error = String(e?.message || e); }
     finally { m.bitmap.close?.(); }
     self.postMessage({ type: "result", id: m.id, res, error, ms: performance.now() - t0 });
+    return;
+  }
+  if (m.type === "embed-text") {                        // loaded the first time it's needed
+    let vecs = null, error = null;
+    try { if (!text && !textFailed) text = await makeTextTask(true); if (text) vecs = embedTexts(text, m.texts); }
+    catch (e) { textFailed = true; error = String(e?.message || e); }
+    self.postMessage({ type: "text", id: m.id, vecs, error });
     return;
   }
   if (m.type === "audio") {

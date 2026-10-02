@@ -181,6 +181,9 @@
       <option value="chatty">A lot (every 2–5 min)</option>
     </select></label>
     <label class="check"><input id="setReact" type="checkbox"> Reacts to things (touches, picked up, charger, lights, battery, someone walking in)</label>
+    <label class="check"><input id="setTags" type="checkbox"> Reads printed marker tags (<a href="/tags.html" target="_blank" style="color:inherit">print a sheet of tags</a>)</label>
+    <label class="check"><input id="setNfc" type="checkbox"> NFC stickers as triggers (tap one to the back of the phone)</label>
+    <label class="check"><input id="setAutoPhoto" type="checkbox"> Takes a photo by herself when something interesting happens (saved to the gallery only)</label>
     <label class="check"><input id="setEars" type="checkbox"> Hears claps and loud noises (2 claps = listen, 3 claps = random trick; pauses while she's listening to you)</label>
     <label class="check"><input id="setVision" type="checkbox"> Sees faces, expressions and hand signs (offline; needs robot-vision-download once)</label>
     <label class="check"><input id="setQr" type="checkbox"> Reads QR codes and barcodes she sees</label>
@@ -201,6 +204,10 @@
 <script src="hearing.js"></script>
 <script src="audiosmarts.js"></script>
 <script src="flow.js"></script>
+<script src="lib/aruco/cv.js"></script>
+<script src="lib/aruco/aruco.js"></script>
+<script src="tags.js"></script>
+<script src="extras.js"></script>
 <script src="variety.js"></script>
 <script src="mind.js"></script>
 <script src="behaviors.js"></script>

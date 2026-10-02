@@ -84,7 +84,25 @@
       { say: "Rock, paper, scissors. Show me your hand on three." }, { sfx: "beep" }, { wait: 0.6 }, { sfx: "beep" }, { wait: 0.6 }, { sfx: "boop" },
       { ai: "Use the look tool to see his hand, pick your own throw at random, say both and who won." }] },
     compass: { about: "Says which way she's facing", steps: [{ ai: "Use read_sensors and tell him which compass direction you're facing, in character." }] },
-    stats_brag: { about: "Brags about her achievements", steps: [{ ai: "Use the read_diary tool and brag about one of your stats or achievements." }] }
+    stats_brag: { about: "Brags about her achievements", steps: [{ ai: "Use the read_diary tool and brag about one of your stats or achievements." }] },
+    // --- tricks that use her newer senses (all work with no internet) ---
+    big_yawn: { about: "A huge yawn", steps: [{ prim: "yawn", seconds: 2.8 }, { say: "Excuse me." }] },
+    play_dead: { about: "Gets shot, dies dramatically, peeks with one eye", steps: [{ say: "Bang." }, { prim: "play_dead", seconds: 5 }, { say: "I'm fine." }] },
+    eat_snack: { about: "Chews on some electricity and burps", steps: [{ prim: "chew", seconds: 3.6 }, { prim: "burp", seconds: 1 }, { say: "Delicious electrons." }] },
+    scared: { about: "Trembles with tiny pupils", steps: [{ prim: "scared", seconds: 2.2 }, { sfx: "glitch_scream" }, { say: "I'm not scared. You're scared." }] },
+    one_eye: { about: "Keeps one eye on you", steps: [{ prim: "one_eye", seconds: 2.5 }, { say: "I'm watching you." }] },
+    how_many_fingers: { about: "Counts the fingers you hold up", steps: [{ say: "Hold up some fingers." }, { wait: 2.5 }, { tool: "count_fingers" }] },
+    name_that_note: { about: "Tells you which note you're singing or whistling", steps: [{ say: "Sing me one note and hold it." }, { tool: "listen_pitch" }] },
+    hum_it_back: { about: "Listens to a tune you hum and plays it back", steps: [{ say: "Hum me a little tune." }, { tool: "hum_back" }] },
+    read_this: { about: "Reads printed text you hold up (no internet needed)", steps: [{ say: "Hold it up to my camera, nice and flat." }, { wait: 2 }, { tool: "read_text" }] },
+    tag_check: { about: "Says which marker tags she can see", steps: [{ gesture: "scan_room" }, { tool: "see_tags" }] },
+    scavenger_hunt: { about: "Scavenger hunt: you show her the things she names", steps: [{ game: "scavenger" }] },
+    whats_missing: { about: "Close-your-eyes game: she says which object you took away", steps: [{ game: "missing" }] },
+    pose_simon: { about: "Simon Says with your whole body", steps: [{ game: "poses" }] },
+    finger_math: { about: "Sums you answer with your fingers", steps: [{ game: "finger_math" }] },
+    balance_me: { about: "Hold her perfectly level for ten seconds", steps: [{ game: "balance" }] },
+    guess_my_sound: { about: "She guesses sounds you make", steps: [{ game: "sound_guess" }] },
+    match_my_note: { about: "She plays a note, you sing it back", steps: [{ game: "match_note" }] }
   };
 
   let custom = {};                    // her own tricks, saved in data/tricks.json
@@ -144,14 +162,29 @@
     if (st.sing) return await sing({ lyrics: st.sing, song: st.song });
     if (st.morse) return await sendMorse(st.morse, st.flashlight);
     if (st.echo) return await echo(st.echo, st.effect);
-    if (st.game) return await playGame(st.game);
+    if (st.game) { const r = await playGame(st.game); if (ctx.fromTool) return r;       // a game played as a trick: she tells him how it went
+      await ask(`(system: the game you were playing just ended. Result: ${r} Tell him how it went, in character, one or two sentences.)`, { quiet: true, auto: true, note: "game result", exact: true }); return r; }
+    if (st.prim) {                                              // a face primitive (face.js / behaviors.js)
+      const P = Face.prim, fn = { yawn: () => P.yawn(2.6), play_dead: () => window.Behaviors?.playDead(), burp: () => P.puff(2),
+        chew: () => { P.chew(true, 2.2); setTimeout(() => { P.swallow(); P.chew(false); }, 3000); },
+        scared: () => { P.tremble(1, 2000); P.pupils(0.5, 2200); P.squint(1.2, 1.2, 2200); P.hold({ browA: -0.9, browY: -0.6, mouth: -0.7 }, 2200); },
+        one_eye: () => P.squint(1, 0.05, 2400), wide_pupils: () => P.pupils(1.6, 2000) }[st.prim];
+      fn?.(); await sleep(clamp(+st.seconds || 1.5, 0, 10) * 1000); return;
+    }
+    if (st.tool) {                                              // use one of her tools and say what came of it
+      const out = await runTool(String(st.tool), st.input || {});
+      const text = Array.isArray(out) ? "(done)" : String(out);
+      if (ctx.fromTool) { ctx.theirPart.push(`You just used ${st.tool}: ${text.slice(0, 400)}. Tell him.`); return text; }
+      await ask(`(system: you're performing a trick. You just used ${String(st.tool).replace(/_/g, " ")} and got: ${text.slice(0, 500)} Tell him the result in character, one or two sentences.)`, { quiet: true, auto: true, note: "trick", exact: true });
+      return text;
+    }
     if (st.part || st.drive) {
       if (ctx.auto && !settings.autoMove) return "skipped moving (moving on her own is off)";
       return st.part ? await usePart(st.part, st.action || "wave", st.seconds) : await drive(st.drive, st.seconds || 1);
     }
     if (st.ai) {
       if (ctx.fromTool) { ctx.theirPart.push(st.ai); return; }
-      await ask(`(system: you're performing a trick. Your part now: ${st.ai})`, { quiet: true, auto: true, note: "trick" });
+      await ask(`(system: you're performing a trick. Your part now: ${st.ai})`, { quiet: true, auto: true, note: "trick", exact: true });
       return;
     }
   }
@@ -169,8 +202,11 @@
     setTimeout(() => { if (!done) { done = true; restore(); res(null); } }, ms);
   });
 
+  const extraGames = {};                                     // games added by other files (extras.js)
+  const registerGame = (name, fn) => { extraGames[name] = fn; };
   async function playGame(name) {
-    const games = { simon, reaction, staring, redlight, color: colorHunt, claps: clapEcho, rps: () => window.Vision?.rockPaperScissors ? Vision.rockPaperScissors() : "FAILED: vision isn't loaded." };
+    name = String(name || "").toLowerCase().trim().replace(/[\s-]+/g, "_");
+    const games = { simon, reaction, staring, redlight, color: colorHunt, claps: clapEcho, rps: () => window.Vision?.rockPaperScissors ? Vision.rockPaperScissors() : "FAILED: vision isn't loaded.", ...extraGames };
     if (!games[name]) return `FAILED: games are ${Object.keys(games).join(", ")}.`;
     bump("games");
     const r = await games[name]();
@@ -579,8 +615,8 @@
     { name: "forget_trick", description: "Delete one of the tricks you invented.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
     { name: "face_gesture", description: "A quick face move: " + "wink_left, wink_right, double_blink, squint, wide, eye_roll, side_eye_left, side_eye_right, look_left, look_right, look_up, look_down, scan_room, startle, reboot, nod, shake_head.",
       input_schema: { type: "object", properties: { gesture: { type: "string" } }, required: ["gesture"] } },
-    { name: "play_game", description: "Start a game with him: rps (rock paper scissors, reads his hand offline), simon (Simon Says on your face), reaction (reaction-time test), staring (staring contest), redlight (red light green light with your camera), color (color hunt), claps (clap-back). The result comes back when it's over.",
-      input_schema: { type: "object", properties: { game: { type: "string", enum: ["simon", "reaction", "staring", "redlight", "color", "claps", "rps"] } }, required: ["game"] } },
+    { name: "play_game", description: "Start a game with him: rps (rock paper scissors, reads his hand offline), simon (Simon Says on your face), reaction (reaction-time test), staring (staring contest), redlight (red light green light with your camera), color (color hunt), claps (clap-back). The result comes back when it's over. More games: scavenger (scavenger hunt: he shows you objects you name), missing (he removes an object while your eyes are closed, you say which), poses (Simon Says with his body), finger_math (sums answered with fingers), follow_finger, balance (he holds you level), sound_guess (you guess sounds he makes), match_note (he sings back notes you play).",
+      input_schema: { type: "object", properties: { game: { type: "string" } }, required: ["game"] } },
     { name: "echo", description: "Record him for a few seconds and play it back with an effect: chipmunk, deep, reverse, robot, fast, slow, normal.",
       input_schema: { type: "object", properties: { seconds: { type: "number" }, effect: { type: "string" } } } },
     { name: "what_color", description: "Check what color is in the middle of your camera view right now (instant, no internet).", input_schema: { type: "object", properties: {} } },
@@ -662,7 +698,7 @@
   }
 
   window.Tricks = {
-    tools: TOOLS, handles: n => NAMES.has(n), run, runTrick, list: () => Object.keys(all()), all,
+    tools: TOOLS, handles: n => NAMES.has(n), run, runTrick, list: () => Object.keys(all()), all, registerGame, onCode, playGame,
     // the last second of sound, oldest first (null if her ears are off or she's making noise herself)
     earsSamples() {
       if (!ears.running || !ears.ring || talking || Abilities.isPlaying()) return null;

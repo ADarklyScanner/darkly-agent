@@ -100,9 +100,10 @@ Android only allows sound and vibration after the first tap on the page, so tap 
 
 ## Tricks, games and the rest
 
-- **Trick Book:** 47 built-in tricks, plus any she invents and saves herself (marked ★ on the Tricks tab).
+- **Trick Book:** 64 built-in tricks, plus any she invents and saves herself (marked ★ on the Tricks tab).
   Say "do a trick" for a random one, or name one ("do the possessed thing", "fortune teller"). Ask "what tricks do you know?"
-- **Games:** Simon Says, reaction test, staring contest, red light green light, color hunt, clap-back, Twenty Questions, trivia, riddles, rock paper scissors.
+- **Games:** Simon Says, reaction test, staring contest, red light green light, color hunt, clap-back, Twenty Questions, trivia, riddles, rock paper scissors,
+  scavenger hunt, what's missing, Simon Says with your body, finger math, follow my finger, balance, guess the sound, match my note.
 - **Claps:** clap twice and she listens; clap three times for a random trick.
 - **Camera:** photos, videos and voice memos are saved to the phone's gallery (Pictures, Movies and Recordings › Nessari).
   She reads QR codes; print `nessari:trick:possessed` as a QR code and showing it to her starts that trick.
@@ -137,6 +138,17 @@ Unrestricted, and allow "Modify system settings". Termux and Termux:API must bot
 
 **Vibration spin:** stand her on a smooth, hard table, ideally without a grippy case, and ask her to spin. She buzzes
 her vibration motor and uses her gyro to stop at the right angle. How well it works depends on the surface and case.
+
+## Hands, tags, music and reading
+
+- **Hands:** she counts fingers, follows your fingertip, looks where you point, and knows OK, rock-on, finger gun, "call me" and pinch.
+  Teach her your own: hold a gesture up and say "learn this gesture as peace out".
+- **Marker tags:** Settings › "print a sheet of tags". Print at 100%, stick them on things, show her one and say "this tag is the charger".
+  She recognizes tags instantly, with where they are and roughly how far (a 5 cm tag reads from about 75 cm). Uses js-aruco2 (MIT, in `public/lib/aruco`).
+- **Music:** "what note is this?", "hum it back" (she plays your tune on her synth), and she dances on the beat of music in the room.
+- **Reading:** "read this" reads printed text with no internet (needs `pkg install tesseract`, which the installer does).
+- **Offline skills:** with no internet she still carries out plain requests (games, tricks, counting fingers, finding things, timers, photos);
+  see `public/extras.js` for the list of phrases.
 
 ## Not repeating herself
 

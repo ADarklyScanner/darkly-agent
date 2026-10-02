@@ -214,9 +214,41 @@
     saveWorld();
     return `Noted: ${thing} → ${where} (${src.toLowerCase()}).`;
   }
-  function recall(thing) {
-    const k = keyOf(thing);
-    const hit = world.things[k] || Object.entries(world.things).find(([n]) => n.includes(k) || k.includes(n))?.[1];
+  // Finding a memory, from most to least certain:
+  //  1. the exact thing, or a nickname he taught her for it;  2. the same words in a different form ("screw driver", "drivers");
+  //  3. by MEANING, with the on-phone text embedder ("the little purple controller" finds "remote PCB");
+  //  4. anything in the recent event stream that mentions it.
+  const stem = w => w.replace(/(ing|ers|er|es|s|ed)$/, "");
+  const toks = s => new Set(String(s).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(w => w.length > 2 && !/^(the|and|for|with|that|this|your|you|was|are|its|about|away|left|right)$/.test(w)).map(stem));
+  const cosine = (a, b) => { let d = 0, na = 0, nb = 0; for (let i = 0; i < a.length; i++) { d += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; } return d / (Math.sqrt(na * nb) || 1); };
+  async function recall(thing) {
+    let k = keyOf(thing), how = "";
+    const alias = Object.entries(world.names).find(([, n]) => keyOf(n.name) === k); if (alias) k = alias[0];
+    const squash = x => String(x).toLowerCase().replace(/[^a-z0-9]/g, "").replace(/(ers|er|es|s)$/, "");
+    let hit = world.things[k] || Object.entries(world.things).find(([n]) => n.includes(k) || k.includes(n))?.[1];
+    if (!hit && squash(k).length > 3) hit = Object.entries(world.things).find(([n]) => squash(n).includes(squash(k)) || squash(k).includes(squash(n)))?.[1];   // "screw driver" = "screwdrivers"
+    if (!hit) {                                                       // 2. same words, different form
+      const q = toks(k); let best = 0, bestKey = null;
+      for (const [n, it] of Object.entries(world.things)) { const t = toks(n); let inter = 0; for (const w of q) if (t.has(w)) inter++; const sc = q.size ? inter / Math.max(q.size, t.size) : 0; if (sc > best) { best = sc; bestKey = n; } }
+      if (best >= 0.5) { hit = world.things[bestKey]; how = ` (closest thing you know: "${bestKey}")`; }
+    }
+    if (!hit && window.Vision?.embedTexts) {                           // 3. by meaning
+      try {
+        const cands = [...Object.keys(world.things).map(n => ({ kind: "thing", n, text: `${n}${world.names[n]?.name ? " (" + world.names[n].name + ")" : ""}` })),
+          ...String(typeof memory === "string" ? memory : "").split("\n").map(l => l.replace(/^[-*\s]+/, "").trim()).filter(l => l.length > 8).slice(-60).map(l => ({ kind: "note", text: l }))];
+        if (cands.length) {
+          const vecs = await Vision.embedTexts([String(thing), ...cands.map(c => c.text)]);
+          if (vecs) {
+            let best = -1, bi = -1; for (let i = 0; i < cands.length; i++) { const c = cosine(vecs[0], vecs[i + 1]); if (c > best) { best = c; bi = i; } }
+            if (best > 0.55) {
+              const c = cands[bi];
+              if (c.kind === "note") return `Nothing stored under "${thing}", but the closest memory note by meaning (${Math.round(best * 100)}% match) is: "${c.text}". Say it only if it actually fits.`;
+              hit = world.things[c.n]; how = ` (not an exact match: the closest thing you know by meaning is "${c.n}", ${Math.round(best * 100)}% match; say so)`;
+            }
+          }
+        }
+      } catch {}
+    }
     if (!hit) {
       const ev = [...events].reverse().find(e => e.text.toLowerCase().includes(k));
       return ev ? `No stored location, but ${ev.t ? ago(ev.t) : ""} (${ev.source}): ${ev.text}` : `Nothing about "${thing}" in your memory. Say you don't know (or didn't see).`;
@@ -224,7 +256,7 @@
     hit.uses = (hit.uses || 1) + 1; saveWorld();
     const c = currentConf(hit);
     const familiar = (hit.seen || 0) > 8 ? " (very familiar thing)" : (hit.seen || 0) > 2 ? " (seen it before)" : "";
-    return `${thing}: ${hit.where}. Source: ${hit.source}, ${ago(hit.t)}. Confidence ${c.toFixed(2)}: say you're ${confWord(c)}.${familiar}`;
+    return `${thing}${how}: ${hit.where}. Source: ${hit.source}, ${ago(hit.t)}. Confidence ${c.toFixed(2)}: say you're ${confWord(c)}.${familiar}`;
   }
   function learnName(thing, name) {
     world.names[keyOf(thing)] = { name, t: nowMs() };
@@ -360,7 +392,7 @@ How you think and talk:
   const NAMES = new Set(TOOLS.map(t => t.name));
   async function run(name, input) {
     if (name === "note_where") return noteWhere(input.thing, input.where, input.how);
-    if (name === "recall") return recall(input.thing);
+    if (name === "recall") return await recall(input.thing);
     if (name === "learn_name") return learnName(input.thing, input.name);
     if (name === "add_open_loop") return addLoop(input.text, input.when, input.hours || 24, "her");
     if (name === "close_open_loop") return closeLoop(input.text);

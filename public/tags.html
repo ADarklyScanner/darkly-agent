@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nessari's marker tags</title>
+<style>
+  body{font:15px/1.4 system-ui,sans-serif;margin:16px;color:#111;background:#fff}
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  button,input{font:inherit;padding:6px 10px}
+  .sheet{display:flex;flex-wrap:wrap;gap:8mm}
+  .tag{width:62.5mm;text-align:center;break-inside:avoid;border:1px dashed #bbb;padding:3mm}
+  .tag svg{width:62.5mm;height:62.5mm;display:block}       /* black square = 5 cm */
+  .tag b{display:block;font-size:13px;margin-top:2mm}
+  .tag small{color:#555}
+  @media print{.bar,.help{display:none} body{margin:8mm} .tag{border-color:#ddd}}
+</style></head><body>
+<div class="bar">
+  <b>Nessari's marker tags</b>
+  <label>from number <input id="from" type="number" min="0" max="238" value="0" style="width:5em"></label>
+  <button id="go">Show 12</button><button onclick="print()">Print</button>
+</div>
+<p class="help">Print at 100% (no "fit to page"), cut them out with the white border left on, and stick them where they belong.
+Show one to her and say "this tag is the charger". The black square should measure 5 cm.</p>
+<div class="sheet" id="sheet"></div>
+<script src="lib/aruco/cv.js"></script><script src="lib/aruco/aruco.js"></script>
+<script>
+const dict = new AR.Dictionary("ARUCO_MIP_36h12");
+let names = {};
+async function show() {
+  try { names = JSON.parse((await (await fetch("/api/files?path=tags.json")).json()).content) || {}; } catch {}
+  const from = Math.max(0, Math.min(238, +document.getElementById("from").value || 0)), sheet = document.getElementById("sheet");
+  sheet.innerHTML = "";
+  for (let id = from; id < from + 12; id++) {
+    const d = document.createElement("div"); d.className = "tag"; d.innerHTML = dict.generateSVG(id);
+    const b = document.createElement("b"); b.textContent = names[id]?.name || "(no name yet)";
+    const s = document.createElement("small"); s.textContent = "tag " + id;
+    d.append(b, s); sheet.append(d);
+  }
+}
+document.getElementById("go").onclick = show; show();
+</script></body></html>

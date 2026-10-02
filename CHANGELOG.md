@@ -2,6 +2,23 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.17 · A big batch from your lists
+Everything here runs on the phone with no internet. I tested it with simulated cameras and sounds; your real hands, face and voice are the real test.
+- Offline skills: the offline brain used to be able to talk and nothing else. Now plain requests are recognized and really carried out even with no internet: "play scavenger hunt", "do a trick", "how many fingers", "what am I holding", "where's my screwdriver", "I put the keys on the table", "read this", "set a timer for 5 minutes", "take a picture", "play jingle bells", "copy my face", about 28 kinds in all. She does it, then tells you the result in her own words.
+- Hands: counts fingers (both hands, 0 to 10), follows your fingertip with her eyes, looks where you point, and knows new signs: OK, rock-on, finger gun (she plays dead), "call me", pinch, and the middle finger (she takes it personally). You can teach her your own gestures ("learn this gesture as peace out") and link one to a trick.
+- Faces: winks back, blushes at a blown kiss, raises an eyebrow back, and catches your yawns.
+- Ears: tells you which note you're singing or whistling and whether it's in tune, hums a tune back on her synth, finds the tempo of music and dances on the beat, hears finger snaps. Whisper to her (offline hearing) and she whispers back. A small speech detector now screens every clip so bangs and music aren't turned into made-up words.
+- Motion: knows which way something crossed her view and looks ahead of it, notices when she's being turned, flinches when something rushes at her face, and in free fall shuts her eyes, then looks around after landing.
+- Marker tags: printable squares she recognizes instantly (Settings › "print a sheet of tags"). Show her one and say "this tag is the charger". She knows where it is and roughly how far, remembers where she last saw it, and gets excited when she's low on battery and spots the charger tag. A 5 cm tag reads from about 75 cm.
+- Reads printed text offline (labels, signs, model numbers) with the phone's own text reader. Reads the phone's notifications aloud when you ask. NFC stickers can trigger tricks (Settings). Remembers places by name using location.
+- Memory finds things more like a person does: by nickname, by different word forms ("screw driver" finds "screwdrivers"), and, if the small language model is downloaded, by meaning.
+- 8 new games: scavenger hunt, what's missing, Simon Says with your body, finger math, follow my finger, balance, guess the sound, match my note. 17 new tricks (64 total), including big yawn, play dead, eat a snack, name that note, hum it back, read this.
+- Her face dims when nobody's been around for 5 minutes and wakes when someone returns. Her battery level shows on the left side meter. Low battery makes her ask for the charger and keep answers short. She knows morning from late night.
+- Left and right are now hers. Before, with the front camera, "on your left" was mirrored.
+- Opt-in: she can take a photo by herself when something interesting happens (off by default, saved only to the gallery).
+- Not done yet, and why: recognizing specific people by face or voice, depth estimation and a custom "Nessari" wake-word model all need models I can't check from here. Anything about driving waits for the body.
+- To get the new pieces, run robot-update with internet on (it installs the text reader and downloads the memory model).
+
 ## 2026-10-02 · v0.16.2 · Typed messages never vanish
 - Fixed: typing a message and pressing Send made it disappear with no answer. If she was busy (often with her own chatter waiting on the offline brain), the message was thrown away. Now what you say always wins: her own chatter is cancelled on the spot, including on the offline brain itself, so it's free for you. If she's busy answering you, your next message shows in the chat and is answered next. A turn stuck for over 2.5 minutes is abandoned.
 - The Talk tab shows what she's doing ("thinking with the offline brain… 20s", "your next message is waiting").

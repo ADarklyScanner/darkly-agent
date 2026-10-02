@@ -545,6 +545,7 @@ const server = http.createServer(async (req, res) => {
         wifi: ["termux-wifi-connectioninfo", [], 5000],
         wifiscan: ["termux-wifi-scaninfo", [], 10000],
         cell: ["termux-telephony-cellinfo", [], 8000],
+        notifications: ["termux-notification-list", [], 8000],
         torch_on: ["termux-torch", ["on"], 4000],
         torch_off: ["termux-torch", ["off"], 4000],
         vibrate: ["termux-vibrate", ["-d", "300", "-f"], 4000]
@@ -558,6 +559,7 @@ const server = http.createServer(async (req, res) => {
         wifiscan: "Android Settings > Apps > Termux:API > Permissions > Location > Allow (Wi-Fi scans need it)",
         cell: "Android Settings > Apps > Termux:API > Permissions > Phone and Location > Allow",
         notify: "Android Settings > Apps > Termux:API > Notifications > Allow",
+        notifications: "Android Settings > Notifications > Device & app notifications (Notification access) > Termux:API > Allow",
         torch_on: "Android Settings > Apps > Termux:API > Permissions > Camera > Allow"
       };
       if (out === null || /error|permission|denied/i.test(out) && !/^\s*[{[]/.test(out)) {
@@ -655,6 +657,20 @@ const server = http.createServer(async (req, res) => {
       const text = await transcribe(wav);
       if (text === null) return send(res, 503, { error: "Offline hearing isn't installed. In Termux run: robot-hearing-setup" });
       return send(res, 200, { text, ms: Date.now() - t0 });
+    }
+    // ---- offline reading: printed text in a camera picture, via tesseract (pkg install tesseract) ----
+    if (p === "/api/ocr" && req.method === "POST") {
+      const img = await readRaw(req, 12 * 1024 * 1024);
+      const tmp = path.join(os.tmpdir(), `nessari-ocr-${Date.now()}.jpg`);
+      fs.writeFileSync(tmp, img);
+      try {
+        let text = await run("tesseract", [tmp, "stdout", "-l", "eng", "--psm", "3"], 40000);
+        if (text === null) return send(res, 503, { error: "The text reader isn't installed. In Termux run: pkg install tesseract" });
+        if (text.replace(/[^a-z0-9]/gi, "").length < 3) text = (await run("tesseract", [tmp, "stdout", "-l", "eng", "--psm", "11"], 40000)) || "";   // sparse text: signs, labels
+        // keep lines that look like words, drop the specks OCR makes out of texture
+        const lines = text.split("\n").map(l => l.trim()).filter(l => l.replace(/[^a-z0-9]/gi, "").length >= 2 && l.replace(/[^a-z0-9 ]/gi, "").length / l.length > 0.6);
+        return send(res, 200, { text: lines.join("\n") });
+      } finally { fs.rmSync(tmp, { force: true }); }
     }
     // ---- offline voice: the phone's own text-to-speech, for when Chrome's voice needs the internet ----
     if (p === "/api/say" && req.method === "POST") {
