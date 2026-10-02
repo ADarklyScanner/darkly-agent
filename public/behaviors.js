@@ -58,6 +58,7 @@
     if (sleeping) { peekWhileAsleep(); return; }
     if (!busyFace() && !st.thinking && !st.listening) fidget(s);
     socialTick();
+    presenceDim();
   }
 
   // ---------------- boredom fidgets (one at a time, never repeated back to back) ----------------
@@ -131,7 +132,8 @@
   navigator.getBattery?.().then(b => {
     battery = b;
     b.addEventListener("chargingchange", () => { plugTimes.push(now()); if (b.charging) startCharging(); else { unplugged(); hunger(); } });
-    b.addEventListener("levelchange", () => { if (b.charging && b.level >= 0.995) fullyCharged(); if (b.charging) P().chew(!fullDone, chewRate()); hunger(); });
+    P().level(b.level);                                     // her battery shows on the left side meter
+    b.addEventListener("levelchange", () => { P().level(b.level); if (b.charging && b.level >= 0.995) fullyCharged(); if (b.charging) P().chew(!fullDone, chewRate()); hunger(); });
     if (b.charging && b.level < 0.995) after(2500, startCharging);
     hunger();
   }).catch(() => {});
@@ -175,6 +177,47 @@
     P().squint(0.02, 0.02, 450); did("fell");
     after(500, () => { P().squint(1.2, 1.2, 800); P().pupils(1.3, 1200); });
     after(1400, () => Face.gesture("scan_room"));
+  }
+
+  // ---------------- free fall: eyes shut on the way down, wide open after ----------------
+  let fallSince = 0, falling = false;
+  window.addEventListener("devicemotion", e => {
+    const a = e.accelerationIncludingGravity; if (!a || a.x == null || !B.enabled) return;
+    const g = Math.hypot(a.x, a.y, a.z);
+    if (g < 2.5) {                                           // nearly weightless = falling (or thrown)
+      if (!fallSince) fallSince = now();
+      else if (!falling && now() - fallSince > 110) { falling = true; onFalling(); }
+    } else {
+      if (falling) { falling = false; const hard = g > 22; after(60, () => landed(hard)); }
+      fallSince = 0;
+    }
+  });
+  function onFalling() {
+    P().squint(0.02, 0.02, 1500); P().hold({ browA: -0.8, browY: -0.7, mouth: -1, mouthW: 0.6 }, 1500); P().tremble(1, 1200);
+    window.Abilities?.sfx?.("whistle"); did("falling");
+  }
+  function landed(hard) {
+    P().squint(1.2, 1.2, 800); P().pupils(1.4, 1500); did("landed", hard ? "hard" : "caught");
+    after(900, () => Face.gesture("scan_room"));
+    if (!hard && typeof react === "function") react("caught", "you were in free fall for a moment (dropped or tossed) and then caught", 2);
+  }
+
+  // ---------------- playing dead (finger gun) ----------------
+  B.playDead = () => {
+    if (!ready("dead", 8000)) return;
+    P().hold({ open: 0.9, browY: -0.9, mouth: -0.6 }, 350); P().tremble(1, 500); did("play-dead");
+    after(350, () => { P().squint(0.02, 0.02, 2600); P().hold({ mouth: -0.4, tilt: -0.5, browA: -0.6, skew: 0.8 }, 2600); window.Abilities?.sfx?.("powerdown"); });
+    after(3000, () => P().squint(0.02, 0.7, 1100));            // one eye opens first: is he still looking?
+    after(4200, () => { P().blink({ ms: 120 }); Face.gesture("wink_left"); });
+  };
+
+  // ---------------- nobody around: dim the screen; come back: wake it ----------------
+  let lastPresence = now(), dimmed = false;
+  function presenceDim() {
+    const here = (window.Mind?.presenceScore?.() ?? 1) >= 0.5 || busyFace() || (window.lastMotion && now() - lastMotion.t < 3000 && lastMotion.frac > 0.02);
+    if (here) lastPresence = now();
+    const want = !here && now() - lastPresence > 5 * 60000;
+    if (want !== dimmed) { dimmed = want; Face.setIdleDim?.(want ? 0.55 : 0); did(want ? "dim:nobody-here" : "undim:someone-here"); }
   }
 
   // ---------------- light ----------------

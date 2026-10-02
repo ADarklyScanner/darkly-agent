@@ -2,6 +2,10 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.16.2 · Typed messages never vanish
+- Fixed: typing a message and pressing Send made it disappear with no answer. If she was busy (often with her own chatter waiting on the offline brain), the message was thrown away. Now what you say always wins: her own chatter is cancelled on the spot, including on the offline brain itself, so it's free for you. If she's busy answering you, your next message shows in the chat and is answered next. A turn stuck for over 2.5 minutes is abandoned.
+- The Talk tab shows what she's doing ("thinking with the offline brain… 20s", "your next message is waiting").
+
 ## 2026-10-02 · v0.16.1 · Offline brain start fix
 - Fixed: the offline brain refused to start ("too big for the free memory right now") even with a small 3B model. Android reports less free memory than it can actually hand over, and I was trusting that number. Now no model is ruled out: she tries the ones that look like they fit first, then the rest, and only gives up on a model if it really gets killed.
 - robot-doctor: no longer says the brain server is down when it's up (it was writing to a folder Termux doesn't have), key numbers print correctly, and the phone-voice check is more patient.

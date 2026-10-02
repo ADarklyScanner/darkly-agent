@@ -44,7 +44,7 @@
   // show effects: disco, rainbow, dance, dizzy, heart_eyes, shades, laser_eyes, glitch_storm, sparkle, strobe
   let fx = { name: null, until: 0 }, flashOn = false;
   let eyeScale = 1, noBlinkUntil = 0, highlight = null, nightDim = 0, gestureTimers = [];
-  let blend = {}, blinkRate = 1, sacc = { x: 0, y: 0, next: 0 };
+  let blend = {}, blinkRate = 1, sacc = { x: 0, y: 0, next: 0 }, idleDim = 0, idleDimNow = 0;
   const fxOn = n => fx.name === n && nowMs() < fx.until;
   // ---------- facial primitives: small building blocks that behaviors.js combines into thousands of reactions ----------
   // L / R = the eye on the screen's left / right (her right / left eye).
@@ -55,7 +55,9 @@
     freezeUntil: 0, snapUntil: 0,                      // gaze locked / eyes jump fast
     chew: 0, chewOn: false, chewRate: 1.6, chewPh: 0, swallowT: -1,
     tremble: 0, trembleUntil: 0, puffs: [],
-    blinkMs: 130, thinkKind: "online", thinkSince: 0, ahaUntil: 0
+    blinkMs: 130, thinkKind: "online", thinkSince: 0, ahaUntil: 0,
+    yawnT: -1, yawnDur: 2.4, yawn: 0,                  // a yawn: eyes squeeze shut while the mouth opens wide
+    beat: null, level: null                            // music beat { bpm, t0 } for dancing in time; battery level 0..1 for the side meters
   };
   const nowMs = () => performance.now();
 
@@ -216,6 +218,7 @@
     if (chewing) prim.chewPh += dt * prim.chewRate * TAU;
     if (prim.swallowT >= 0) { prim.swallowT += dt; if (prim.swallowT > 0.8) prim.swallowT = -1; }
     if (nowMs() > prim.trembleUntil) prim.tremble = 0;
+    if (prim.yawnT >= 0) { prim.yawnT += dt; prim.yawn = Math.sin(Math.PI * Math.min(1, prim.yawnT / prim.yawnDur)) ** 0.7; if (prim.yawnT > prim.yawnDur) { prim.yawnT = -1; prim.yawn = 0; } }
     prim.puffs = prim.puffs.filter(p => (p.life += dt) < 1.4);
     look.x = lerp(look.x, clamp(tx, -1, 1), lk); look.y = lerp(look.y, clamp(ty, -1, 1), lk);
 
@@ -312,7 +315,9 @@
     // side meters
     for (const s of [-1, 1]) {
       for (let i = 0; i < 8; i++) {
-        const on = (Math.sin(t * 3 + i * 0.8 + s) + 1) / 2 > 0.45 + 0.05 * i;
+        // left meter: her battery, filled from the bottom (flickers when low). right meter: idle activity.
+        const on = s < 0 && prim.level != null ? (7 - i) < Math.max(1, Math.round(prim.level * 8)) && !(prim.level < 0.15 && Math.sin(t * 6) > 0)
+          : (Math.sin(t * 3 + i * 0.8 + s) + 1) / 2 > 0.45 + 0.05 * i;
         ctx.fillStyle = col(10, (on ? 0.5 : 0.12) * cur.dim);
         ctx.fillRect(s * (bx - U * 0.03) - (s > 0 ? U * 0.035 : 0), -0.3 * U + i * U * 0.07, U * 0.035, U * 0.04);
       }
@@ -326,7 +331,7 @@
     let bl = side < 0 ? blink.L : blink.R;
     if (eyeShut.side === side && nowMs() < eyeShut.until) bl = 1;
     const swallowing = prim.swallowT >= 0 && prim.swallowT < 0.45;
-    const open = cur.open * (1 - bl) * (st._thinking ? 0.9 : 1) * (side < 0 ? prim.sqL : prim.sqR) * (swallowing ? 0.55 : 1);
+    const open = cur.open * (1 - bl) * (st._thinking ? 0.9 : 1) * (side < 0 ? prim.sqL : prim.sqR) * (swallowing ? 0.55 : 1) * (1 - prim.yawn * 0.9);
     ctx.save(); ctx.translate(ex, ey);
 
     // rotating outer rings and ticks
@@ -428,7 +433,7 @@
 
   function mouth(t) {
     const chewOpen = prim.chew * Math.max(0, Math.sin(prim.chewPh));
-    const N = 30, w = 0.66 * U * cur.mouthW * (1 - prim.chew * 0.25), my = 0.45 * U + chewOpen * 0.025 * U;
+    const N = 30, w = 0.66 * U * cur.mouthW * (1 - prim.chew * 0.25) * (1 - prim.yawn * 0.45), my = 0.45 * U + chewOpen * 0.025 * U;
     const cy = f => my + cur.mouth * 0.11 * U * (1 - f * f) + cur.skew * 0.05 * U * f + cur.question * 0.018 * U * Math.sin(f * 6 + t * 3);
     // faint baseline
     ctx.strokeStyle = col(0, 0.25 * cur.dim); ctx.lineWidth = 1;
@@ -441,7 +446,7 @@
       let h = U * 0.014 + U * 0.006 * (1 + Math.sin(t * 2 + i * 0.5));
       h += amp * (0.3 + 0.7 * noise(i, t)) * (1 - 0.6 * f * f) * 0.17 * U;
       h += st.listening * Math.abs(Math.sin(t * 5 + i * 0.45)) * 0.035 * U;
-      h += chewOpen * (1 - 0.7 * f * f) * 0.06 * U;
+      h += chewOpen * (1 - 0.7 * f * f) * 0.06 * U + prim.yawn * (1 - f * f) * 0.3 * U;
       if (prim.swallowT >= 0) h *= 0.5;
       ctx.roundRect(x - bw / 2, cy(f) - h / 2, bw, h, bw / 2);
     }
@@ -592,8 +597,9 @@
     const shk = (now < shakeUntil ? U * 0.025 : 0) + prim.tremble * U * 0.008;
     ctx.translate(CX + rand(-shk, shk), CY + Math.sin(t * 0.9) * U * 0.012 - st.thinking * U * 0.02 + rand(-shk, shk));
     if (fxOn("dance") || fxOn("disco")) {
-      ctx.translate(Math.sin(t * 4.2) * U * 0.06, -Math.abs(Math.sin(t * 8.4)) * U * 0.06);
-      ctx.rotate(Math.sin(t * 4.2) * 0.09);
+      const ph = prim.beat ? Math.PI * ((nowMs() - prim.beat.t0) / (60000 / prim.beat.bpm)) : t * 4.2;   // on the beat when she can hear one
+      ctx.translate(Math.sin(ph) * U * 0.06, -Math.abs(Math.sin(prim.beat ? ph : t * 8.4)) * U * 0.06);
+      ctx.rotate(Math.sin(ph) * 0.09);
     }
     if (fxOn("dizzy")) ctx.rotate(Math.sin(t * 3) * 0.12);
     ctx.rotate(tiltIn.x * 0.05 + Math.sin(t * 0.5) * 0.012 + cur.skew * 0.02);
@@ -615,7 +621,9 @@
       ctx.fillStyle = `hsla(${highlight.hue},100%,70%,${0.65 * a})`;
       ctx.beginPath(); ctx.arc(CX + highlight.x * U, CY + highlight.y * U, U * 0.22, 0, TAU); ctx.fill(); ctx.restore();
     }
-    if (nightDim > 0.01) { ctx.fillStyle = `rgba(0,0,0,${nightDim})`; ctx.fillRect(0, 0, W, H); }
+    idleDimNow += ((idleDim - idleDimNow) * Math.min(1, dt * 1.5));                       // fades in and out gently
+    const dimAll = Math.max(nightDim, idleDimNow);
+    if (dimAll > 0.01) { ctx.fillStyle = `rgba(0,0,0,${dimAll})`; ctx.fillRect(0, 0, W, H); }
     if (flashOn) { ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fillRect(0, 0, W, H); }
     if (fxOn("strobe") && Math.floor(t * 3) % 2) { ctx.fillStyle = col(30, 0.3); ctx.fillRect(0, 0, W, H); }
     touchRipples(dt);
@@ -855,6 +863,7 @@
       highlight = { x: p[0], y: p[1], until: nowMs() + ms, ms, hue };
     },
     setNightDim(v) { nightDim = clamp(v, 0, 0.7); },
+    setIdleDim(v) { idleDim = clamp(v, 0, 0.8); },                  // nobody around: dim the screen (saves battery and the display)
     effect(name, seconds = 6) { fx = { name, until: nowMs() + Math.min(seconds, 60) * 1000 }; lastActivity = nowMs(); },
     flash(on) { flashOn = !!on; },
     effects: ["disco", "rainbow", "dance", "dizzy", "heart_eyes", "shades", "laser_eyes", "glitch_storm", "sparkle", "strobe"],
@@ -894,6 +903,9 @@
       chew(on, rate = 1.6) { prim.chewOn = !!on; prim.chewRate = rate; },
       swallow() { prim.swallowT = 0; },
       tremble(amount = 1, ms = 600) { prim.tremble = amount; prim.trembleUntil = nowMs() + ms; },
+      yawn(seconds = 2.4) { prim.yawnDur = seconds; prim.yawnT = 0; },
+      beat(bpm, t0) { prim.beat = bpm ? { bpm, t0: t0 ?? nowMs() } : null; },
+      level(v) { prim.level = v == null ? null : clamp(v, 0, 1); },
       puff(n = 1) { for (let i = 0; i < n; i++) prim.puffs.push({ life: -i * 0.15, x: rand(-0.1, 0.1), s: rand(0.7, 1.3) }); },
       hold(props, ms) { trans = { until: nowMs() + ms, props }; },
       shakeFace(ms = 300) { shakeUntil = nowMs() + ms; },

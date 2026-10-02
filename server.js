@@ -155,12 +155,13 @@ async function readBody(req, limit = 12 * 1024 * 1024) {
 
 function send(res, status, body, type = "application/json") {
   res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-store" });
-  res.end(type === "application/json" ? JSON.stringify(body) : body);
+  res.end(type === "application/json" && !Buffer.isBuffer(body) ? JSON.stringify(body) : body);   // files are sent as they are
 }
 
 async function timedFetch(url, opts = {}, ms = 60000) {
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), ms);
+  if (opts.signal) { if (opts.signal.aborted) c.abort(); else opts.signal.addEventListener("abort", () => c.abort(), { once: true }); }   // the caller gave up
   try { return await fetch(url, { ...opts, signal: c.signal }); }
   catch (e) { if (/^https:/.test(String(url))) markOffline(); throw e; }   // the internet just failed: don't make her wait on it again
   finally { clearTimeout(t); }
@@ -194,11 +195,11 @@ function startBrain(why) {
   return true;
 }
 // Wait for the offline brain to be ready (it can take a while to load a big model).
-async function waitForBrain(maxMs = 120000) {
+async function waitForBrain(maxMs = 120000, signal) {
   const t0 = Date.now();
   let st = await localState();
   if (st === "down") startBrain("needed now");
-  while (st !== "ok" && Date.now() - t0 < maxMs) {
+  while (st !== "ok" && Date.now() - t0 < maxMs && !signal?.aborted) {
     await new Promise(r => setTimeout(r, 1500)); st = await localState();
     if (st === "down" && Date.now() - t0 > 20000 && Date.now() - brainStartedAt > 20000 && !brainRunning()) break;   // it isn't coming
   }
@@ -330,7 +331,7 @@ function compatMessages(msgs) {
   return out;
 }
 let lastLocalError = "";
-async function localChat(body, stream) {
+async function localChat(body, stream, signal) {
   const nctx = await localCtx();
   const maxTok = Math.min(body.max_tokens || 300, Math.floor(nctx / 3));
   const budget = nctx - maxTok - 64;
@@ -341,9 +342,10 @@ async function localChat(body, stream) {
   ];
   let err = "";
   for (const [i, make] of attempts.entries()) {
+    if (signal?.aborted) return { error: "cancelled" };                  // she moved on (he said something new): stop generating
     let r;
     try {
-      r = await timedFetch(config().localUrl + "/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" },
+      r = await timedFetch(config().localUrl + "/v1/chat/completions", { method: "POST", signal, headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...make(), max_tokens: maxTok, stream, cache_prompt: true }) }, stream ? 300000 : 180000);
     } catch (e) { err = "no answer (" + (e.name === "AbortError" ? "took too long" : e.message) + ")"; log({ kind: "error", where: "local brain", try: i + 1, detail: err }); continue; }
     if (r.ok) { lastLocalError = ""; return { r }; }
@@ -351,7 +353,7 @@ async function localChat(body, stream) {
     try { const j = JSON.parse(t); msg = j.error?.message || (typeof j.error === "string" ? j.error : "") || j.message || t; } catch {}
     err = `${r.status} ${String(msg).replace(/\s+/g, " ").slice(0, 240)}`;
     log({ kind: "error", where: "local brain", try: i + 1, detail: err });
-    if (r.status === 503) await waitForBrain(120000);               // still loading the model: wait, then go again
+    if (r.status === 503) await waitForBrain(120000, signal);       // still loading the model: wait, then go again
   }
   lastLocalError = err;
   return { error: err };
@@ -626,8 +628,9 @@ const server = http.createServer(async (req, res) => {
     // ---- offline brain: local llama-server (Nessari) ----
     if (p === "/api/local" && req.method === "POST") {
       const body = await readBody(req);
-      if (!(await waitForBrain())) return send(res, 503, { error: "The offline brain isn't running and wouldn't start. In Termux run: robot-doctor" });
-      const { r, error } = await localChat(body, false);
+      const gone = new AbortController(); res.on("close", () => { if (!res.writableEnded) gone.abort(); });
+      if (!(await waitForBrain(120000, gone.signal))) return send(res, 503, { error: "The offline brain isn't running and wouldn't start. In Termux run: robot-doctor" });
+      const { r, error } = await localChat(body, false, gone.signal);
       if (error) return send(res, 502, { error: "The offline brain refused: " + error });
       const j = await r.json().catch(() => ({}));
       return send(res, 200, { text: j.choices?.[0]?.message?.content || "" });
@@ -636,8 +639,9 @@ const server = http.createServer(async (req, res) => {
     // ---- offline brain, streamed: words arrive as they're generated so she can start talking sooner ----
     if (p === "/api/local-stream" && req.method === "POST") {
       const body = await readBody(req);
-      if (!(await waitForBrain())) return send(res, 503, { error: "The offline brain isn't running and wouldn't start. In Termux run: robot-doctor" });
-      const { r, error } = await localChat(body, true);
+      const gone = new AbortController(); res.on("close", () => { if (!res.writableEnded) gone.abort(); });
+      if (!(await waitForBrain(120000, gone.signal))) return send(res, 503, { error: "The offline brain isn't running and wouldn't start. In Termux run: robot-doctor" });
+      const { r, error } = await localChat(body, true, gone.signal);
       if (error || !r.body) return send(res, 502, { error: "The offline brain refused: " + (error || "empty answer") });
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
       for await (const chunk of r.body) res.write(chunk);

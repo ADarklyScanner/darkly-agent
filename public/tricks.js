@@ -298,6 +298,7 @@
         const d = e.inputBuffer.getChannelData(0), r = ears.ring;
         for (let i = 0; i < d.length; i++) { r[ears.ringPos] = d[i]; ears.ringPos = (ears.ringPos + 1) % r.length; }
         try { window.Hearing?.onAudio(d, ears.ctx.sampleRate); } catch {}
+        try { window.AudioSmarts?.onAudio(d, ears.ctx.sampleRate); } catch {}
       };
       const mute = ears.ctx.createGain(); mute.gain.value = 0;
       src.connect(tap); tap.connect(mute); mute.connect(ears.ctx.destination);

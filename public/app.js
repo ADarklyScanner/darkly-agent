@@ -911,7 +911,7 @@ async function askClaude(userText) {
       const lm = messages[messages.length - 1];
       lm.content[lm.content.length - 1].cache_control = CACHE;
     }
-    const r = await api("/api/claude", { method: "POST", body: JSON.stringify({ system, tools: CACHED_TOOLS, messages, max_tokens: 700 }) });
+    const r = await api("/api/claude", { method: "POST", signal: askAbort?.signal, body: JSON.stringify({ system, tools: CACHED_TOOLS, messages, max_tokens: 700 }) });
     const u = r.usage || {};
     cacheStats.read += u.cache_read_input_tokens || 0;
     cacheStats.written += u.cache_creation_input_tokens || 0;
@@ -959,7 +959,7 @@ async function askGemini(userText) {
     { role: "user", content: `${userText}\n\n[senses]\n${sensorReport()}\n\n[context]\n${window.Mind?.context() || ""}` }
   ];
   for (let round = 0; round < 6; round++) {
-    const r = await api("/api/gemini", { method: "POST", body: JSON.stringify({ messages, tools: GEMINI_TOOLS, ...(autoTurn ? { temperature: 1.15 } : {}) }) });
+    const r = await api("/api/gemini", { method: "POST", signal: askAbort?.signal, body: JSON.stringify({ messages, tools: GEMINI_TOOLS, ...(autoTurn ? { temperature: 1.15 } : {}) }) });
     const msg = r.choices?.[0]?.message || {};
     const text = (msg.content || "").trim();
     const calls = msg.tool_calls || [];
@@ -1035,7 +1035,7 @@ function cleanLocal(t) {
 
 // Offline brain with streaming: speaks each sentence as soon as it's written.
 async function askLocalStreaming(msgs) {
-  const r = await fetch("/api/local-stream", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: msgs, max_tokens: 220 }) });
+  const r = await fetch("/api/local-stream", { method: "POST", signal: askAbort?.signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: msgs, max_tokens: 220 }) });
   if (!r.ok || !r.body) {                              // the server already retried every way it knows: report its reason
     const j = await r.json().catch(() => ({}));
     throw Object.assign(new Error(j.error || "offline brain didn't answer (" + r.status + ")"), { final: true });
@@ -1069,10 +1069,10 @@ async function askLocal(userText, { lively = false, temperature } = {}) {
   const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + "\n" + quickSenses() + "\n(" + (window.Mind?.context(true) || "") + ")" }];
   let text;
   // her own chatter isn't streamed: it gets checked for repeats before she says it
-  if (lively) ({ text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 120, lively, temperature }) }));
+  if (lively) ({ text } = await api("/api/local", { method: "POST", signal: askAbort?.signal, body: JSON.stringify({ messages: msgs, max_tokens: 120, lively, temperature }) }));
   else {
     try { text = await askLocalStreaming(msgs); localSpoke = true; }
-    catch (e) { if (e.final) throw e; ({ text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) })); }
+    catch (e) { if (e.final || e.name === "AbortError") throw e; ({ text } = await api("/api/local", { method: "POST", signal: askAbort?.signal, body: JSON.stringify({ messages: msgs, max_tokens: 220 }) })); }
   }
   const cmds = [];
   const allowMove = !autoTurn || settings.autoMove;
@@ -1092,14 +1092,34 @@ async function askLocal(userText, { lively = false, temperature } = {}) {
   return said;
 }
 
+// One thing at a time, but nothing he says is ever dropped:
+//  - if she's busy with her OWN chatter, that's cancelled and he goes first;
+//  - if she's busy answering him, his next message waits its turn (and shows in the chat right away);
+//  - if a turn has been stuck for over 2.5 minutes, it's abandoned.
+let askGen = 0, askAbort = null, busySince = 0, busyIsAuto = false, pendingAsk = null;
+function cancelAsk(why) {
+  askGen++; askAbort?.abort(); busy = false; autoTurn = false;
+  speakToken++; try { speechSynthesis.cancel(); } catch {} talking = false; Face.setTalking(false);
+  setFaceState("thinking", false); logEvent("auto", { detail: "dropped what she was doing: " + why });
+}
 async function ask(userText, opts = {}) {
-  if (busy) {                                   // don't silently drop what you said
-    if (!opts.quiet) { $("#heard").textContent = "Hang on, still thinking about the last thing…"; }
-    return;
+  if (busy) {
+    if (opts.auto) return;                                             // her own chatter never interrupts or queues
+    if (busyIsAuto) cancelAsk("he spoke");
+    else if (Date.now() - busySince > 150000) cancelAsk("the last turn got stuck");
+    else {
+      if (opts.quiet) return;
+      if (!opts.shown) { transcriptLine("me", userText); opts = { ...opts, shown: true }; }
+      pendingAsk = { userText, opts };
+      $("#heard").textContent = "One second, finishing my last thought…";
+      return;
+    }
   }
-  busy = true; setFaceState("thinking", true);
+  const gen = ++askGen;
+  busy = true; busySince = Date.now(); busyIsAuto = !!opts.auto; askAbort = new AbortController();
+  setFaceState("thinking", true);
   autoTurn = !!opts.auto;
-  if (!opts.quiet) { transcriptLine("me", userText); logEvent("heard", { text: userText }); lastTalk = Date.now(); window.Mind?.onUserSaid(userText); }
+  if (!opts.quiet) { if (!opts.shown) transcriptLine("me", userText); logEvent("heard", { text: userText }); lastTalk = Date.now(); window.Mind?.onUserSaid(userText); }
   window.Face?.poke();
   let reply = "", brain = "", failed = false;
   localSpoke = false;
@@ -1137,10 +1157,12 @@ async function ask(userText, opts = {}) {
       reply = await askLocal(userText, { lively: !!opts.auto }); brain = "nessari-offline";
     } else setFaceState("offline", false);
   } catch (e) {
+    if (gen !== askGen) return;                                        // this turn was cancelled; a newer one is running
     setMood("confused"); failed = true;
     reply = "My brain just glitched. " + e.message;
     logEvent("error", { where: "ask", detail: e.message });
   }
+  if (gen !== askGen) return;
   // Her own chatter: never repeat herself. Too close to something she already said → one more try, then silence.
   const quietReply = r => !r || /\[quiet\]/i.test(r) || r.replace(/[^a-z]/gi, "").length < 2;
   if (opts.auto && !failed && window.Variety) {
@@ -1150,6 +1172,7 @@ async function ask(userText, opts = {}) {
       const again = userText + `\n(You were about to say "${reply}", but that's basically what you already said ${same.text ? `("${same.text}")` : ""}. Say something completely different in idea and wording, or reply [quiet].)`;
       try { reply = brain === "gemini" ? await askGemini(again) : brain === "claude" ? await askClaude(again) : await askLocal(again, { lively: true, temperature: 1.2 }); }
       catch { reply = ""; }
+      if (gen !== askGen) return;
       same = quietReply(reply) ? null : Variety.mostSimilar(reply);
       if (same && same.sim > 0.55) { logEvent("auto", { detail: "still a repeat, staying quiet: " + reply }); reply = ""; }
     }
@@ -1172,6 +1195,7 @@ async function ask(userText, opts = {}) {
   history = history.slice(-60);
   saveConversation();
   busy = false;
+  if (pendingAsk) { const p = pendingAsk; pendingAsk = null; setTimeout(() => ask(p.userText, p.opts), 50); }   // what he said while she was busy
   if (localSpoke && !failed) { await endAppend(); $("#said").textContent = reply; }      // already said it while streaming
   else if (reply) await speak(reply);
 }
@@ -1588,6 +1612,7 @@ function trackTick() {
       stillSince = Date.now();
     }
   }
+  try { window.Flow?.feed(prevFrame, gray, settings.facing === "user"); } catch {}      // which way things are moving (flow.js)
   prevFrame = gray;
 }
 setTimeout(startTracking, 2500);
@@ -1635,6 +1660,13 @@ function transcriptLine(who, text) {
   if (nearBottom || who === "me" || t.offsetParent === null) t.scrollTop = t.scrollHeight;
 }
 $("#typeForm").onsubmit = e => { e.preventDefault(); const v = $("#typeBox").value.trim(); if (v) { $("#typeBox").value = ""; ask(v); } };
+// what she's doing right now, shown in the Talk tab so a typed message never seems to vanish
+setInterval(() => {
+  const el = $("#talkStatus"); if (!el || $("#tab-talk").hidden) return;
+  const t = busy ? ($("#heard").textContent || "thinking…") + (pendingAsk ? "  (your next message is waiting)" : "") + (Date.now() - busySince > 15000 ? `  ${Math.round((Date.now() - busySince) / 1000)}s` : "")
+    : talking ? "talking…" : "";
+  if (el.textContent !== t) el.textContent = t;
+}, 400);
 
 function refreshChips() {
   const on = status.online, g = on && status.geminiKeyCount > 0, c = on && status.hasKey;

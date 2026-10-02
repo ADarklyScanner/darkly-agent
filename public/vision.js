@@ -102,7 +102,7 @@ async function loop() {
     if (res.pose) onPose(res.pose);
     if (res.obj) onObjects(res.obj);
     if (res.embed) onScene(res.embed);
-  } catch (e) { /* a dropped frame is fine */ }
+  } catch (e) { if ((V.frameErrors = (V.frameErrors || 0) + 1) <= 3) console.warn("vision frame:", e.message); V.lastFrameError = e.message; }   // a dropped frame is fine
   finally { inFlight = false; }
 }
 
@@ -177,11 +177,101 @@ function onFaces(r) {
   if (!closed && blinkL < 0.35 && blinkR < 0.35) blinkArmed = true;
   if (closed) { if (!eyesClosedSince) eyesClosedSince = now(); else if (now() - eyesClosedSince > 2500) { eyesClosedSince = now() + 600000; V.emit("eyes_closed"); } }
   else eyesClosedSince = 0;
+  faceExtras(cats, { blinkL, blinkR, jaw, smile });
+}
+
+// Smaller things a face does: winks, blown kisses, raised eyebrows, yawns, puffed cheeks.
+// Each must be held for a moment (so a passing twitch doesn't count) and then has a cooldown.
+const held = {}, firedAt = {};
+function holdFor(key, on, ms, cooldown, fire) {
+  if (!on) { held[key] = 0; return; }
+  if (!held[key]) held[key] = now();
+  else if (now() - held[key] > ms && now() - (firedAt[key] || 0) > cooldown) { firedAt[key] = now(); held[key] = now() + 1e9; fire(); }
+}
+function faceExtras(cats, { blinkL, blinkR, jaw, smile }) {
+  const pucker = score(cats, "mouthPucker"), funnel = score(cats, "mouthFunnel");
+  const browsUp = (score(cats, "browOuterUpLeft") + score(cats, "browOuterUpRight")) / 2;
+  const puff = score(cats, "cheekPuff");
+  const squint = (score(cats, "eyeSquintLeft") + score(cats, "eyeSquintRight")) / 2;
+  // which eye is "left" in the model is the person's own left; a wink is one eye shut while the other stays open
+  holdFor("winkL", blinkL > 0.6 && blinkR < 0.3, 180, 3000, () => V.emit("wink", { side: "left" }));
+  holdFor("winkR", blinkR > 0.6 && blinkL < 0.3, 180, 3000, () => V.emit("wink", { side: "right" }));
+  holdFor("kiss", pucker > 0.6 && jaw < 0.25 && smile < 0.3, 450, 6000, () => V.emit("kiss"));
+  holdFor("brows", browsUp > 0.6 && jaw < 0.3, 500, 6000, () => V.emit("brows_up"));
+  holdFor("yawn", jaw > 0.6 && (blinkL + blinkR > 0.6 || squint > 0.3 || funnel > 0.2), 1300, 20000, () => V.emit("yawn"));
+  holdFor("puff", puff > 0.5, 500, 8000, () => V.emit("cheek_puff"));
+  V.faceDetail = { winking: blinkL > 0.6 !== blinkR > 0.6, pucker: pucker > 0.6, browsUp: browsUp > 0.6, jawOpen: jaw > 0.6 };
 }
 
 // ---------------- hands ----------------
 let gestCandidate = null, gestSince = 0, gestFiredAt = {}, wristHistory = [], waveAt = 0;
+// ---- reading the 21 points of each hand ourselves: finger counts, pointing, and signs the stock recognizer doesn't know ----
+const d2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+function fingersUp(lm) {                                  // [thumb, index, middle, ring, pinky]
+  const w = lm[0], size = d2(w, lm[9]) || 0.1;
+  const up = (tip, pip) => d2(lm[tip], w) > d2(lm[pip], w) * 1.12;
+  const thumb = d2(lm[4], lm[17]) > d2(lm[3], lm[17]) * 1.06 && d2(lm[4], lm[5]) > size * 0.55;
+  return [thumb, up(8, 6), up(12, 10), up(16, 14), up(20, 18)];
+}
+function signOf(lm, up) {
+  const size = d2(lm[0], lm[9]) || 0.1, pinch = d2(lm[4], lm[8]) < size * 0.3;
+  const [t, i, m, r, p] = up, n = up.filter(Boolean).length;
+  if (pinch && m && r && p) return "ok";
+  if (pinch && !m && !r && !p) return "pinch";
+  if (i && p && !m && !r) return "rock_on";
+  if (t && p && !i && !m && !r) return "call_me";
+  if (m && !i && !r && !p) return "middle_finger";
+  if (t && i && !m && !r && !p) return "finger_gun";
+  if (i && !m && !r && !p && !t) return "one_finger";
+  if (i && m && r && !p && !t) return "three";
+  if (i && m && r && p && !t) return "four";
+  return n === 0 ? "fist" : n === 5 ? "open" : null;
+}
+// a hand shape as numbers that don't change with where the hand is or how big it looks
+function shapeOf(lm) {
+  const w = lm[0], size = d2(w, lm[9]) || 0.1, out = [];
+  for (const p of lm) out.push((p.x - w.x) / size, (p.y - w.y) / size);
+  return out;
+}
+let customGestures = null;                                 // [{ name, shape, trick }], kept in data/gestures.json
+async function loadGestures() { if (customGestures) return customGestures; try { customGestures = JSON.parse(await readFile("gestures.json")); } catch { customGestures = []; } return customGestures; }
+function matchCustom(lm) {
+  if (!customGestures?.length) return null;
+  const s = shapeOf(lm), up = fingersUp(lm).map(Number).join(""); let best = null, bd = 1e9;
+  for (const g of customGestures) {
+    if (g.up && g.up !== up) continue;                       // different fingers out: not this gesture
+    let d = 0; for (let k = 0; k < s.length; k++) d += Math.abs(s[k] - g.shape[k]); d /= s.length; if (d < bd) { bd = d; best = g; }
+  }
+  return bd < 0.11 ? best : null;
+}
+let fingerCandidate = -1, fingerSince = 0, pointCandidate = null, pointSince = 0;
+function handExtras(r) {
+  const hands = r.landmarks || [];
+  if (!hands.length) { V.fingers = null; V.sign = null; V.pointing = null; V.hand = null; fingerCandidate = -1; holdFor("sign", false); return; }
+  let total = 0; const ups = hands.map(fingersUp); for (const u of ups) total += u.filter(Boolean).length;
+  if (total !== fingerCandidate) { fingerCandidate = total; fingerSince = now(); }
+  else if (now() - fingerSince > 350 && V.fingers !== total) { V.fingers = total; V.emit("fingers", total); }
+  const lm = hands[0], up = ups[0];
+  V.hand = { x: mirrorX(lm[9].x), y: lm[9].y * 2 - 1, shape: shapeOf(lm), up: up.map(Number).join("") };
+  const custom = matchCustom(lm);
+  const sign = custom ? "custom:" + custom.name : signOf(lm, up);
+  V.sign = sign;
+  if (sign && sign !== "fist" && sign !== "open" && sign !== "one_finger") holdFor("sign:" + sign, true, 450, 5000, () => V.emit("sign", { sign, custom }));
+  for (const k of Object.keys(held)) if (k.startsWith("sign:") && k !== "sign:" + sign) held[k] = 0;
+  // pointing: only the index finger out. Her eyes follow the fingertip, and she notices which way it points.
+  if (sign === "one_finger") {
+    const tip = lm[8], base = lm[5], dx = tip.x - base.x, dy = tip.y - base.y, dz = (tip.z || 0) - (base.z || 0);   // picture space = her own left/right
+    const len = Math.hypot(dx, dy) || 1e-6, size = d2(lm[0], lm[9]) || 0.1;
+    const dir = len < size * 0.45 && dz < -0.02 ? "at you" : Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "to your right" : "to your left") : (dy < 0 ? "up" : "down");
+    V.pointing = { dir, x: mirrorX(tip.x), y: tip.y * 2 - 1, vx: dx / len, vy: dy / len };
+    window.visionLookUntil = now() + 500;
+    if (!window.Mind?.distracted()) Face.lookAt(V.pointing.x * 1.15, V.pointing.y * 0.95, 400);          // follow the fingertip
+    if (dir !== pointCandidate) { pointCandidate = dir; pointSince = now(); }
+    else holdFor("point:" + dir, true, 700, 6000, () => V.emit("point", V.pointing));
+  } else { V.pointing = null; pointCandidate = null; for (const k of Object.keys(held)) if (k.startsWith("point:")) held[k] = 0; }
+}
 function onHands(r) {
+  try { handExtras(r); } catch (e) { console.error(e); }
   const g = r.gestures?.[0]?.[0];
   const name = g && g.score > 0.6 && g.categoryName !== "None" ? g.categoryName : null;
   V.gesture = name;
@@ -235,6 +325,46 @@ V.on("gesture", g => {
   quick[g]?.();
 });
 
+// faces doing small things
+V.on("wink", ({ side }) => { Face.gesture(side === "left" ? "wink_right" : "wink_left");      // mirror image: wink back with the eye facing his
+  react("wink", "he winked at you", 4); });
+V.on("kiss", () => { Face.effect("heart_eyes", 2.5); Face.prim?.hold({ blush: 1, mouth: 0.6 }, 2500); react("kiss", "he blew you a kiss (or made a kissy face at you)", 4); });
+V.on("brows_up", () => { Face.prim?.hold({ browAsym: 0.8, browY: -0.4 }, 1400); window.Mind?.event("face", "he raised his eyebrows at you", { source: "SAW", salience: 0.25 }); });
+V.on("yawn", () => {                                       // yawns are contagious
+  window.Mind?.event("face", "he yawned", { source: "SAW", salience: 0.3 });
+  setTimeout(() => { if (!talking) { Face.prim?.yawn(2.6); window.Behaviors?.log.push({ t: Date.now(), name: "caught-a-yawn", detail: "" }); } }, 900 + Math.random() * 1200);
+  if (window.Mind) Mind.S.arousal = Math.max(0, Mind.S.arousal - 0.1);
+  if (Math.random() < 0.3) react("yawn", "he yawned (you caught it and yawned too)", 20);
+});
+V.on("cheek_puff", () => { Face.prim?.puff(2); Face.prim?.hold({ mouthW: 0.5, open: 0.95 }, 1200); });
+// hands doing things the stock recognizer doesn't know
+V.on("point", p => {
+  window.Mind?.event("pointed", `he pointed ${p.dir}`, { source: "SAW", salience: 0.4 });
+  if (p.dir === "at you") { Face.gesture("wide"); react("point-me", "he's pointing right at you", 3); return; }
+  // look where he's pointing, not at the finger: eyes lead off in that direction
+  const eye = settings.facing === "user" ? -1 : 1;           // her eyes are on a screen facing him: mirrored
+  const gx = (p.dir === "to your right" ? 1 : p.dir === "to your left" ? -1 : 0) * eye, gy = p.dir === "up" ? -1 : p.dir === "down" ? 1 : 0;
+  if (window.Mind?.glance) Mind.glance(gx, gy, 1600); else Face.lookAt(gx, gy, 1600);
+});
+V.on("sign", ({ sign, custom }) => {
+  if (rpsWaiting || V.gameBusy) return;
+  if (custom) {
+    window.Mind?.event("gesture", `he made the "${custom.name}" gesture he taught you`, { source: "SAW", salience: 0.5 });
+    if (custom.trick && window.Tricks?.runTrick) { Abilities.sfx("coin"); Tricks.runTrick(custom.trick); }
+    else react("gesture-" + custom.name, `he made the "${custom.name}" gesture he taught you`, 1);
+    return;
+  }
+  const what = {
+    ok: () => { Face.gesture("nod"); if (askedRecently()) answer("(he makes an OK sign: yes, fine)"); },
+    rock_on: () => { Face.effect("disco", 3); Abilities.sfx("powerup"); react("rock-on", "he threw up the rock-on horns at you", 4); },
+    call_me: () => react("call-me", "he made the 'call me' hand sign at you", 4),
+    middle_finger: () => { Face.gesture("startle"); setTimeout(() => setMood("annoyed"), 500); if (window.Mind) Mind.S.irritation = Math.min(1, Mind.S.irritation + 0.25); react("flipped-off", "he just flipped you off (middle finger)", 2); },
+    finger_gun: () => { window.Behaviors?.playDead?.(); react("finger-gun", "he shot you with a finger gun (you played dead for a second)", 3); },
+    pinch: () => window.Mind?.event("gesture", "he pinched his fingers together (tiny? a little bit?)", { source: "SAW", salience: 0.2 })
+  }[sign];
+  what?.();
+});
+
 // ---------------- games and tools that need real eyes ----------------
 let rpsWaiting = false;
 async function rockPaperScissors() {
@@ -256,7 +386,10 @@ async function rockPaperScissors() {
 // ---------------- objects: what's around, where, and for how long ----------------
 // Feeds her world model: things she SAW, where in her view, familiarity, and "last seen" when they vanish.
 const objSeen = {};                                     // label → { firstAt, lastAt, hits, where, announced }
-const sideOf = x => x < -0.33 ? "on your left" : x > 0.33 ? "on your right" : "in front of you";
+// Left and right are HERS: the left side of the camera picture is her left, whichever camera is in use.
+// (Her eyes are drawn on a screen facing the other way, which is why eye directions are mirrored separately.)
+const rawX = x => (settings.facing === "user" ? -1 : 1) * x;        // undo the mirroring used for her eyes
+const sideOf = x => rawX(x) < -0.33 ? "on your left" : rawX(x) > 0.33 ? "on your right" : "in front of you";
 function onObjects(r) {
   const here = new Set();
   for (const d of r.detections || []) {
@@ -342,7 +475,7 @@ const SOUND_EVENTS = [
   [/telephone|ringtone/i, "a phone is ringing", 0.6], [/glass|shatter|breaking/i, "something like glass breaking", 0.9],
   [/baby cry|crying|sobbing/i, "someone is crying", 0.8], [/laughter|giggle|chuckle/i, "someone laughed", 0.5], [/sneeze/i, "someone sneezed", 0.8],
   [/cough/i, "someone coughed", 0.35], [/snoring/i, "someone is snoring", 0.5], [/applause|clapping/i, "applause", 0.5],
-  [/whistling/i, "someone is whistling", 0.4], [/singing|choir/i, "someone is singing", 0.55], [/^music$|musical instrument|guitar|piano|drum/i, "music is playing", 0.35],
+  [/whistling/i, "someone is whistling", 0.4], [/finger snapping/i, "someone snapped their fingers", 0.45], [/singing|choir/i, "someone is singing", 0.55], [/^music$|musical instrument|guitar|piano|drum/i, "music is playing", 0.35],
   [/microwave|blender|vacuum|hair dryer/i, "an appliance is running", 0.25], [/thunder/i, "thunder", 0.6], [/explosion|gunshot|bang/i, "a very loud bang", 0.9]
 ];
 async function initAudio() {
@@ -381,9 +514,9 @@ function describe() {
   if (!V.available) return `Vision isn't running: ${V.error || "starting up"}.`;
   if (!settings.track) return "Your camera eyes are off (Settings > Eyes follow movement).";
   if (!V.faces) return `You see no faces right now.${V.gesture ? " A hand is showing: " + V.gesture : ""}`;
-  return `You see ${V.faces} face${V.faces > 1 ? "s" : ""}. The closest is ${V.main.distance}, ${V.main.x < -0.3 ? "to your left" : V.main.x > 0.3 ? "to your right" : "in front of you"}, `
+  return `You see ${V.faces} face${V.faces > 1 ? "s" : ""}. The closest is ${V.main.distance}, ${rawX(V.main.x) < -0.3 ? "to your left" : rawX(V.main.x) > 0.3 ? "to your right" : "in front of you"}, `
     + `${V.expression}, ${V.lookingAtMe ? "looking right at you" : "looking away"}. `
-    + `${V.gesture ? "Hand sign: " + V.gesture + ". " : ""}${V.posture ? "Body: " + V.posture + ". " : ""}Blinks counted so far: ${V.blinks}.`;
+    + `${V.gesture ? "Hand sign: " + V.gesture + ". " : ""}${V.fingers != null ? V.handsNow() + " " : ""}${V.posture ? "Body: " + V.posture + ". " : ""}Blinks counted so far: ${V.blinks}.`;
 }
 
 V.run = async (name, input) => {
@@ -391,8 +524,30 @@ V.run = async (name, input) => {
   if (name === "see_objects") return hasTask("obj") ? objectsNow() : "FAILED: object recognition isn't downloaded (robot-vision-download).";
   if (name === "mirror_mode") { V.mirror = !!input.on; if (!V.mirror) setMood("calm"); return V.mirror ? "Mirroring his expressions." : "Stopped mirroring."; }
   if (name === "rock_paper_scissors") return await rockPaperScissors();
+  if (name === "count_fingers") return V.handsNow();
+  if (name === "learn_gesture") return await V.learnGesture(input.name, input.trick);
+  if (name === "forget_gesture") return await V.forgetGesture(input.name);
 };
 V.rockPaperScissors = rockPaperScissors;
+V.learnGesture = async (name, trick) => {
+  if (!V.hand) return "FAILED: you don't see a hand right now. He needs to hold the gesture up in front of your camera.";
+  await loadGestures();
+  // average the shape over a second so one shaky frame doesn't become the gesture
+  const shapes = [], ups = {}; const t0 = now();
+  while (now() - t0 < 1200) { if (V.hand) { shapes.push(V.hand.shape); ups[V.hand.up] = (ups[V.hand.up] || 0) + 1; } await new Promise(r => setTimeout(r, 120)); }
+  if (shapes.length < 4) return "FAILED: the hand moved out of view. Ask him to hold it still for a second.";
+  const shape = shapes[0].map((_, k) => shapes.reduce((a, s) => a + s[k], 0) / shapes.length);
+  name = String(name || "").toLowerCase().trim().slice(0, 30); if (!name) return "FAILED: give the gesture a name.";
+  customGestures = customGestures.filter(g => g.name !== name); customGestures.push({ name, shape, up: Object.entries(ups).sort((a, b) => b[1] - a[1])[0][0], trick: trick || null });
+  customGestures = customGestures.slice(-20);
+  await writeFile("gestures.json", JSON.stringify(customGestures));
+  return `Learned the "${name}" gesture${trick ? `; it now starts the trick "${trick}"` : ""}. You know ${customGestures.length} of his gestures.`;
+};
+V.forgetGesture = async name => { await loadGestures(); const n = customGestures.length; customGestures = customGestures.filter(g => g.name !== String(name).toLowerCase().trim());
+  await writeFile("gestures.json", JSON.stringify(customGestures)); return n !== customGestures.length ? "Forgotten." : "You don't know a gesture by that name."; };
+V.handsNow = () => !V.available ? "Vision isn't running." : V.fingers == null ? "You don't see a hand right now."
+  : `He's holding up ${V.fingers} finger${V.fingers === 1 ? "" : "s"}${V.sign ? ` (sign: ${V.sign.replace(/_/g, " ")})` : ""}${V.pointing ? `, pointing ${V.pointing.dir}` : ""}.`;
+setTimeout(() => loadGestures().catch(() => {}), 2500);
 V.describe = describe;
 
 init();
