@@ -771,8 +771,8 @@
   function frame(now) {
     if (paused) { last = now; setTimeout(() => requestAnimationFrame(frame), 500); return; }
     // Phones refresh the screen up to 120 times a second; her face doesn't need that, and every frame she draws
-    // is processor time her brain doesn't get. 30 a second normally, 20 while her brain is working.
-    if (now - last < 1000 / (lowPower ? Math.min(20, fpsCap) : fpsCap) - 4) { requestAnimationFrame(frame); return; }
+    // is processor time her brain doesn't get. 30 a second normally, 15 while her brain is working.
+    if (now - last < 1000 / (lowPower ? Math.min(15, fpsCap) : fpsCap) - 4) { requestAnimationFrame(frame); return; }
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
     const t = now / 1000;
     if (canvas.clientWidth !== Math.round(W) || canvas.clientHeight !== Math.round(H)) resize();
@@ -1057,7 +1057,7 @@
     // Her brain is working (offline): draw fewer frames and skip the small glows, so the brain gets the processor.
     lowPower(on) { lowPower = !!on; },
     fps(n) { if (n) fpsCap = clamp(+n || 30, 10, 120); return fpsCap; },
-    get drawing() { return { fps: lowPower ? Math.min(20, fpsCap) : fpsCap, lowPower, paused }; },
+    get drawing() { return { fps: lowPower ? Math.min(15, fpsCap) : fpsCap, lowPower, paused }; },
     // A picture of her face exactly as it's drawn right now (JPEG, base64), for her own brain to look at.
     picture(max = 900) {
       const k = Math.min(1, max / Math.max(canvas.width, canvas.height));

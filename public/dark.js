@@ -19,30 +19,48 @@
   const herName = () => (typeof personality !== "undefined" && personality?.name) || "Nessari";
 
   // =============================== 1. go dark ===============================
-  let veil = null;
+  let veil = null, wokeAt = 0;
   D.go = (why = "asked") => {
     if (D.on) return "Your screen is already dark.";
+    if (Date.now() - wokeAt < 1500) return "Your face just came back; not going dark again right away.";
     if (!veil) {
       veil = document.createElement("div");
       veil.id = "veil";
-      veil.style.cssText = "position:fixed;inset:0;background:#000;z-index:2147483000;touch-action:none;display:none";
-      veil.addEventListener("pointerdown", e => { e.preventDefault(); e.stopPropagation(); D.wake("touched"); });
+      veil.style.cssText = "position:fixed;inset:0;background:#000;z-index:2147483000;touch-action:none;display:none;align-items:flex-end;justify-content:center";
+      // a tiny breathing dot and a hint, so "she's dark" can be told from "the phone is off"
+      veil.innerHTML = '<div id="veilHint" style="position:absolute;bottom:14%;left:0;right:0;text-align:center;color:#8a6aa8;font:15px system-ui;transition:opacity 1.5s">touch anywhere to bring her face back</div>'
+        + '<div style="position:absolute;bottom:6%;left:50%;width:7px;height:7px;margin-left:-3px;border-radius:50%;background:#7a3fb0;animation:veilDot 4s ease-in-out infinite"></div>'
+        + '<style>@keyframes veilDot{0%,100%{opacity:.12}50%{opacity:.45}}</style>';
+      // any kind of touch brings her back; whichever of these the phone delivers first
+      for (const ev of ["pointerdown", "touchstart", "mousedown", "click"]) veil.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); D.wake("touched"); }, { passive: false });
       document.body.appendChild(veil);
     }
-    veil.style.display = "block";
+    veil.style.display = "flex"; veil.style.opacity = "1"; veil.style.pointerEvents = "auto";
+    const hint = veil.querySelector("#veilHint"); hint.style.opacity = "1"; setTimeout(() => { hint.style.opacity = "0"; }, 5000);
     D.on = true; D.since = Date.now();
     window.Face?.pause?.(true);                               // no point drawing a face nobody can see
     try { logEvent("auto", { detail: "went dark (" + why + "); still seeing, hearing and talking" }); } catch {}
-    return "Your screen is dark now (pure black). You can still see, hear and talk. A touch or \"screen on\" brings your face back.";
+    return "Your screen is dark now (pure black). You can still see, hear and talk. A touch, picking you up, or \"screen on\" brings your face back.";
   };
   D.wake = (why = "asked") => {
     if (!D.on) return "Your face is already showing.";
-    veil.style.display = "none";
-    D.on = false;
+    D.on = false; wokeAt = Date.now();
+    // stay in the way (invisible) for a moment, so the touch that woke her doesn't also press whatever is underneath
+    veil.style.opacity = "0";
+    setTimeout(() => { if (!D.on) veil.style.display = "none"; }, 450);
     window.Face?.pause?.(false); window.Face?.poke?.();
+    if (window.brightnessSet) { window.brightnessSet = false; fetch("/api/hw/extra?what=brightness&value=auto").catch(() => {}); }   // if her brain also turned the backlight down, put it back
     try { logEvent("auto", { detail: "face back on (" + why + ")" }); } catch {}
     return "Your face is showing again.";
   };
+  // picking the phone up or giving it a shake wakes her too
+  let lastG = null;
+  window.addEventListener("devicemotion", e => {
+    if (!D.on) { lastG = null; return; }
+    const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
+    if (lastG && Date.now() - D.since > 1500 && Math.hypot(a.x - lastG.x, a.y - lastG.y, a.z - lastG.z) > 6) D.wake("picked up");
+    lastG = { x: a.x, y: a.y, z: a.z };
+  });
   D.set = state => /dark|off|black|hide/i.test(String(state)) ? D.go() : D.wake();
 
   // =============================== 2. the screen is really off ===============================
@@ -78,6 +96,7 @@
   let offHearing = false;                                     // offline hearing was switched on by the screen going off
   function onHidden() {
     D.hiddenSince = Date.now();
+    startCard();                                               // the lock screen card (and its silent sound) only exist while she's in the background
     if (S().offListen === false || !window.Hearing?.available?.()) return;
     try { if (typeof rec !== "undefined" && rec && typeof listening !== "undefined" && listening) rec.abort(); } catch {}   // Google's recognizer stops with the screen anyway
     if (!Hearing.active) { offHearing = true; Hearing.start({ oneShot: false }); }
@@ -92,7 +111,9 @@
       else if (!Hearing.useOffline()) { Hearing.stop(); try { startListening(); } catch {} }
     }
     if (away > 5) try { logEvent("auto", { detail: `screen back on after ${away}s` }); } catch {}
-    startCard(); snapSoon(400);
+    try { audio?.pause(); } catch {} D.card = false;            // give the audio focus back before anything listens
+    if (D.on) D.wake("the screen came back on");               // he just turned the screen on: show him her face
+    snapSoon(400);
   }
   document.addEventListener("visibilitychange", () => (document.hidden ? onHidden() : onVisible()));
 
@@ -108,21 +129,32 @@
     new Uint8Array(buf, 44).fill(128);                         // 8-bit silence
     return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
   }
-  let audio = null;
+  // IMPORTANT: the silent sound only plays while her page is in the BACKGROUND. On Android, anything that plays
+  // sound holds the "audio focus", and Google's speech recognizer needs that focus to listen: with the sound
+  // looping in the foreground the two kept taking it from each other, and she stopped hearing (v0.19 to v0.21).
+  let audio = null, unlocked = false;
+  function ensureAudio() { if (!audio) { audio = new Audio(silentWav()); audio.loop = true; } return audio; }
+  // The first touch lets the page play sound later by itself. Done muted, so it takes nothing from the recognizer.
+  function unlockAudio() {
+    if (unlocked || S().lockCard === false) return;
+    const a = ensureAudio(); a.muted = true;
+    a.play().then(() => { a.pause(); a.muted = false; unlocked = true; }).catch(() => { a.muted = false; });
+  }
   async function startCard() {
     if (S().lockCard === false) return stopCard();
     if (!("mediaSession" in navigator)) { D.cardError = "this browser has no lock screen cards"; return; }
-    if (!audio) { audio = new Audio(silentWav()); audio.loop = true; audio.addEventListener("pause", () => { if (!document.hidden && S().lockCard !== false) setTimeout(() => audio?.play().catch(() => {}), 1500); }); }
-    try { await audio.play(); D.card = true; D.cardError = ""; setActions(); updateCard(true); }
-    catch (e) { D.card = false; D.cardError = e.name === "NotAllowedError" ? "waiting for a first touch" : e.message; }
+    setActions(); D.cardReady = true;
+    if (!document.hidden) { try { audio?.pause(); } catch {} D.card = false; return; }     // on screen: no sound, no card needed
+    try { const a = ensureAudio(); a.muted = false; await a.play(); D.card = true; D.cardError = ""; updateCard(true); }
+    catch (e) { D.card = false; D.cardError = e.name === "NotAllowedError" ? "Chrome wouldn't start it in the background" : e.message; }
   }
   function stopCard() {
-    if (audio) { try { audio.pause(); } catch {} audio = null; }
+    if (audio) { try { audio.pause(); } catch {} }
     D.card = false;
     try { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = "none"; } catch {}
   }
   D.startCard = startCard; D.stopCard = stopCard;
-  window.addEventListener("pointerdown", () => { if (!D.card) startCard(); }, { capture: true });   // sound may only start after a touch
+  window.addEventListener("pointerdown", unlockAudio, { capture: true });
 
   // The buttons on the card.
   function setActions() {

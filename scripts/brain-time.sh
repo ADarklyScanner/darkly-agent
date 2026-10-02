@@ -28,6 +28,14 @@ time_brain() {
   kill "$TIME_CHILD" 2>/dev/null; wait "$TIME_CHILD" 2>/dev/null; TIME_CHILD=""
   echo "$rw"
 }
+# Which processor cores Android is letting Termux (and so the brain) use right now, and which of the phone's cores are the fast ones.
+cores_now() {
+  local allowed fast="" i f slow=999999999
+  allowed="$(awk '/Cpus_allowed_list/ {print $2}' /proc/self/status 2>/dev/null)"
+  for i in /sys/devices/system/cpu/cpu[0-9]*; do f="$(cat "$i/cpufreq/cpuinfo_max_freq" 2>/dev/null)"; [ -n "$f" ] && [ "$f" -lt "$slow" ] && slow=$f; done
+  for i in /sys/devices/system/cpu/cpu[0-9]*; do f="$(cat "$i/cpufreq/cpuinfo_max_freq" 2>/dev/null)"; [ -n "$f" ] && [ "$f" -gt $(( slow * 12 / 10 )) ] && fast="$fast${fast:+,}${i##*cpu}"; done
+  echo "${allowed:-?} (fast cores on this phone: ${fast:-?})"
+}
 # faster A B: is number A more than 5% bigger than B?
 faster() { node -e "process.exit(+process.argv[1] > +process.argv[2] * 1.05 ? 0 : 1)" "$1" "$2"; }
 # Seconds for a typical turn (read 100 tokens, write 40) at "READ WRITE" speeds; 99999 if the run failed.

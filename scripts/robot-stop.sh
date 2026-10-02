@@ -8,7 +8,7 @@ pkill -f "robot/brain-loop.sh"
 B=0
 for f in "$D/.brain-loop-pid" "$D/.brain-pid"; do
   P="$(cat "$f" 2>/dev/null)"
-  [ -n "$P" ] && tr '\0' ' ' < "/proc/$P/cmdline" 2>/dev/null | grep -q "brain-loop\|llama" && kill "$P" 2>/dev/null && B=1
+  [ -n "$P" ] && [ -r "/proc/$P/cmdline" ] && tr '\0' ' ' < "/proc/$P/cmdline" 2>/dev/null | grep -q "brain-loop\|llama" && kill "$P" 2>/dev/null && B=1
   rm -f "$f"
 done
 pkill -f "llama-server .*--port 8080" && B=1

@@ -2,6 +2,15 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.21.1 · She listens again, and waking from dark
+Three things you reported, and I believe two of them were one bug of mine.
+- Always-listening had stopped working and the mic button did nothing. The lock screen card I added in v0.19 keeps a silent sound looping, and on Android whatever plays sound holds the "audio focus" that Google's speech recognizer needs. The two kept taking it from each other. The silent sound now only plays while her page is in the background (which is the only time the lock screen card matters) and stops the moment her page is back in front. I could reproduce the hand-over in a test browser but not Android's audio focus itself, so tell me if she hears you again.
+- A watchdog: if she's set to always listen and has stopped for more than a few seconds for any reason, she starts again by herself.
+- Dark mode you couldn't get out of. Touch should have worked and I couldn't make it fail here, so I've made waking much harder to miss: any kind of touch, picking the phone up or shaking it, saying "screen on", or turning the phone's screen off and on all bring her face back. Dark mode now shows a faint breathing dot and, for the first few seconds, "touch anywhere to bring her face back", so you can tell "she's dark" from "the phone is off". Her brain is also no longer allowed to turn the backlight below a visible level, in case that's what happened.
+- robot-tune prints which processor cores Android let the brain use during the test. Your last run was better (reads 22 instead of 16, writes 5.8 instead of 3.1) but still half of what the brain does when Termux is in front, and that line will say whether Android is keeping it off the fast cores.
+- While the brain works, the face now draws 15 frames a second and her senses check a quarter as often.
+- robot-stop no longer prints a "No such file" line.
+
 ## 2026-10-02 · v0.21 · Her face stops stealing from her brain
 Your tuning run with her page on the screen showed the brain at a third of its speed (reads 16 instead of 46 tokens a second, writes 3 instead of 10), and slower still with more threads. Her face and her brain share one processor, and the face was taking most of it. Measured here in a test browser; the phone's graphics chip behaves differently, so run robot-tune again to see the real effect.
 - The face was being redrawn as often as the screen refreshes, which on your phone is up to 120 times a second. It's now 30, and 20 while her brain is working.

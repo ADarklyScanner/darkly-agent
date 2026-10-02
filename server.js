@@ -191,6 +191,28 @@ async function checkLocal() { return (await localState()) === "ok"; }
 // The whole point is that she works with no internet, so the offline brain is looked after:
 // if it isn't running, start it (brain.sh picks a model that fits), at most once every 2 minutes.
 const BRAIN_SH = path.join(ROOT, "brain.sh");
+// Which processor cores Android lets her brain use right now. Android gives the app on the screen (her face, in
+// Chrome) every core and may keep background apps (Termux, where the brain runs) off the fast ones.
+function brainCores() {
+  let allowed = "";
+  try { allowed = (fs.readFileSync("/proc/self/status", "utf8").match(/Cpus_allowed_list:\s*(\S+)/) || [])[1] || ""; } catch {}
+  const freq = [];
+  for (let i = 0; i < 32; i++) { try { freq.push(parseInt(fs.readFileSync(`/sys/devices/system/cpu/cpu${i}/cpufreq/cpuinfo_max_freq`, "utf8")) || 0); } catch { break; } }
+  const slowest = Math.min(...freq.filter(Boolean), Infinity);
+  const fast = freq.map((f, i) => (f > slowest * 1.2 ? i : -1)).filter(i => i >= 0);
+  const set = new Set();
+  for (const part of allowed.split(",")) { const [a, b] = part.split("-").map(Number); if (Number.isFinite(a)) for (let i = a; i <= (Number.isFinite(b) ? b : a); i++) set.add(i); }
+  return { allowed, total: freq.length || os.cpus().length, fast: fast.length, fastAllowed: fast.filter(i => set.has(i)).length, fastList: fast.join(",") };
+}
+let coresOnScreen = null;
+function noteCores() {
+  const c = brainCores(); if (!c.allowed) return coresOnScreen;
+  if (!coresOnScreen || coresOnScreen.allowed !== c.allowed) {
+    log({ kind: "brain", detail: `with her page on the screen, Android lets her brain use cores ${c.allowed}: ${c.fastAllowed} of this phone's ${c.fast} fast cores (${c.fastList || "?"})` });
+    try { fs.writeFileSync(path.join(DATA, ".brain-cores"), `${c.allowed} ${c.fastAllowed} ${c.fast} ${c.fastList}\n`); } catch {}
+  }
+  return (coresOnScreen = c);
+}
 // robot-tune is timing the brain and has it stopped on purpose (a leftover marker older than 15 minutes is ignored)
 const tuning = () => { try { return Date.now() - fs.statSync(path.join(DATA, ".tuning")).mtimeMs < 15 * 60000; } catch { return false; } };
 let brainStartedAt = 0;
@@ -608,7 +630,7 @@ const server = http.createServer(async (req, res) => {
       if (lstate === "down") startBrain("status check found it down");
       const keys = apiKeys();
       const gkeys = geminiKeys();
-      return send(res, 200, { online, local, localState: lstate, localError: lastLocalError || undefined, localSpeed: speed.read ? { read: speed.read, write: speed.write } : undefined, localModel: brainModel() || undefined, tuning: tuning() || undefined, localRoom: Math.floor((budgets(localProps.n_ctx, 220).sys - 8) * 3.2), localChatRoom: Math.floor(budgets(localProps.n_ctx, 220).chat * 3.2), hearing, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
+      return send(res, 200, { online, local, localState: lstate, localError: lastLocalError || undefined, localSpeed: speed.read ? { read: speed.read, write: speed.write } : undefined, localModel: brainModel() || undefined, tuning: tuning() || undefined, cores: (url.searchParams.has("onscreen") ? noteCores() : coresOnScreen) || undefined, localRoom: Math.floor((budgets(localProps.n_ctx, 220).sys - 8) * 3.2), localChatRoom: Math.floor(budgets(localProps.n_ctx, 220).chat * 3.2), hearing, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
         geminiKeyCount: gkeys.length, geminiKeyInUse: gkeys.length ? Math.min(activeGemini, gkeys.length - 1) + 1 : 0, geminiModel: geminiModelCache,
         model: config().claudeModel, time: new Date().toISOString() });
     }
@@ -659,7 +681,7 @@ const server = http.createServer(async (req, res) => {
       const num = (min, max) => String(Math.round(Math.min(max, Math.max(min, Number(url.searchParams.get("value")) || 0))));
       const text = String(url.searchParams.get("text") || "").slice(0, 300);
       const cmds = {
-        brightness: ["termux-brightness", [num(0, 255)], 4000],
+        brightness: ["termux-brightness", [url.searchParams.get("value") === "auto" ? "auto" : num(0, 255)], 4000],
         volume: ["termux-volume", ["music", num(0, 15)], 4000],
         notify: ["termux-notification", ["--title", "Nessari", "--content", text || "Hey.", "--id", "nessari"], 5000],
         toast: ["termux-toast", [text || "Hey."], 4000],

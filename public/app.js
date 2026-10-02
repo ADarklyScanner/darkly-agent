@@ -162,7 +162,7 @@ function startListening() {
   rec.onerror = ev => {
     if (ev.error !== "no-speech" && ev.error !== "aborted") logEvent("error", { where: "hearing", detail: ev.error });
     if (ev.error === "network" || ev.error === "service-not-allowed") {       // Chrome's recognizer needs the internet
-      netFail = true;
+      netFail = true; srNetFailAt = Date.now();
       if (window.Hearing?.available()) Hearing.preferOffline(5);
       else if (!hearingHelpShown) {
         hearingHelpShown = true;
@@ -180,6 +180,19 @@ function startListening() {
   };
   try { rec.start(); listening = true; setFaceState("listening", true); $("#micBtn").classList.add("live"); } catch {}
 }
+// Always-listening has to survive anything that knocks the recognizer over (another sound taking the audio focus,
+// the screen going off and on, a recognizer that just stops). Every couple of seconds: if she's meant to be
+// listening and isn't, start again.
+let listenIdleSince = 0, srNetFailAt = 0;
+setInterval(() => {
+  if (settings.listen !== "always" || document.hidden) { listenIdleSince = 0; return; }
+  if (listening || window.Hearing?.active || talking || busy || (typeof recording !== "undefined" && recording)) { listenIdleSince = 0; return; }
+  if (!listenIdleSince) { listenIdleSince = Date.now(); return; }
+  if (Date.now() - listenIdleSince < 3000 || Date.now() - srNetFailAt < 20000) return;
+  listenIdleSince = 0; pausedForSpeech = false;
+  logEvent("auto", { detail: "she'd stopped listening; started again" });
+  startListening();
+}, 1500);
 function stopListening(forSpeech = false) {
   if (window.Hearing?.active) { if (!forSpeech) Hearing.stop(); return; }   // offline hearing ignores her own voice by itself
   pausedForSpeech = forSpeech;
@@ -688,7 +701,7 @@ const TOOLS = [
   { name: "look", description: "Take a photo with your camera and see it.", input_schema: { type: "object", properties: {} } },
   { name: "see_my_face", description: "Look at your own face: a picture of exactly what your screen is showing right now (your eyes, mouth, hands, colors). Use it when he asks what you look like, or to check an expression or a hand gesture you just made.", input_schema: { type: "object", properties: {} } },
   { name: "read_sensors", description: "Read every sensor the phone has (motion, gyro, magnetometer, light, proximity, pressure, hall, steps...), plus battery, RAM, storage, CPU temperature and time.", input_schema: { type: "object", properties: {} } },
-  { name: "phone", description: "Use a phone ability: torch_on / torch_off (flashlight), location, wifi, wifiscan (nearby networks), cell (towers), brightness (value 0-255), volume (value 0-15, your speaker), notify (text: a notification on his phone screen), toast (text: quick pop-up).",
+  { name: "phone", description: "Use a phone ability: torch_on / torch_off (flashlight), location, wifi, wifiscan (nearby networks), cell (towers), brightness (value 20-255; to turn your screen dark use the screen tool instead), volume (value 0-15, your speaker), notify (text: a notification on his phone screen), toast (text: quick pop-up).",
     input_schema: { type: "object", properties: { what: { type: "string", enum: ["torch_on", "torch_off", "location", "wifi", "wifiscan", "cell", "brightness", "volume", "notify", "toast"] }, value: { type: "number" }, text: { type: "string" } }, required: ["what"] } },
   { name: "play_song", description: "Play music on your synthesizer, with your face dancing and your body vibrating to the beat. Either a known song (" + (window.Abilities?.songList || []).join(", ") + ") or your OWN composition in notes: space-separated NOTE+OCTAVE/LENGTH, e.g. \"C4/4 E4/8 G4/8 C5/2 R/4 C4+E4+G4/2\" (4=quarter, 8=eighth, 2=half, 1=whole, a dot makes it 1.5x, R = rest, + makes a chord). drums: a loop of eighth-notes using K (kick) S (snare) H (hi-hat) X (kick+hat) . (rest), e.g. \"K.H.S.H.\". on: phone, body (buzzer on the body board) or both. Keep it under a minute.",
     input_schema: { type: "object", properties: { song: { type: "string" }, notes: { type: "string" }, tempo: { type: "number" }, instrument: { type: "string", enum: ["chip", "saw", "flute", "bell", "organ", "bass"] }, drums: { type: "string" }, vibrate: { type: "boolean" }, dance: { type: "boolean" }, on: { type: "string", enum: ["phone", "body", "both"] } } } },
@@ -787,6 +800,7 @@ async function runToolInner(name, input) {
       settings.voiceStyle = input.style; saveSettings(); return `Voice is now ${input.style}.`;
     }
     if (name === "phone") {
+      if (input.what === "brightness" && input.value != null) { input.value = Math.max(20, Number(input.value) || 0); window.brightnessSet = true; }   // never so dim he can't see to undo it; "go dark" is the screen tool
       const q = new URLSearchParams({ what: input.what });
       if (input.value != null) q.set("value", input.value);
       if (input.text) q.set("text", input.text);
@@ -1844,7 +1858,7 @@ let serverFails = 0, tuningNow = false;
 let statusAt = 0;
 async function refreshStatus() {
   try {
-    status = await api("/api/status"); statusAt = Date.now();
+    status = await api("/api/status" + (document.hidden ? "" : "?onscreen=1")); statusAt = Date.now();
     if (serverFails >= 2) { $("#said").textContent = "I'm back."; setFaceState("offline", false); logEvent("boot", { detail: "server came back" }); }
     serverFails = 0;
   } catch {
@@ -1879,6 +1893,7 @@ function renderStatus() {
     ["Hearing now", window.Hearing?.active ? "phone's own (offline)" : listening ? "Google's (online)" : "off"],
     ["Offline voice", voices.some(v => v.localService) ? "ready" : ttsBrokenUntil > Date.now() ? "phone's own" : voices.length ? "online voices only" : "?"],
     ["Screen", window.Dark ? Dark.status() : "?"],
+    ["Brain's processor share", status.cores ? `cores ${status.cores.allowed} (${status.cores.fastAllowed} of this phone's ${status.cores.fast} fast cores) while her page is showing` : "?"],
     ["Brain mode", settings.brain],
     ["Body", link.connected ? link.kind + (link.hello ? " ✓" : " (silent)") : "not connected"],
     ["Mood", mood],

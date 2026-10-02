@@ -23,9 +23,10 @@ fi
 trap 'resume_brain; exit 1' INT TERM
 pause_brain
 
-BEST_T=4; BEST_TB=4; BEST_R=0; BEST_W=0; BASE_R=0; BASE_W=0; RESULTS=""
+BEST_T=4; BEST_TB=4; BEST_R=0; BEST_W=0; BASE_R=0; BASE_W=0; RESULTS=""; USED=""
 for T in $LIST; do
   RW=$(time_brain "$LLAMA" "$MODEL" "$T" "")
+  [ -z "$USED" ] && USED="$(cores_now)"            # read during the test, while her page (not Termux) is on the screen
   R=${RW% *}; W=${RW#* }
   if [ "$RW" = "0 0" ]; then echo "  $T threads: that run didn't finish (skipped)"; sleep 3; continue; fi
   echo "  $T threads: reads $R, writes $W tokens a second"
@@ -42,6 +43,7 @@ done
 PICK=$(node -e 'const r=process.argv[1].trim().split(/\s+/).filter(Boolean).map(x=>{const [t,v]=x.split(":"),[rd,wr]=v.split("/");return{t:+t,rd:+rd,wr:+wr}}).sort((a,b)=>a.t-b.t);if(!r.length){console.log("");process.exit()}const bR=Math.max(...r.map(x=>x.rd)),bW=Math.max(...r.map(x=>x.wr));const tb=r.find(x=>x.rd>=bR*0.9),t=r.find(x=>x.wr>=bW*0.9);console.log([t.t,tb.t,tb.rd,t.wr].join(" "))' "$RESULTS")
 [ -n "$PICK" ] && read -r BEST_T BEST_TB BEST_R BEST_W <<< "$PICK"
 
+echo "Cores Android let the brain use during the test: $USED"
 if [ "$BEST_R" = 0 ]; then
   echo "No test finished, so nothing was changed."
 else

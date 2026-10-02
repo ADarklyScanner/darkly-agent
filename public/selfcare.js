@@ -9,7 +9,7 @@
   const now = () => Date.now();
   // slow: how much less often her senses run (1 = full speed). Hot phone or low battery raises it; so does her
   // offline brain being at work (thinking > 0), because eyes and brain share one processor and the brain should win.
-  const P = window.Power = { level: "normal", base: 1, thinking: 0, get slow() { return Math.max(this.base, this.thinking > 0 ? 3 : 1); }, runtime: "", why: "" };
+  const P = window.Power = { level: "normal", base: 1, thinking: 0, get slow() { return Math.max(this.base, this.thinking > 0 ? 4 : 1); }, runtime: "", why: "" };
   const SLOW = { normal: 1, saver: 2, critical: 4 };
 
   // ---------------- power level ----------------
