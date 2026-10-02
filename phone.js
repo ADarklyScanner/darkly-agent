@@ -7,6 +7,8 @@
 // Guardrails: only when he asks (never on her own), a hard step/time limit, STOP cancels, and anything that
 // spends money, sends messages, deletes things or changes accounts must be in his request or she stops and asks.
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 let deps = null;                 // { apiKeys, geminiKeys, geminiModels, timedFetch, log, config, GEMINI_BASE, CLAUDE_URL }
 export function init(d) { deps = d; }
@@ -163,6 +165,7 @@ Reply with ONLY one JSON object, no other text:
 {"action":"wait","seconds":2} | {"action":"done","summary":"what you did, one or two sentences in your own voice"} | {"action":"ask","question":"what you need him to decide"}
 Rules: prefer tapping by index. One action per reply. If something didn't work, try a different way, not the same thing again.
 Never spend money, send messages or emails, post anything, delete anything, or change accounts, passwords or security settings unless his request clearly says to; if a step needs that, use "ask".
+If the note says the screen did not change, your last action did nothing: scroll, go back, or pick another element instead of repeating it.
 If you're stuck after a few tries, use "done" and say honestly what went wrong.`;
 
 async function think(messages) {
@@ -185,9 +188,46 @@ async function think(messages) {
       body: JSON.stringify({ model: deps.config().claudeModel, max_tokens: 600, system: SYSTEM, messages: msgs }) }, 60000).catch(() => null);
     if (r?.ok) { const j = await r.json(); return (j.content || []).filter(b => b.type === "text").map(b => b.text).join(""); }
   }
-  throw new Error("no online brain answered (phone driving needs Gemini or Claude)");
+  throw new Error("no online brain answered. Working out a new phone task needs Gemini or Claude; without internet I can only repeat phone tasks I've done before, or just open an app");
 }
 const parseAction = t => { const m = String(t).match(/\{[\s\S]*\}/); try { return m ? JSON.parse(m[0]) : null; } catch { return null; } };
+
+// ---------------- routines: things she's done before, replayed without any AI ----------------
+// When a task finishes successfully, the taps and typing that got there are saved by what was tapped (its text or id,
+// not where it was on screen). Asked for the same thing again, she replays them directly: quick, free, and it works
+// with no internet. If the screen doesn't match any more, she drops the routine and works it out afresh.
+const routinesFile = () => path.join(deps.dataDir || ".", "phone-routines.json");
+let routines = null;
+function loadRoutines() { if (!routines) { try { routines = JSON.parse(fs.readFileSync(routinesFile(), "utf8")); } catch { routines = []; } } return routines; }
+const saveRoutines = () => { try { fs.writeFileSync(routinesFile(), JSON.stringify(routines, null, 1)); } catch {} };
+const goalKey = g => [...new Set(String(g).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(w => w.length > 1 && !/^(the|an|and|to|for|me|my|please|can|you|on|in|it|up|phone)$/.test(w)))].sort();
+function findRoutine(goal) {
+  const k = goalKey(goal); let best = null, bs = 0;
+  for (const r of loadRoutines()) { const inter = r.key.filter(w => k.includes(w)).length, sc = inter / Math.max(1, new Set([...r.key, ...k]).size); if (sc > bs) { bs = sc; best = r; } }
+  return bs >= 0.85 ? best : null;                                    // only when it's really the same request
+}
+export function listRoutines() { return loadRoutines().map(r => ({ goal: r.goal, steps: r.steps.length, runs: r.runs || 0 })); }
+export function forgetRoutine(goal) { const n = loadRoutines().length, r = findRoutine(goal) || routines.find(x => x.goal.toLowerCase().includes(String(goal).toLowerCase())); if (r) { routines = routines.filter(x => x !== r); saveRoutines(); } return n !== routines.length; }
+const findEl = (s, st) => s.els.find(e => st.label && e.label === st.label) || s.els.find(e => st.id && e.id === st.id && (!st.label || !e.label)) || (st.label ? s.els.find(e => e.label && e.label.toLowerCase() === st.label.toLowerCase()) : null);
+async function replay(r, goal) {
+  const done = [];
+  for (const st of r.steps) {
+    if (task.cancel) throw new Error("stopped");
+    let res;
+    if (st.label || st.id) {                                           // a step on a particular button or field: find it on the screen as it is now
+      let s, el;
+      for (let tries = 0; tries < 4 && !el; tries++) { s = await readScreen(); el = findEl(s, st); if (!el) await new Promise(z => setTimeout(z, 900)); }
+      if (!el) return { ok: false, done, why: `couldn't find "${st.label || st.id}" on the screen this time` };
+      res = await act({ ...st, index: s.els.indexOf(el) }, s, goal);
+    } else res = await act(st, { els: [] }, goal);
+    if (/^(FAILED|BLOCKED)/.test(res)) return { ok: false, done, why: res };
+    done.push({ action: st.action + (st.app ? " " + st.app : "") + (st.label ? ` "${st.label}"` : ""), result: res });
+    notify(`(from memory) ${st.action}${st.app ? " " + st.app : ""}${st.label ? ` "${st.label}"` : ""}`);
+    await new Promise(z => setTimeout(z, st.action === "open_app" ? 2200 : 1000));
+  }
+  return { ok: true, done };
+}
+const screenSig = s => s.pkg + "|" + s.els.map(e => e.label || e.id).join("|").slice(0, 600);
 
 // ---------------- the task loop ----------------
 let task = null;                 // { goal, steps:[], state, result, cancel }
@@ -206,14 +246,33 @@ export async function runTask(goal, { maxSteps = 25, returnToFace = true } = {})
   const t0 = Date.now();
   try {
     await ensureAdb(); await screenSize();
-    const history = [];
+    // done this before? do it from memory (no AI needed)
+    const known = findRoutine(task.goal);
+    if (known) {
+      const rp = await replay(known, task.goal);
+      task.steps.push(...rp.done);
+      if (rp.ok) {
+        known.runs = (known.runs || 0) + 1; known.lastOk = Date.now(); saveRoutines();
+        task.state = "done"; task.result = `Done from memory, the way it worked last time (${known.steps.length} steps, no AI needed). ${known.summary || ""}`.trim();
+        deps.log({ kind: "phone", detail: "replayed routine: " + known.goal });
+        return { ok: true, text: `${task.state}: ${task.result} (${task.steps.length} steps)` };
+      }
+      known.fails = (known.fails || 0) + 1; if (known.fails >= 2) { routines = routines.filter(x => x !== known); } saveRoutines();
+      deps.log({ kind: "phone", detail: `routine didn't fit (${rp.why}); working it out again` });
+      task.steps.push({ action: "memory", result: `my remembered way didn't fit (${rp.why}); working it out again` });
+    }
+    const history = [], trace = [];
+    let lastSig = null;
     for (let i = 0; i < maxSteps; i++) {
       if (task.cancel) throw new Error("stopped");
       if (Date.now() - t0 > 4 * 60000) throw new Error("took too long (4 minutes)");
       const s = await readScreen();
       const shot = await screenshotB64();
       const list = s.els.map((e, k) => `${k}: ${e.label ? `"${e.label}"` : "(no text)"}${e.id ? ` #${e.id}` : ""}${e.clickable ? " [tap]" : ""}${e.editable ? " [text field]" : ""}${e.checked ? " [on]" : ""} @${e.cx},${e.cy}`).join("\n");
-      const text = `Goal: ${task.goal}\nStep ${i + 1}. Current app: ${s.pkg}. Screen ${screen.w}x${screen.h}.\nOn-screen elements:\n${list || "(none readable; use the screenshot)"}\n` +
+      // reflect: did the last action actually change anything?
+      const sig = screenSig(s), stuck = lastSig !== null && sig === lastSig && task.steps.length && !/^Waited/.test(task.steps[task.steps.length - 1].result);
+      lastSig = sig;
+      const text = `Goal: ${task.goal}\nStep ${i + 1}. Current app: ${s.pkg}. Screen ${screen.w}x${screen.h}.\n${stuck ? "NOTE: the screen did NOT change after your last action. It had no effect: do something different.\n" : ""}On-screen elements:\n${list || "(none readable; use the screenshot)"}\n` +
         (task.steps.length ? `Your previous actions: ${task.steps.slice(-6).map(x => `${x.action} → ${x.result}`).join(" | ")}` : "");
       history.push({ role: "user", text, image: shot });
       const recent = history.slice(-3).map((m, k, arr) => k < arr.length - 1 ? { role: m.role, text: m.text.split("\nOn-screen")[0] } : m);  // only the latest screen in full
@@ -221,10 +280,24 @@ export async function runTask(goal, { maxSteps = 25, returnToFace = true } = {})
       history.push({ role: "assistant", text: reply });
       const a = parseAction(reply);
       if (!a) { task.steps.push({ action: "?", result: "couldn't read the plan" }); continue; }
-      if (a.action === "done") { task.state = "done"; task.result = a.summary || "Done."; break; }
+      if (a.action === "done") {
+        task.state = "done"; task.result = a.summary || "Done.";
+        // remember how, if it went cleanly and wasn't a failure report
+        if (trace.length && trace.length <= 15 && !/couldn't|could not|failed|unable|stuck|didn't work|went wrong/i.test(task.result)) {
+          loadRoutines(); routines = routines.filter(r => r.key.join(" ") !== goalKey(task.goal).join(" "));
+          routines.push({ goal: task.goal, key: goalKey(task.goal), steps: trace, summary: String(task.result).slice(0, 200), learned: Date.now(), runs: 0 });
+          routines = routines.slice(-40); saveRoutines();
+        }
+        break;
+      }
       if (a.action === "ask") { task.state = "needs_you"; task.result = a.question || "I need you to decide something."; break; }
       notify(`${a.action}${a.app ? " " + a.app : ""}${a.text ? ` "${a.text}"` : ""}${Number.isInteger(a.index) && s.els[a.index] ? ` "${s.els[a.index].label}"` : ""}`);
       const r = await act(a, s, task.goal);
+      if (!/^(FAILED|BLOCKED)/.test(r) && a.action !== "wait") {             // keep the working steps, described by WHAT was tapped
+        const el = Number.isInteger(a.index) ? s.els[a.index] : null;
+        if (a.action === "tap" && !el) trace.length = 99;                 // tapped bare coordinates: not replayable, so don't save this one
+        else trace.push({ action: a.action, app: a.app, text: a.text, enter: a.enter, direction: a.direction, key: a.key, label: el?.label || undefined, id: el && !el.label ? el.id : undefined });
+      }
       task.steps.push({ action: a.action + (a.app ? ` ${a.app}` : "") + (Number.isInteger(a.index) && s.els[a.index] ? ` "${s.els[a.index].label}"` : ""), result: r });
       deps.log({ kind: "phone", detail: `${a.action}: ${r}` });
       await new Promise(r => setTimeout(r, a.action === "open_app" ? 2200 : 1000));   // let the screen settle

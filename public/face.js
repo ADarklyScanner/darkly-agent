@@ -57,7 +57,11 @@
     tremble: 0, trembleUntil: 0, puffs: [],
     blinkMs: 130, thinkKind: "online", thinkSince: 0, ahaUntil: 0,
     yawnT: -1, yawnDur: 2.4, yawn: 0,                  // a yawn: eyes squeeze shut while the mouth opens wide
-    beat: null, level: null                            // music beat { bpm, t0 } for dancing in time; battery level 0..1 for the side meters
+    beat: null, level: null,                           // music beat { bpm, t0 } for dancing in time; battery level 0..1 for the side meters
+    tilt: 0, tiltT: 0, tiltUntil: 0,                   // whole-head tilt (curious, confused)
+    lean: 0, leanT: 0, leanUntil: 0,                   // leaning in (+) or pulling back (-)
+    conv: 0, convT: 0,                                 // eyes converging on something very close
+    earL: 0, earR: 0, earTL: 0, earTR: 0, earUntil: 0, earTw: 0   // her two little ears: angle (-1 down .. 1 perked up) and a twitch
   };
   const nowMs = () => performance.now();
 
@@ -218,6 +222,12 @@
     if (chewing) prim.chewPh += dt * prim.chewRate * TAU;
     if (prim.swallowT >= 0) { prim.swallowT += dt; if (prim.swallowT > 0.8) prim.swallowT = -1; }
     if (nowMs() > prim.trembleUntil) prim.tremble = 0;
+    if (nowMs() > prim.tiltUntil) prim.tiltT = 0;
+    if (nowMs() > prim.leanUntil) prim.leanT = 0;
+    if (nowMs() > prim.earUntil) { prim.earTL = 0; prim.earTR = 0; }
+    prim.tilt = lerp(prim.tilt, prim.tiltT, 1 - Math.exp(-dt * 6)); prim.lean = lerp(prim.lean, prim.leanT, 1 - Math.exp(-dt * 8));
+    prim.conv = lerp(prim.conv, prim.convT, pk); prim.earL = lerp(prim.earL, prim.earTL, 1 - Math.exp(-dt * 14)); prim.earR = lerp(prim.earR, prim.earTR, 1 - Math.exp(-dt * 14));
+    prim.earTw *= Math.exp(-dt * 7);
     if (prim.yawnT >= 0) { prim.yawnT += dt; prim.yawn = Math.sin(Math.PI * Math.min(1, prim.yawnT / prim.yawnDur)) ** 0.7; if (prim.yawnT > prim.yawnDur) { prim.yawnT = -1; prim.yawn = 0; } }
     prim.puffs = prim.puffs.filter(p => (p.life += dt) < 1.4);
     look.x = lerp(look.x, clamp(tx, -1, 1), lk); look.y = lerp(look.y, clamp(ty, -1, 1), lk);
@@ -356,7 +366,7 @@
     ctx.save(); ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.clip();
     ctx.fillStyle = "#06020b"; ctx.fillRect(-r, -r, 2 * r, 2 * r);
     const crossed = nowMs() < crossUntil;
-    const px = crossed ? -side * r * 0.4 : look.x * r * 0.38, py = crossed ? r * 0.05 : look.y * r * 0.32;
+    const px = crossed ? -side * r * 0.4 : look.x * r * 0.38 - side * prim.conv * r * 0.22, py = crossed ? r * 0.05 : look.y * r * 0.32;
     const ig = ctx.createRadialGradient(px, py, r * 0.05, px, py, r * 1.05);
     ig.addColorStop(0, col(25, 1)); ig.addColorStop(0.45, col(0, 0.95)); ig.addColorStop(0.85, col(-30, 0.9)); ig.addColorStop(1, "rgba(0,0,0,1)");
     ctx.fillStyle = ig; ctx.beginPath(); ctx.arc(px * 0.6, py * 0.6, r * 0.95, 0, TAU); ctx.fill();
@@ -414,6 +424,21 @@
       }
     }
     ctx.restore();
+  }
+
+  // Two small ears on top of her head. They perk up, droop, turn toward sounds and twitch.
+  function ears(t) {
+    for (const side of [-1, 1]) {
+      const a = side < 0 ? prim.earL : prim.earR, tw = prim.earTw * Math.sin(t * 38) * 0.12;
+      const sleepy = clamp(1 - cur.open * 1.3, 0, 0.6);                    // ears droop when her eyes do
+      ctx.save(); ctx.translate(side * 0.78 * U, -0.66 * U);
+      ctx.rotate(side * (0.55 - a * 0.5 + sleepy * 0.8) + tw * side);
+      const len = U * (0.2 + 0.05 * Math.max(0, a)), w = U * 0.075;
+      glow(true, 0.05); ctx.strokeStyle = col(10, 0.85 * cur.dim); ctx.fillStyle = col(-25, 0.35 * cur.dim); ctx.lineWidth = U * 0.014; ctx.lineJoin = "round";
+      ctx.beginPath(); ctx.moveTo(-w, 0); ctx.quadraticCurveTo(-w * 0.6, -len * 0.7, 0, -len); ctx.quadraticCurveTo(w * 0.6, -len * 0.7, w, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = col(30, 0.5 * cur.dim); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, -len * 0.15); ctx.lineTo(0, -len * 0.75); ctx.stroke();
+      glow(false); ctx.restore();
+    }
   }
 
   function brows() {
@@ -602,10 +627,11 @@
       ctx.rotate(Math.sin(ph) * 0.09);
     }
     if (fxOn("dizzy")) ctx.rotate(Math.sin(t * 3) * 0.12);
-    ctx.rotate(tiltIn.x * 0.05 + Math.sin(t * 0.5) * 0.012 + cur.skew * 0.02);
-    const breathe = 1 + Math.sin(t * 1.1) * 0.01;
+    ctx.rotate(tiltIn.x * 0.05 + Math.sin(t * 0.5) * 0.012 + cur.skew * 0.02 + prim.tilt);
+    const breathe = (1 + Math.sin(t * 1.1) * 0.01) * (1 + prim.lean * 0.09);
     ctx.scale(breathe, breathe);
     hud(t);
+    ears(t);
     cheeks(t);
     eye(-1, t); eye(1, t);
     if (fxOn("heart_eyes")) hearts(t);
@@ -870,6 +896,7 @@
     // something outside (the camera tracker) wants her to look at x,y in -1..1 (right / down positive)
     lookAt(x, y, ms = 700) { if (!gest) ext = { x: clamp(x, -1, 1), y: clamp(y, -1, 1), until: nowMs() + ms }; },
     onTouch: null,
+    touching: () => !!gest,                                   // a finger is on her face right now
     setMood(m) { if (MOODS[m]) { mood = m; lastActivity = performance.now(); } },
     setTalking(on) { st.talking = !!on; lastActivity = performance.now(); },
     kick() { kickV = 1; },
@@ -904,6 +931,11 @@
       swallow() { prim.swallowT = 0; },
       tremble(amount = 1, ms = 600) { prim.tremble = amount; prim.trembleUntil = nowMs() + ms; },
       yawn(seconds = 2.4) { prim.yawnDur = seconds; prim.yawnT = 0; },
+      tilt(amount = 0.12, ms = 1500) { prim.tiltT = clamp(amount, -0.35, 0.35); prim.tiltUntil = nowMs() + ms; },          // radians; + = clockwise
+      lean(amount = 1, ms = 1500) { prim.leanT = clamp(amount, -1.5, 1.5); prim.leanUntil = nowMs() + ms; },               // + toward you, - away
+      converge(amount = 0) { prim.convT = clamp(amount, 0, 1); },
+      ears(l = 0, r = 0, ms = 1500) { prim.earTL = clamp(l, -1, 1); prim.earTR = clamp(r, -1, 1); prim.earUntil = nowMs() + ms; },   // -1 drooped .. 1 perked
+      earTwitch() { prim.earTw = 1; },
       beat(bpm, t0) { prim.beat = bpm ? { bpm, t0: t0 ?? nowMs() } : null; },
       level(v) { prim.level = v == null ? null : clamp(v, 0, 1); },
       puff(n = 1) { for (let i = 0; i < n; i++) prim.puffs.push({ life: -i * 0.15, x: rand(-0.1, 0.1), s: rand(0.7, 1.3) }); },

@@ -106,7 +106,12 @@
   // ---------------- attention ----------------
   let distractUntil = 0;
   const distracted = () => nowMs() < distractUntil;
-  function glance(x, y, ms) { distractUntil = nowMs() + ms; Face.lookAt(x, y, ms); }
+  // A glance is a strong, short-lived offer to her attention system: it wins now, then lets go.
+  let glanceN = 0;
+  function glance(x, y, ms, label = "something that caught her eye") {
+    distractUntil = nowMs() + ms;
+    if (window.Attention) Attention.offer("glance" + (glanceN++ % 3), { x, y, salience: 0.9, ttl: ms, label }); else Face.lookAt(x, y, ms);
+  }
   // where an event "is" when we don't know: a guess (sound: off to a side)
   const guessDir = key => /bang|shout|impact|sound|clap|knock/.test(key) ? [Math.random() < 0.5 ? -0.9 : 0.9, -0.2] : null;
 
@@ -208,6 +213,7 @@
   const confWord = c => c > 0.8 ? "sure" : c > 0.55 ? "fairly sure" : c > 0.3 ? "think" : "vaguely remember";
   function noteWhere(thing, where, how = "saw") {
     const k = keyOf(thing); const old = world.things[k];
+    const room = window.Vision?.room; if (room && how !== "guess" && !new RegExp(room, "i").test(where)) where += ` (in the ${room})`;      // which room she was in when she learned it
     const src = { saw: "SAW", told: "TOLD", guess: "INFERRED", heard: "HEARD" }[how] || "SAW";
     world.things[k] = { where, source: src, conf: src === "SAW" ? 0.92 : src === "TOLD" ? 0.85 : 0.55, t: nowMs(), uses: (old?.uses || 0) + 1, seen: (old?.seen || 0) + (src === "SAW" ? 1 : 0) };
     event("object_placed", `${thing}: ${where}`, { source: src, salience: 0.5 });
@@ -319,6 +325,9 @@
     lastEngaged = nowMs(); if (sleepMode) wake("he talked");
     const name = (typeof personality !== "undefined" && personality?.name || "Nessari").toLowerCase();
     if (text.toLowerCase().includes(name)) { nudge({ alertness: 0.4, arousal: 0.15 }); Face.gesture("wide"); distractUntil = 0; }
+    // what he says right after one of her own lines teaches her what he likes
+    if (/\b(ha(ha)+|lol|funny|hilarious|good one|nice one|love (it|that)|that'?s great|you'?re great)\b/i.test(text)) window.Variety?.feedback(1, "he said: " + text.slice(0, 40));
+    else if (/\b(shut up|stop (it|that|talking)|not funny|annoying|enough|be quiet|quiet down|boring|knock it off)\b/i.test(text)) window.Variety?.feedback(-1, "he said stop/quiet: " + text.slice(0, 40));
     event("he_said", text, { source: "HEARD", conf: conf || 0.9, salience: 0.6 });
   }
   function onSheSaid(text) {
@@ -339,6 +348,9 @@
     const st = Object.entries(S).filter(([k, v]) => Math.abs(v - BASELINE[k]) > 0.12).map(([k, v]) => `${k} ${v.toFixed(2)}`);
     lines.push(`Inner state (let it color your tone, don't announce it): ${st.join(", ") || "neutral"}${sleepMode ? ", in sleep mode" : ""}.`);
     if (window.Vision?.available) lines.push(`Eyes: ${Vision.faces ? Vision.describe() : "nobody in view right now"}`);
+    const who = window.People?.context?.(); if (who) lines.push(who + ".");
+    const att = window.Attention?.describe?.(); if (att) lines.push(att + ".");
+    if (window.Vision?.room) lines.push(`Place: you're in the ${Vision.room}.`);
     const recent = events.filter(e => nowMs() - e.t < 25 * 60000 && e.salience >= 0.35 && e.type !== "she_said" && e.type !== "he_said").slice(short ? -5 : -14);
     if (recent.length) lines.push("Recent events (newest last, with how you know):\n" + recent.map(e => `- ${ago(e.t)} [${e.source}] ${e.type}: ${e.text}`).join("\n"));
     if (lastAction && nowMs() - lastAction.t < 20 * 60000) lines.push(`Your last action (for "do that again"): ${lastAction.name} ${JSON.stringify(lastAction.input)}${/^FAILED/.test(lastAction.result) ? " (it failed: don't repeat it the same way)" : ""}`);

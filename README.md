@@ -100,7 +100,7 @@ Android only allows sound and vibration after the first tap on the page, so tap 
 
 ## Tricks, games and the rest
 
-- **Trick Book:** 64 built-in tricks, plus any she invents and saves herself (marked ★ on the Tricks tab).
+- **Trick Book:** 65 built-in tricks, plus any she invents and saves herself (marked ★ on the Tricks tab).
   Say "do a trick" for a random one, or name one ("do the possessed thing", "fortune teller"). Ask "what tricks do you know?"
 - **Games:** Simon Says, reaction test, staring contest, red light green light, color hunt, clap-back, Twenty Questions, trivia, riddles, rock paper scissors,
   scavenger hunt, what's missing, Simon Says with your body, finger math, follow my finger, balance, guess the sound, match my note.
@@ -138,6 +138,16 @@ Unrestricted, and allow "Modify system settings". Termux and Termux:API must bot
 
 **Vibration spin:** stand her on a smooth, hard table, ideally without a grippy case, and ask her to spin. She buzzes
 her vibration motor and uses her gyro to stop at the right angle. How well it works depends on the surface and case.
+
+## People, attention and looking after herself
+
+- **People:** say "this is Sam" with Sam in view, or "remember my face as Johnny". She recognizes them afterwards, greets by name and knows
+  when she last saw them. Face prints stay in `data/people.json` on the phone. Uses face-api.js (MIT, in `public/lib/faceapi`). Turn it off in Settings.
+- **Attention:** `attention.js` is the one place that decides where she looks. Everything else makes offers with an importance; the arbiter picks.
+- **Self care:** `selfcare.js` slows her senses when the phone is hot or low on battery, notices a covered camera, and runs "systems check".
+- **Phone routines:** phone tasks she's completed are saved in `data/phone-routines.json` and replayed without AI (works offline).
+- **Rooms and things:** "this is the kitchen", "this is my good screwdriver" (hold it up). She remembers how they look.
+- **Shush:** tap her mouth or hold up an open hand.
 
 ## Hands, tags, music and reading
 

@@ -2,6 +2,23 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.18 · She knows people, and has one mind for attention
+All of this runs on the phone with no internet. Face recognition was tested here on real photos; the rest with simulated cameras and sounds.
+- Knowing people: introduce someone ("this is Sam", or "remember my face as Johnny") and she recognizes them from then on. She greets by name, knows when she last saw them, and tells a familiar face from a stranger. You can add notes about a person. Face prints are stored only on this phone, only for people you introduce; strangers are only counted while she's running. On a set of real photos she got 12 of 12 right with no stranger mistaken for someone she knew. Turn it off in Settings.
+- One attention system: faces, fingertips, movement, lights, bangs and new objects used to tug her eyes separately. Now they all compete in one place by importance. The thing she's looking at keeps a little loyalty, staring wears off so other things can win, new targets get a quick jump (with a blink on big jumps) and the same target gets smooth following. Her brain is told what she's attending to.
+- Was that said to her? In always-listening mode, if she can see people and nobody was facing her or moving their lips, she's told it may not have been meant for her (a TV, another conversation) and can stay quiet.
+- Looking after herself: when the phone is hot or the battery is low she slows her eyes and ears down, says so once, and speeds back up after. She estimates how long her battery will last. If Android takes her camera or microphone away she takes it back. "Systems check" (or "are you okay") runs a spoken check of every part of her.
+- Peekaboo: cover her camera and uncover it.
+- Shush: tap her mouth, or hold up an open hand, and she stops talking.
+- Phone routines: when she finishes a phone task, she remembers how, by what she tapped rather than where. Ask for the same thing again and she does it from memory with no AI, which also works with no internet. If the screen has changed she works it out afresh. She also notices when a tap did nothing and tries something else.
+- Ears: she has two small ears now. They perk at sounds, go up while she listens, droop when she's sleepy and flick when she's bored. If the phone gives her both of its microphones she can tell which end of the phone a sound came from and looks that way; "calibrate your ears" teaches her which end is up. Self check tells you whether your phone gives her two microphones.
+- New sounds she knows: doors, slams, footsteps, keys, a TV, typing, running water, car horns. Background ones are noted, not commented on.
+- Rooms: "this is the kitchen". She recognizes the room when she sees it again, and things she learns about get the room attached ("the kettle: by the sink, in the kitchen").
+- Things you show her: hold something up and say "this is Frank" or "this is my good screwdriver". She remembers what that exact thing looks like.
+- Learning what you like: a laugh, a smile, a thumbs-up or "good one" right after one of her own lines makes that kind of line more likely. "Not funny", a thumbs-down or "stop" makes it less likely. "Be quiet" or "stop talking" silences her own chatter for ten minutes.
+- Face: head tilts when curious, leans in to a whisper, pulls back from something rushing at her, goes slightly cross-eyed when your face is very close, stretches after waking. A quiet "hmm" if an answer is taking a while. Late at night in a quiet room she keeps her voice down.
+- Still not done, and why: depth, mapping and navigation, the arm, and neural voices need the body or builds I can't check from here. "Things you show her" and rooms rely on a model I could only test the plumbing for.
+
 ## 2026-10-02 · v0.17 · A big batch from your lists
 Everything here runs on the phone with no internet. I tested it with simulated cameras and sounds; your real hands, face and voice are the real test.
 - Offline skills: the offline brain used to be able to talk and nothing else. Now plain requests are recognized and really carried out even with no internet: "play scavenger hunt", "do a trick", "how many fingers", "what am I holding", "where's my screwdriver", "I put the keys on the table", "read this", "set a timer for 5 minutes", "take a picture", "play jingle bells", "copy my face", about 28 kinds in all. She does it, then tells you the result in her own words.

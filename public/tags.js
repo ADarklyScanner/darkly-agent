@@ -54,7 +54,7 @@
   // Called about twice a second by the camera tracker.
   let lastScan = 0;
   T.tick = video => {
-    if (!T.enabled || !window.AR || now() - lastScan < 700 || !video || video.readyState < 2) return;
+    if (!T.enabled || !window.AR || now() - lastScan < 700 * (window.Power?.slow || 1) || !video || video.readyState < 2) return;
     if (typeof settings !== "undefined" && settings.tags === false) return;
     lastScan = now(); load();
     const found = T.detect(video);

@@ -37,7 +37,7 @@
   }
 
   // ---------------- inner state → how the eyes move ----------------
-  let lastSleep = false, lookingSince = 0, lastFace = null, faceGoneAt = 0;
+  let lastSleep = false, lookingSince = 0, lastFace = null, faceGoneAt = 0, earsUp = false;
   function tone() {
     if (!B.enabled || !window.Face?.prim) return;
     const s = S(), st = P().state();
@@ -51,7 +51,7 @@
     else { P().saccades(1, 1); P().wander(1, 1); }
 
     // waking: slow, heavy-lidded open
-    if (lastSleep && !sleeping) { P().blink({ ms: 450 }); after(900, () => P().squint(0.55, 0.55, 1400)); did("slow-wake"); }
+    if (lastSleep && !sleeping) { P().blink({ ms: 450 }); after(900, () => P().squint(0.55, 0.55, 1400)); after(2400, () => B.stretch()); did("slow-wake"); }
     if (!lastSleep && sleeping) { P().blink({ ms: 600 }); did("long-blink-to-sleep"); }
     lastSleep = sleeping;
 
@@ -59,6 +59,10 @@
     if (!busyFace() && !st.thinking && !st.listening) fidget(s);
     socialTick();
     presenceDim();
+    // very close face: eyes converge on it; quiet speaker: lean in
+    const main = window.Vision?.main; P().converge(main && main.size > 0.45 ? Math.min(1, (main.size - 0.45) * 4) : 0);
+    const lv = window.Hearing?.lastLevel; if (lv?.quiet && window.Hearing.state === "hearing") P().lean(1, 800);
+    if (st.listening && !earsUp) { earsUp = true; P().ears(0.7, 0.7, 60000); } else if (!st.listening && earsUp) { earsUp = false; P().ears(0, 0, 10); }   // ears up while she listens
   }
 
   // ---------------- boredom fidgets (one at a time, never repeated back to back) ----------------
@@ -73,6 +77,9 @@
       ["both-droop", () => P().squint(0.7, 0.7, 5000)],
       ["pupil-play", () => { P().pupils(1.5, 700); after(800, () => P().pupils(0.6, 600)); after(1500, () => P().pupils(1, 300)); }],
       ["slow-blink", () => P().blink({ ms: 380 })],
+      ["ear-flick", () => { chance(0.5) ? P().ears(1, 0, 600) : P().ears(0, 1, 600); P().earTwitch(); }],
+      ["head-tilt", () => P().tilt(chance(0.5) ? 0.12 : -0.12, 2200)],
+      ["stretch", () => B.stretch()],
       ["inspect-around", () => { look(-0.8, 0.2, 900); after(1100, () => look(0.7, -0.3, 900)); after(2200, () => look(0, 0, 400)); }]
     ];
     if (bored > 0.8 && ready("eyeroll", 600000)) options.push(["eye-roll", () => Face.gesture("eye_roll")]);
@@ -211,6 +218,13 @@
     after(4200, () => { P().blink({ ms: 120 }); Face.gesture("wink_left"); });
   };
 
+  // ---------------- a stretch: tilt one way, the other, a yawn, ears out ----------------
+  B.stretch = () => {
+    if (!ready("stretch", 60000)) return;
+    P().tilt(-0.16, 900); P().ears(-0.5, 1, 900); after(900, () => { P().tilt(0.16, 900); P().ears(1, -0.5, 900); });
+    after(1800, () => { P().yawn(2.2); P().lean(0.6, 2000); P().ears(1, 1, 2200); }); did("stretch");
+  };
+
   // ---------------- nobody around: dim the screen; come back: wake it ----------------
   let lastPresence = now(), dimmed = false;
   function presenceDim() {
@@ -300,7 +314,7 @@
     V.on("object", o => {                                                    // curiosity: inspect new things, glance at familiar ones
       if (busyFace() || asleep()) return;
       if (o.familiar) { if (chance(0.3)) { look(o.x, o.y, 350); did("curious:glance"); } return; }
-      look(o.x, o.y, 1300, { snap: true }); P().pupils(1.3, 1300); did("curious:inspect " + o.label);
+      look(o.x, o.y, 1300, { snap: true }); P().pupils(1.3, 1300); P().tilt(o.x > 0 ? 0.1 : -0.1, 1600); did("curious:inspect " + o.label);   // head tilts toward the new thing
       if (window.Vision.main) { after(1400, () => look(Vision.main.x, Vision.main.y, 700)); after(2200, () => look(o.x, o.y, 800)); }   // object → you → object
     });
     V.on("sound", s => { if (s.run === 1 && s.base >= 0.5 && /bang|glass|alarm|knock|doorbell/.test(s.what)) startle(s.base, null); });
@@ -320,6 +334,8 @@
   // ---------------- everything the mind perceives passes through here ----------------
   B.onPerceive = (key, sal = 0.5) => {
     if (!B.enabled) return;
+    if (/^sound|bang|shout|clap|knock/.test(key)) { P().ears(1, 1, 1500); P().earTwitch(); if (sal > 0.5 && chance(0.5)) P().tilt(chance(0.5) ? 0.1 : -0.1, 1300); }   // ears up at a sound; a curious tilt if it's notable
+    if (key === "loom") P().lean(-1.2, 700);                                    // pull back from something coming at her
     if (key === "bang") startle(Math.max(0.5, sal), null, sal);
     else if (key === "shout") startle(0.5 * sal);
     else if (key === "shake") shaken();

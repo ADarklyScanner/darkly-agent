@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /* ================= settings ================= */
 const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true,
-  auto: "normal", chatter: "offline", hearing: "auto", tags: true, nfc: false, autoPhoto: false, react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
+  auto: "normal", chatter: "offline", hearing: "auto", faces: true, tags: true, nfc: false, autoPhoto: false, react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
 let settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("robot-settings") || "{}") };
 const saveSettings = () => localStorage.setItem("robot-settings", JSON.stringify(settings));
 
@@ -69,6 +69,8 @@ const VOICE_STYLES = {
 // Android Chrome drops speech that starts right after cancel(), and cuts off long utterances,
 // so text is spoken in sentence-sized pieces with a short gap after cancelling.
 let speakToken = 0, speakingNow = [], ttsBrokenUntil = 0;
+// Late at night in a quiet room she keeps her voice down; otherwise full volume.
+const roomVolume = () => { const h = new Date().getHours(), lvl = window.Tricks?.earsLevel?.(); return (h >= 23 || h < 7) && lvl != null && lvl < 0.008 ? 0.6 : 1; };
 // The phone's own text-to-speech (through Termux:API), for when Chrome's voice needs the internet or stays silent.
 async function phoneVoice(text, vs = VOICE_STYLES[settings.voiceStyle] || VOICE_STYLES.normal) {
   const my = speakToken;
@@ -115,7 +117,7 @@ function speak(text) {
       if (v) u.voice = v;
       u.rate = clamp(settings.rate * vs.rate, 0.3, 3);
       u.pitch = clamp(settings.pitch * vs.pitch + (mood === "excited" ? 0.15 : mood === "sad" ? -0.15 : 0), 0, 2);
-      u.volume = vs.volume ?? 1;
+      u.volume = (vs.volume ?? 1) * roomVolume();
       u.onboundary = e => { window.Face?.kick(); window.speakChar = e.charIndex; };   // each spoken word pulses the mouth
       u.onstart = () => { started = true; window.speakIndex = speakingNow.indexOf(u); window.speakChar = 0; try { window.Behaviors?.onSentence(u.text, speakIndex, speakingNow.length); } catch {} };
       return u;
@@ -198,7 +200,12 @@ function onHeard(text, conf = 1, how = {}) {
   if (settings.listen === "push") stopListening();
   // unsure speech recognition: tell her, so she can check instead of guessing
   styleOnce = how.quiet ? "whisper" : null;
-  const note = how.quiet ? "\n(he whispered that: answer quietly and briefly)" : how.noisy ? "\n(the room is noisy right now: keep it short and clear)" : "";
+  let note = how.quiet ? "\n(he whispered that: answer quietly and briefly)" : how.noisy ? "\n(the room is noisy right now: keep it short and clear)" : "";
+  // Was that even said to her? If she can see people and none of them was facing her or moving their lips, maybe not.
+  const Vn = window.Vision;
+  if (settings.listen === "always" && !settings.wake.trim() && Vn?.available && settings.track && Vn.faces > 0 && !Vn.lookingAtMe && !(performance.now() - (Vn.mouthMovedAt || 0) < 3000)
+      && !text.toLowerCase().includes((personality?.name || "nessari").toLowerCase()))
+    note += "\n(nobody you can see was facing you or moving their lips when you heard that: it may not have been meant for you, or it came from a TV. If it doesn't sound like it's for you, reply with only [quiet].)";
   ask(text, { hint: (conf < 0.55 ? `\n(speech recognition was unsure about that: ${Math.round(conf * 100)}% confident)` : "") + note });
 }
 $("#micBtn").onclick = () => {
@@ -628,6 +635,10 @@ async function camOn() {
   // which way is this camera facing? (mirroring for eye-tracking depends on it)
   const f = camStream.getVideoTracks()[0]?.getSettings?.().facingMode;
   if (f === "user" || f === "environment") settings.facing = f;
+  // if Android takes the camera away (another app, a glitch), take it back
+  const track = camStream.getVideoTracks()[0], mine = camStream;
+  if (track) track.onended = () => { if (camStream !== mine) return; camStream = null; logEvent("error", { where: "camera", detail: "camera stopped by itself; restarting it" });
+    setTimeout(() => { if (!camStream && settings.track) camOn().catch(() => {}); }, 2000); };
   $("#cam").srcObject = camStream; await $("#cam").play().catch(() => {});
   $("#btnCam").textContent = "Camera off";
   return camStream;
@@ -843,9 +854,10 @@ ${window.Mind?.RULES || ""}`;
 function quickSenses() {
   const b = battery ? `battery ${Math.round(battery.level * 100)}%${battery.charging ? " charging" : ""}` : "";
   const t = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const left = window.Power?.runtime || "";
   const low = battery && !battery.charging && battery.level <= 0.12 ? "LOW BATTERY: you're running out of energy, so keep it short and ask to be put on the charger" : "";
   const h = new Date().getHours(), tod = h < 5 ? "the middle of the night" : h < 9 ? "early morning" : h < 12 ? "morning" : h < 17 ? "afternoon" : h < 22 ? "evening" : "late at night";
-  return `(Robot status, don't repeat this: ${[b, low, tod, tipped ? "you are TIPPED OVER" : pose === "flat" ? "lying flat" : "upright", "time " + t].filter(Boolean).join(", ")})`;
+  return `(Robot status, don't repeat this: ${[b, left, low, tod, tipped ? "you are TIPPED OVER" : pose === "flat" ? "lying flat" : "upright", "time " + t].filter(Boolean).join(", ")})`;
 }
 
 // Conversation survives reloads and restarts: saved to data/conversation.json
@@ -1013,7 +1025,7 @@ function speakAppend(text) {
     let v = voices.find(v => v.voiceURI === settings.voice);
     if (v && v.localService === false && !navigator.onLine) v = voices.find(x => x.localService && x.lang === v.lang) || null;
     if (v) u.voice = v;
-    u.rate = clamp(settings.rate * vs.rate, 0.3, 3); u.pitch = clamp(settings.pitch * vs.pitch, 0, 2); u.volume = vs.volume ?? 1;
+    u.rate = clamp(settings.rate * vs.rate, 0.3, 3); u.pitch = clamp(settings.pitch * vs.pitch, 0, 2); u.volume = (vs.volume ?? 1) * roomVolume();
     let started = false, done = false;
     const viaPhone = why => {
       if (done || tok !== speakToken) return; done = true;
@@ -1135,7 +1147,9 @@ async function ask(userText, opts = {}) {
     }
   }
   const gen = ++askGen;
-  const brainText = userText + (opts.hint || "");          // notes for the brain only (how he said it), not shown in the chat
+  const brainText = userText + (opts.hint || "");
+  // a small "hmm" if the answer is taking a while, so she doesn't just sit there (the offline brain can be slow)
+  const hum = opts.auto ? 0 : setTimeout(() => { if (gen === askGen && busy && !talking && !settings.muted) Abilities.sfx("hm"); }, 2800);          // notes for the brain only (how he said it), not shown in the chat
   busy = true; busySince = Date.now(); busyIsAuto = !!opts.auto; askAbort = new AbortController();
   setFaceState("thinking", true);
   autoTurn = !!opts.auto;
@@ -1198,6 +1212,7 @@ async function ask(userText, opts = {}) {
     }
     if (quietReply(reply)) { reply = ""; Face.gesture(["side_eye_left", "side_eye_right", "squint", "look_up"][Math.floor(Math.random() * 4)]); }
   }
+  clearTimeout(hum);
   reply = String(reply || "").replace(/\[quiet\]/gi, "").trim();
   setFaceState("thinking", false);
   $("#heard").textContent = "";
@@ -1562,6 +1577,7 @@ let lastTouchTalk = 0;
 if (window.Face) Face.onTouch = (kind, zone = "face", extra = "") => {
   lastTalk = Date.now();
   window.Tricks?.bump("touch_" + kind);
+  if (talking && /mouth/.test(zone) && (kind === "tap" || kind === "hold" || kind === "double_tap") && window.shush?.("a finger on your mouth")) return;   // shush
   if (kind === "hold" && settings.listen === "push" && !listening && !busy) { Abilities.sfx("beep"); startListening(); return; }   // press and hold = talk
   if (kind === "swipe" && /all the way/.test(extra)) { Tricks.cyclePersona(extra.startsWith("left") ? -1 : 1); return; }
   const felt = window.Mind ? Mind.touch(kind, zone) : null;      // irritation/amusement accumulate and fade; repeats escalate
@@ -1597,6 +1613,7 @@ function trackTick() {
   for (let i = 0; i < gray.length; i++) gray[i] = (d[i * 4] * 3 + d[i * 4 + 1] * 6 + d[i * 4 + 2]) / 10;
   window.Tricks?.scanTick();
   try { window.Tags?.tick(trackVid); } catch {}       // printed marker tags (tags.js)
+  try { window.People?.tick(trackVid); } catch {}     // who is that? (people.js)
   const mode = settings.eyeMode || "motion";
   if (mode !== "motion") {                         // follow a bright light or a color instead of movement
     let n = 0, sx = 0, sy = 0, maxL = 0;
@@ -1610,7 +1627,7 @@ function trackTick() {
     if (n > gray.length * 0.004) {
       let x = (sx / n) / 32 - 1, y = (sy / n) / 24 - 1;
       if (settings.facing === "user") x = -x;
-      window.Face?.lookAt(x * 1.1, y * 0.8);
+      Attention.offer("light", { x: x * 1.1, y: y * 0.8, salience: 0.68, ttl: 400, label: mode === "bright" ? "a bright light" : "something " + mode });
     }
   }
   if (prevFrame) {
@@ -1624,7 +1641,7 @@ function trackTick() {
     if (frac > 0.006 && frac < 0.5) {
       let x = (sx / n) / 32 - 1, y = (sy / n) / 24 - 1;
       if (settings.facing === "user") x = -x;                // front camera: mirror so she looks AT you
-      if (mode === "motion" && !(performance.now() < (window.visionLookUntil || 0)) && !window.Mind?.distracted()) window.Face?.lookAt(x * 1.1, y * 0.8);   // a seen face (or a distraction) wins
+      if (mode === "motion") Attention.offer("motion", { x: x * 1.1, y: y * 0.8, salience: 0.25 + Math.min(0.25, frac * 2.5), ttl: 450, label: "something moving" });   // a seen face (or a distraction) wins
       if (Date.now() - stillSince > 120000 && frac > 0.05) {
         window.Tricks?.bump("visitors"); window.Tricks?.diary("someone walked in");
         if (mood === "bored" || mood === "sleepy") setMood("calm");
@@ -1634,6 +1651,7 @@ function trackTick() {
       stillSince = Date.now();
     }
   }
+  try { window.CameraCheck?.onFrame(gray); } catch {}                                   // is something covering the camera? (selfcare.js)
   try { window.Flow?.feed(prevFrame, gray, settings.facing === "user"); } catch {}      // which way things are moving (flow.js)
   prevFrame = gray;
 }
@@ -1859,7 +1877,7 @@ function onSettingChange(key) {
   refreshChips();
 }
 bindSetting("#setBrain", "brain"); bindSetting("#setChatter", "chatter"); bindSetting("#setHearing", "hearing");
-bindSetting("#setTags", "tags"); bindSetting("#setNfc", "nfc"); bindSetting("#setAutoPhoto", "autoPhoto"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
+bindSetting("#setFaces", "faces"); bindSetting("#setTags", "tags"); bindSetting("#setNfc", "nfc"); bindSetting("#setAutoPhoto", "autoPhoto"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
 bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bindSetting("#setPitch", "pitch", Number);
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
 bindSetting("#setTrack", "track"); bindSetting("#setVision", "vision"); bindSetting("#setEars", "ears"); bindSetting("#setQr", "qr");

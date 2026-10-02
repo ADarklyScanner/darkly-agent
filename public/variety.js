@@ -14,7 +14,7 @@
 
   async function load() {
     try { const j = JSON.parse(await readFile(FILE)); if (Array.isArray(j)) said = [...j, ...said].slice(-KEEP); } catch {}
-    loaded = true;
+    loaded = true; loadLikes();
   }
   let saveT = null;
   const save = () => { clearTimeout(saveT); saveT = setTimeout(() => writeFile(FILE, JSON.stringify(said.slice(-KEEP))).catch(() => {}), 1500); };
@@ -104,11 +104,32 @@
   const TONES = ["dry", "excited", "suspicious", "sleepy", "smug", "theatrical", "sweet", "grumpy", "mischievous", "deadpan", "curious", "dramatic"];
   const LENGTHS = ["three to six words", "one short sentence", "one sentence", "two short sentences"];
   const pick = (a, avoid = []) => { const pool = a.filter(x => !avoid.includes(x)); return (pool.length ? pool : a)[Math.floor(Math.random() * (pool.length || a.length))]; };
+  // What lands with him and what doesn't. Laughs, smiles and thumbs-up right after one of her lines push that
+  // kind of line up; "stop", "not funny" and thumbs-down push it down. Kept in data/likes.json.
+  let likes = {}, lastLine = null, quietUntil = 0;
+  const loadLikes = async () => { try { likes = JSON.parse(await readFile("likes.json")) || {}; } catch { likes = {}; } };
+  const weight = a => Math.max(0.15, Math.min(3, 1 + 0.5 * (likes[a] || 0)));
+  function weighted(list, avoid) {
+    const pool = list.filter(x => !avoid.includes(x)); const src = pool.length ? pool : list;
+    let total = 0; for (const a of src) total += weight(a); let r = Math.random() * total;
+    for (const a of src) { r -= weight(a); if (r <= 0) return a; } return src[src.length - 1];
+  }
   let usedAngles = [];
   function angle(kind = "react") {
-    const a = pick(kind === "idle" ? IDLE_ANGLES : REACT_ANGLES, usedAngles);
+    const a = weighted(kind === "idle" ? IDLE_ANGLES : REACT_ANGLES, usedAngles), tone = weighted(TONES, []);
     usedAngles.push(a); usedAngles = usedAngles.slice(-15);              // no angle again until 15 others have been used
-    return `Angle: ${a}. Tone: ${pick(TONES)}. Length: ${pick(LENGTHS)}.`;
+    lastLine = { angle: a, tone, t: Date.now() };
+    return `Angle: ${a}. Tone: ${tone}. Length: ${pick(LENGTHS)}.`;
+  }
+  // amount: +1 he liked it, -1 he didn't. Only counts if she said something of her own in the last half minute.
+  function feedback(amount, why = "") {
+    if (amount < 0 && /stop|quiet|shut|enough/.test(why)) quietUntil = Date.now() + 10 * 60000;     // asked to pipe down: no chatter for ten minutes
+    if (!lastLine || Date.now() - lastLine.t > 30000) return false;
+    for (const k of [lastLine.angle, lastLine.tone]) likes[k] = Math.max(-4, Math.min(4, (likes[k] || 0) + amount * (k === lastLine.tone ? 0.5 : 1)));
+    lastLine.t = 0;                                                       // one reaction per line
+    writeFile("likes.json", JSON.stringify(likes)).catch(() => {});
+    try { logEvent("auto", { detail: `learned: he ${amount > 0 ? "liked" : "didn't like"} "${lastLine.angle}" (${why})` }); } catch {}
+    return true;
   }
 
   // The full instruction appended to any spontaneous prompt.
@@ -120,9 +141,9 @@
     return `\n${angle(kind)}\n${pattern}${avoidBlock(topic)}Be original: say something you've never said before.`;
   }
   // Too many comments on one thing today: just react with the face.
-  const shouldStayQuiet = topic => timesToday(topic, 6) >= 5;
+  const shouldStayQuiet = topic => timesToday(topic, 6) >= 5 || Date.now() < quietUntil;
 
-  window.Variety = { load, record, similarity, mostSimilar, overused, avoidBlock, angle, guide, timesToday, shouldStayQuiet,
+  window.Variety = { feedback, get likes() { return likes; }, get quietUntil() { return quietUntil; }, weight, load, record, similarity, mostSimilar, overused, avoidBlock, angle, guide, timesToday, shouldStayQuiet,
     get said() { return said; }, get loaded() { return loaded; },
     reactAngles: REACT_ANGLES.length, idleAngles: IDLE_ANGLES.length, combos: (REACT_ANGLES.length + IDLE_ANGLES.length) * TONES.length * LENGTHS.length };
   // readFile lives in app.js, which loads after this file

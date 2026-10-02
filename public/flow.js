@@ -70,7 +70,7 @@
     const gx = r.global.x, sdir = Math.abs(gx) >= 2 ? Math.sign(gx) : 0;
     if (sdir && sdir === shiftDir) shiftRun++; else { shiftRun = sdir ? 1 : 0; shiftDir = sdir; }
     if (shiftRun >= 4 && ready("shift", 10000)) F.onEvent?.("turned", sdir > 0 ? "to your left" : "to your right");
-    if (shiftRun >= 2) window.Face?.lookAt(sdir * flip * 0.6, 0, 300);  // eyes stay on what they were looking at while the body swings
+    if (shiftRun >= 2) window.Attention?.offer("steady", { x: sdir * flip * 0.6, y: 0, salience: 0.6, ttl: 300, label: "keeping her eyes steady while she's turned" });
     // something rushing at her
     loomRun = r.loom > 1.4 ? loomRun + 1 : 0;
     if (loomRun >= 2 && ready("loom", 6000)) F.onEvent?.("loom", "");

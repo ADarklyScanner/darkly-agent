@@ -87,7 +87,7 @@
     // beat: only worth the effort while there's music about, and never from her own sound
     if (selfNoise) { flux = []; return; }
     onsets(block, rate);
-    if (now() - lastBeatCalc > 1000) {
+    if (now() - lastBeatCalc > 1000 && (window.Power?.slow || 1) === 1) {
       lastBeatCalc = now();
       const b = A.wantBeat?.() === false ? null : findBeat();
       if (b && b.conf > 0.3) { A.beat = b; beatLostAt = 0; window.Face?.prim?.beat(b.bpm, b.t0); }
@@ -101,6 +101,61 @@
     const period = 60000 / b.bpm, since = (now() - b.t0) % period;
     if (since < 60 && (typeof settings === "undefined" || settings.react !== false)) Face.kick();
   }, 50);
+
+  // ---------------- where did that sound come from? (needs two real microphones) ----------------
+  // Phones have a microphone at each end. A sound nearer the top reaches the top microphone a fraction of a
+  // millisecond sooner. GCC-PHAT finds that tiny delay. With the phone upright that tells "above" from "below";
+  // lying on its side it tells left from right. If Chrome only hands over one microphone (both channels the same),
+  // this quietly reports that direction isn't available.
+  function fft(re, im, inverse) {
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; } }
+    for (let len = 2; len <= n; len <<= 1) {
+      const ang = 2 * Math.PI / len * (inverse ? -1 : 1), wr = Math.cos(ang), wi = Math.sin(ang);
+      for (let i = 0; i < n; i += len) { let cr = 1, ci = 0;
+        for (let k = 0; k < len / 2; k++) { const a = i + k, b = a + len / 2, xr = re[b] * cr - im[b] * ci, xi = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi; const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t; } }
+    }
+  }
+  // Delay of channel b relative to channel a, in samples (positive = the sound reached a first). null if unclear.
+  function gccPhat(a, b, maxLag) {
+    const n = 1 << Math.ceil(Math.log2(a.length)), ar = new Float64Array(n), ai = new Float64Array(n), br = new Float64Array(n), bi = new Float64Array(n);
+    for (let i = 0; i < a.length; i++) { const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (a.length - 1)); ar[i] = a[i] * w; br[i] = b[i] * w; }
+    fft(ar, ai); fft(br, bi);
+    for (let k = 0; k < n; k++) { const r = ar[k] * br[k] + ai[k] * bi[k], im = ai[k] * br[k] - ar[k] * bi[k], mag = Math.hypot(r, im) || 1e-12; ar[k] = r / mag; ai[k] = im / mag; }   // keep only the timing, not the loudness
+    fft(ar, ai, true);
+    let best = -Infinity, lag = 0, sum = 0, cnt = 0;
+    for (let l = -maxLag; l <= maxLag; l++) { const v = ar[(l + n) % n]; sum += Math.abs(v); cnt++; if (v > best) { best = v; lag = l; } }
+    const sharp = best / (sum / cnt || 1e-9);
+    return sharp > 2.2 ? { lag: -lag, sharp } : null;
+  }
+  A.gccPhat = gccPhat;
+  A.stereo = { ok: null, checks: 0, same: 0, last: null };          // ok: true = two real microphones, false = only one
+  let prevRms = 0;
+  A.onStereo = (L, R, rate) => {
+    if (!A.enabled || A.stereo.ok === false) return;
+    let e = 0, diff = 0; for (let i = 0; i < L.length; i += 4) { e += L[i] * L[i]; const d = L[i] - R[i]; diff += d * d; }
+    const rms = Math.sqrt(e / (L.length / 4));
+    if (rms > 0.01 && A.stereo.checks < 40) {                       // are the two channels actually different microphones?
+      A.stereo.checks++; if (diff < e * 0.001) A.stereo.same++;
+      if (A.stereo.checks === 40) A.stereo.ok = A.stereo.same < 30;
+    }
+    const onset = rms > 0.03 && rms > prevRms * 1.8; prevRms = prevRms * 0.7 + rms * 0.3;
+    if (!onset || A.stereo.ok !== true || (typeof talking !== "undefined" && talking) || window.Abilities?.isPlaying?.()) return;
+    const maxLag = Math.ceil(0.17 / 343 * rate);                    // the microphones are at most ~17 cm apart
+    const g = gccPhat(L, R, maxLag); if (!g) return;
+    const top = (typeof settings !== "undefined" && settings.micTopFirst === false ? -1 : 1) * g.lag / maxLag;   // +1 = from the top end of the phone, -1 = from the bottom
+    if (Math.abs(top) < 0.25) return;                                // roughly side-on: no clear direction along the phone
+    A.stereo.last = { top: Math.max(-1, Math.min(1, top)), t: now(), rms };
+    A.onDirection?.(A.stereo.last);
+  };
+  A.onDirection = d => {                                             // eyes and ears go toward it
+    const P = window.Face?.prim; if (!P) return;
+    P.ears(d.top > 0 ? 1 : -0.6, d.top > 0 ? 1 : -0.6, 1400); P.earTwitch();
+    if (window.Mind?.glance) Mind.glance(0, -d.top * 0.9, 900, d.top > 0 ? "a sound from above her" : "a sound from below her");
+    window.Mind?.event("sound_direction", `a sound came from ${d.top > 0 ? "the top end of the phone (above you, if you're upright)" : "the bottom end of the phone (below you, if you're upright)"}`, { source: "HEARD", conf: 0.6, salience: 0.25 });
+  };
+  A.directionStatus = () => A.stereo.ok === true ? "two microphones: she can tell which end of the phone a sound came from" : A.stereo.ok === false ? "only one microphone is available to her, so no sound direction" : "not known yet (needs some sound first)";
 
   // ---------------- tools ----------------
   const sleep = ms => new Promise(r => setTimeout(r, ms));

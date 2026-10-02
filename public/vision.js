@@ -38,7 +38,9 @@ function workerEngine() {
         return d;
       },
       async sound(data, rate) { return (await this.call({ type: "audio", data, rate }, [data.buffer], 3000)).cats; },
-      async embedTexts(texts) { return (await this.call({ type: "embed-text", texts }, [], 20000)).vecs; }
+      async embedTexts(texts) { return (await this.call({ type: "embed-text", texts }, [], 20000)).vecs; },
+      async embedImage(v, sx, sy, sw, sh) { const bitmap = await createImageBitmap(v, sx, sy, sw, sh, { resizeWidth: 224, resizeHeight: 224, resizeQuality: "low" });
+        return (await this.call({ type: "embed-image", bitmap }, [bitmap], 5000)).vec; }
     };
     const fail = e => { eng.dead = true; w.terminate(); for (const f of pending.values()) f({ error: "worker died" }); pending.clear(); if (!ready) reject(e); else V.emit("engine-died", e); };
     const timer = setTimeout(() => fail(new Error("worker took too long to start")), 60000);
@@ -59,7 +61,9 @@ async function pageEngine() {
   const eng = { mode: "page", have: Object.fromEntries(Object.entries(t).map(([k, v]) => [k, !!v])), audio: false,
     async frame(v, ts, want) { const t0 = now(); const res = C.detect(t, v, ts, want, v.videoWidth || 640, v.videoHeight || 480); return { res, ms: now() - t0 }; },
     async sound(data, rate) { return C.classify(eng.audioTask, data, rate); },
-    async embedTexts(texts) { eng.textTask ||= await C.makeTextTask(false); return C.embedTexts(eng.textTask, texts); }
+    async embedTexts(texts) { eng.textTask ||= await C.makeTextTask(false); return C.embedTexts(eng.textTask, texts); },
+    async embedImage(v, sx, sy, sw, sh) { const c = document.createElement("canvas"); c.width = c.height = 224; c.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, 224, 224);
+      const e = t.embed?.embed(c).embeddings?.[0]; return e ? Array.from(e.floatEmbedding || e.quantizedEmbedding || []) : null; }
   };
   try { eng.audioTask = await C.makeAudioTask(false); eng.audio = true; } catch {}
   return eng;
@@ -101,11 +105,13 @@ V.engineInfo = () => engine ? { mode: engine.mode, have: engine.have, hearing: !
 
 function video() { const v = window.trackVid; return v && v.readyState >= 2 ? v : null; }
 
+let loopN = 0;
 async function loop() {
   if (!engine || inFlight || !settings.vision || document.hidden) return;
+  const slow = window.Power?.slow || 1; if (slow > 1 && loopN++ % slow) return;     // hot or low on battery: look less often
   const v = video(); if (!v || v.currentTime === lastVideoTime) return;
   lastVideoTime = v.currentTime; tick++;
-  const busyPhone = slowMs > 70;                          // the phone is struggling: run the extras less often
+  const busyPhone = slowMs > 70 || slow > 1;              // the phone is struggling or saving energy: run the extras less often
   const want = { face: true, hand: tick % 2 === 0, pose: tick % (busyPhone ? 9 : 3) === 1,
     obj: tick % (busyPhone ? 30 : 12) === 5, embed: tick % 120 === 60 };
   inFlight = true;
@@ -131,7 +137,7 @@ function onFaces(r) {
   const faces = r.faceLandmarks || [];
   V.faces = faces.length;
   if (!faces.length) {
-    V.main = null; V.lookingAtMe = false; faceSince = 0;
+    V.main = null; V.lookingAtMe = false; faceSince = 0; V.faceBoxes = [];
     if (lastCount && now() - lastSeen > 8000) { lastCount = 0; V.emit("left"); }   // gone for 8s = left
     return;
   }
@@ -141,9 +147,11 @@ function onFaces(r) {
     return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0, lm };
   });
   const i = boxes.reduce((b, f, k) => f.w > boxes[b].w ? k : b, 0), m = boxes[i];
+  V.faceBoxes = boxes.map(b => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 })).sort((p, q) => (q.x1 - q.x0) - (p.x1 - p.x0));   // for people.js
   const cx = (m.x0 + m.x1) / 2, cy = (m.y0 + m.y1) / 2;
-  window.visionLookUntil = now() + 400;                    // face beats plain motion for where her eyes go
-  if (!window.Mind?.distracted()) Face.lookAt(mirrorX(cx) * 1.15, (cy * 2 - 1) * 0.9, 400);   // unless something stole her attention
+  // a face is worth more than plain movement, and more still if it's looking at her or talking
+  V.faceGaze = { x: mirrorX(cx) * 1.15, y: (cy * 2 - 1) * 0.9 };
+  Attention.offer("face", { ...V.faceGaze, salience: 0.5 + (V.lookingAtMe ? 0.12 : 0) + (V.mouthMoving ? 0.1 : 0), ttl: 500, label: window.People?.here?.find(h => h.name && h.sure)?.name ? window.People.here.find(h => h.name && h.sure).name + "'s face" : "his face" });
 
   // arrivals and counts
   if (!faceSince) faceSince = now();
@@ -197,7 +205,7 @@ function onFaces(r) {
 
 // Smaller things a face does: winks, blown kisses, raised eyebrows, yawns, puffed cheeks.
 // Each must be held for a moment (so a passing twitch doesn't count) and then has a cooldown.
-const held = {}, firedAt = {};
+const held = {}, firedAt = {}, jawTrack = [];
 function holdFor(key, on, ms, cooldown, fire) {
   if (!on) { held[key] = 0; return; }
   if (!held[key]) held[key] = now();
@@ -215,6 +223,11 @@ function faceExtras(cats, { blinkL, blinkR, jaw, smile }) {
   holdFor("brows", browsUp > 0.6 && jaw < 0.3, 500, 6000, () => V.emit("brows_up"));
   holdFor("yawn", jaw > 0.6 && (blinkL + blinkR > 0.6 || squint > 0.3 || funnel > 0.2), 1300, 20000, () => V.emit("yawn"));
   holdFor("puff", puff > 0.5, 500, 8000, () => V.emit("cheek_puff"));
+  // is his mouth moving (talking)? the jaw opening and closing over the last second or so
+  jawTrack.push([now(), jaw]); while (jawTrack.length && now() - jawTrack[0][0] > 1200) jawTrack.shift();
+  let jmin = 1, jmax = 0, flips = 0, dirJ = 0; for (let k = 1; k < jawTrack.length; k++) { const v = jawTrack[k][1], d = v - jawTrack[k - 1][1]; jmin = Math.min(jmin, v); jmax = Math.max(jmax, v); if (Math.abs(d) > 0.03) { const s = Math.sign(d); if (dirJ && s !== dirJ) flips++; dirJ = s; } }
+  V.mouthMoving = jawTrack.length > 4 && jmax - jmin > 0.1 && flips >= 2;
+  if (V.mouthMoving) V.mouthMovedAt = now();
   V.faceDetail = { winking: blinkL > 0.6 !== blinkR > 0.6, pucker: pucker > 0.6, browsUp: browsUp > 0.6, jawOpen: jaw > 0.6 };
 }
 
@@ -279,8 +292,7 @@ function handExtras(r) {
     const len = Math.hypot(dx, dy) || 1e-6, size = d2(lm[0], lm[9]) || 0.1;
     const dir = len < size * 0.45 && dz < -0.02 ? "at you" : Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "to your right" : "to your left") : (dy < 0 ? "up" : "down");
     V.pointing = { dir, x: mirrorX(tip.x), y: tip.y * 2 - 1, vx: dx / len, vy: dy / len };
-    window.visionLookUntil = now() + 500;
-    if (!window.Mind?.distracted()) Face.lookAt(V.pointing.x * 1.15, V.pointing.y * 0.95, 400);          // follow the fingertip
+    Attention.offer("finger", { x: V.pointing.x * 1.15, y: V.pointing.y * 0.95, salience: 0.7, ttl: 500, label: "his fingertip" });   // follow the fingertip
     if (dir !== pointCandidate) { pointCandidate = dir; pointSince = now(); }
     else holdFor("point:" + dir, true, 700, 6000, () => V.emit("point", V.pointing));
   } else { V.pointing = null; pointCandidate = null; for (const k of Object.keys(held)) if (k.startsWith("point:")) held[k] = 0; }
@@ -308,7 +320,9 @@ const answer = text => { if (!busy) { lastTalk = Date.now(); ask(text); } };
 
 V.on("arrive", ({ count }) => { Tricks.bump("visitors"); Tricks.diary(`saw ${count > 1 ? count + " people" : "someone"} arrive`);
   if (mood === "bored" || mood === "sleepy") setMood("calm"); Face.gesture("wide");
-  react("face-arrive", count > 1 ? `${count} faces just appeared in front of your camera` : "a face just appeared in front of your camera (someone came to you)", 3); });
+  const generic = () => react("face-arrive", count > 1 ? `${count} faces just appeared in front of your camera` : "a face just appeared in front of your camera (someone came to you)", 3);
+  // if she knows people by face, give her a few seconds to work out WHO it is before reacting
+  if (window.People?.people?.length) setTimeout(() => { if (!People.here.some(h => h.name && h.sure)) generic(); }, 8000); else generic(); });
 V.on("left", () => { Face.gesture("look_down"); if (Date.now() - lastTalk < 60000) react("face-left", "the person you were talking to just walked away from your camera", 3); });
 V.on("count", ({ count, before }) => { if (count > before) react("face-count", `you now see ${count} faces in front of you`, 3); });
 V.on("very_close", () => { Face.gesture("startle"); react("face-close", "someone put their face REALLY close to your camera", 2); });
@@ -320,6 +334,8 @@ V.on("expression", e => {
   if (e === "surprised") react("surprised", "he looks surprised", 3);
   if (e === "frowning" && Math.random() < 0.4) react("frown", "he's frowning", 4);
 });
+V.on("expression", e => { if (e === "smiling") window.Variety?.feedback(0.5, "he smiled"); });
+V.on("sound", s => { if (/laughed/.test(s.what) && s.run === 1) window.Variety?.feedback(1, "he laughed"); });
 V.on("nod", () => { Face.gesture("nod"); if (askedRecently()) answer("(he nods yes)"); });
 V.on("shake", () => { Face.gesture("shake_head"); if (askedRecently()) answer("(he shakes his head no)"); });
 V.on("wave", () => {
@@ -330,11 +346,12 @@ V.on("wave", () => {
 V.on("gesture", g => {
   if (rpsWaiting) return;
   const quick = {
-    Thumb_Up: () => { setMood("happy"); if (askedRecently()) answer("(he gives you a thumbs up)"); else if (Math.random() < 0.4) react("thumbup", "he gave you a thumbs up", 2); },
-    Thumb_Down: () => { setMood("sad"); if (askedRecently()) answer("(he gives you a thumbs down)"); else react("thumbdown", "he gave you a thumbs down", 2); },
+    Thumb_Up: () => { window.Variety?.feedback(1, "thumbs up"); setMood("happy"); if (askedRecently()) answer("(he gives you a thumbs up)"); else if (Math.random() < 0.4) react("thumbup", "he gave you a thumbs up", 2); },
+    Thumb_Down: () => { window.Variety?.feedback(-1, "thumbs down"); setMood("sad"); if (askedRecently()) answer("(he gives you a thumbs down)"); else react("thumbdown", "he gave you a thumbs down", 2); },
     Victory: () => { Face.effect("sparkle", 2); if (Math.random() < 0.3) react("peace", "he's flashing a peace sign at you", 3); },
     ILoveYou: () => { Face.effect("heart_eyes", 4); react("ily", "he's making the 'I love you' hand sign at you", 3); },
     Pointing_Up: () => Face.gesture("look_up"),
+    Open_Palm: () => { if (talking) window.shush?.("he held up his hand: stop"); },
     Closed_Fist: () => { if (Math.random() < 0.3) react("fist", "he's holding up a fist at you (fist bump? threat?)", 3); }
   };
   quick[g]?.();
@@ -474,11 +491,14 @@ async function onScene(vec) {
     if (!vec?.length) return;
     const cos = (a, b) => { let d = 0, na = 0, nb = 0; for (let i = 0; i < a.length; i++) { d += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; } return d / (Math.sqrt(na * nb) || 1); };
     let best = -1, bi = -1; scenes.forEach((s, i) => { const c = cos(vec, s.v); if (c > best) { best = c; bi = i; } });
-    if (best > 0.82) { scenes[bi].seen++; scenes[bi].t = Date.now(); if (V.place !== bi) { V.place = bi; } }
+    V.sceneVec = vec;
+    if (best > 0.82) { scenes[bi].seen++; scenes[bi].t = Date.now(); if (V.place !== bi) { V.place = bi; }
+      const was = V.room; V.room = scenes[bi].name || null;
+      if (V.room && V.room !== was) window.Mind?.event("place", `you're in the ${V.room}`, { source: "SAW", conf: best, salience: 0.4 }); }
     else {
       scenes.push({ v: vec, seen: 1, t: Date.now(), first: Date.now() }); scenes = scenes.slice(-60);
       if (scenes.length > 1) react("scene-new", "your view changed to a place you don't recognize (you were moved somewhere new, or the room changed a lot)", 5);
-      V.place = scenes.length - 1;
+      V.place = scenes.length - 1; V.room = null;
     }
     writeFile("scenes.json", JSON.stringify(scenes)).catch(() => {});
   } catch {}
@@ -491,6 +511,9 @@ const SOUND_EVENTS = [
   [/telephone|ringtone/i, "a phone is ringing", 0.6], [/glass|shatter|breaking/i, "something like glass breaking", 0.9],
   [/baby cry|crying|sobbing/i, "someone is crying", 0.8], [/laughter|giggle|chuckle/i, "someone laughed", 0.5], [/sneeze/i, "someone sneezed", 0.8],
   [/cough/i, "someone coughed", 0.35], [/snoring/i, "someone is snoring", 0.5], [/applause|clapping/i, "applause", 0.5],
+  [/^door$|sliding door|squeak/i, "a door opened or closed", 0.55], [/slam/i, "a door slammed", 0.7], [/footsteps|^walk/i, "footsteps nearby (someone's walking around)", 0.5],
+  [/keys jangling/i, "keys jangling", 0.45], [/television/i, "a TV is on", 0.15], [/typing|computer keyboard/i, "someone is typing", 0.15],
+  [/water tap|faucet|sink|toilet flush/i, "water running", 0.2], [/vehicle horn|car alarm/i, "a car horn or alarm outside", 0.45],
   [/whistling/i, "someone is whistling", 0.4], [/finger snapping/i, "someone snapped their fingers", 0.45], [/singing|choir/i, "someone is singing", 0.55], [/^music$|musical instrument|guitar|piano|drum/i, "music is playing", 0.35],
   [/microwave|blender|vacuum|hair dryer/i, "an appliance is running", 0.25], [/thunder/i, "thunder", 0.6], [/explosion|gunshot|bang/i, "a very loud bang", 0.9]
 ];
@@ -515,6 +538,8 @@ async function initAudio() {
       const [, what, base] = hit;
       soundRun = what === lastSound ? soundRun + 1 : 1; lastSound = what;
       V.emit("sound", { what, name: c.categoryName, score: c.score, base, run: soundRun });
+      if (/TV is on/.test(what)) V.tvOnAt = now();
+      if (base < 0.25) { if (soundRun === 1) window.Mind?.event("sound", what, { source: "HEARD", salience: 0.2 }); break; }   // background sounds: noted, not reacted to
       if (/music/.test(what)) { if (!musicSince) musicSince = now(); if (now() - musicSince > 4000 && settings.react) Face.effect("dance", 3); }
       if (/sneezed/.test(what)) Face.gesture("startle");
       if (/laughed/.test(what) && window.Mind) Mind.S.amusement = Math.min(1, Mind.S.amusement + 0.15);
@@ -541,10 +566,62 @@ V.run = async (name, input) => {
   if (name === "mirror_mode") { V.mirror = !!input.on; if (!V.mirror) setMood("calm"); return V.mirror ? "Mirroring his expressions." : "Stopped mirroring."; }
   if (name === "rock_paper_scissors") return await rockPaperScissors();
   if (name === "count_fingers") return V.handsNow();
+  if (name === "name_room") return await V.nameRoom(input.name);
+  if (name === "which_room") return V.whichRoom();
+  if (name === "learn_thing") return await V.learnThing(input.name);
   if (name === "learn_gesture") return await V.learnGesture(input.name, input.trick);
   if (name === "forget_gesture") return await V.forgetGesture(input.name);
 };
 V.rockPaperScissors = rockPaperScissors;
+// Rooms: he tells her what this place is called; she knows it when she sees it again.
+V.nameRoom = async name => {
+  name = String(name || "").toLowerCase().replace(/^(the|my|our)\s+/, "").replace(/[.!?]+$/, "").trim().slice(0, 30); if (!name) return "FAILED: what's this room called?";
+  if (!engine || !hasTask("embed")) return "FAILED: scene memory isn't available (run robot-vision-download).";
+  const v = video(); if (!v) return "FAILED: your camera eyes are off.";
+  try { const { res } = await engine.frame(v, now(), { embed: true }); if (res.embed) await onScene(res.embed); } catch {}
+  if (V.place == null || !scenes?.[V.place]) return "FAILED: you couldn't get a good look at the room. Try again in a moment.";
+  scenes[V.place].name = name; V.room = name; await writeFile("scenes.json", JSON.stringify(scenes)).catch(() => {});
+  return `Got it: this is the ${name}. You'll know it when you see it again, and you'll remember which room things were in. (Rooms look different from different spots, so he may need to tell you again from another angle.)`;
+};
+V.whichRoom = () => V.room ? `You're in the ${V.room}.` : (scenes || []).some(s => s.name) ? `You don't recognize this view as a room you know (you know: ${[...new Set(scenes.filter(s => s.name).map(s => s.name))].join(", ")}).` : "You don't know any rooms by name yet. He can tell you 'this is the kitchen'.";
+// Things he shows her and names ("this is Frank"): she remembers what they look like.
+let shown = null, shownHit = { name: null, n: 0 }, shownAt = 0;
+const loadShown = async () => { if (!shown) { try { shown = JSON.parse(await readFile("shown-things.json")); } catch { shown = []; } } return shown; };
+const cosv = (a, b) => { let d = 0, na = 0, nb = 0; for (let i = 0; i < a.length; i++) { d += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; } return d / (Math.sqrt(na * nb) || 1); };
+async function lookAtMiddle() {                            // what the middle of her view looks like, as numbers
+  const v = video(); if (!v || !engine?.embedImage) return null;
+  const s = Math.min(v.videoWidth, v.videoHeight) * 0.6;
+  try { return await engine.embedImage(v, (v.videoWidth - s) / 2, (v.videoHeight - s) / 2, s, s); } catch { return null; }
+}
+V.learnThing = async name => {
+  name = String(name || "").replace(/[.!?]+$/, "").trim().slice(0, 40); if (!name) return "FAILED: what's it called?";
+  if (!hasTask("embed")) return "FAILED: this needs the scene-memory model (robot-vision-download).";
+  await loadShown(); const vecs = [];
+  for (let i = 0; i < 4; i++) { const e = await lookAtMiddle(); if (e?.length) vecs.push(e); await new Promise(r => setTimeout(r, 450)); }   // a few looks as he holds it
+  if (!vecs.length) return "FAILED: you couldn't get a look at it. He should hold it in the middle of your view.";
+  const old = shown.find(t => t.name.toLowerCase() === name.toLowerCase());
+  if (old) old.vecs = [...old.vecs, ...vecs].slice(-10); else shown.push({ name, vecs, t: Date.now() });
+  shown = shown.slice(-30); await writeFile("shown-things.json", JSON.stringify(shown)).catch(() => {});
+  window.Mind?.run?.("note_where", { thing: name, where: "he was holding it up in front of you", how: "saw" })?.catch?.(() => {});
+  return `You'll know "${name}" when you see it again (${vecs.length} looks saved). It works best when it's held up in the middle of your view like now.`;
+};
+V.whatIsThis = async () => {
+  await loadShown(); if (!shown.length) return null;
+  const e = await lookAtMiddle(); if (!e?.length) return null;
+  const scored = shown.map(t => ({ name: t.name, s: Math.max(...t.vecs.map(v => cosv(e, v))) })).sort((a, b) => b.s - a.s);
+  return scored[0].s > 0.7 && (scored.length < 2 || scored[0].s - scored[1].s > 0.04) ? { name: scored[0].name, score: scored[0].s } : null;
+};
+setInterval(async () => {                                   // now and then, check whether the thing in front of her is one she was shown
+  if (!V.available || !settings.vision || document.hidden || !shown?.length || (window.Power?.slow || 1) > 1) return;
+  if (!(V.hand || V.objectsVisible().length)) { shownHit = { name: null, n: 0 }; return; }      // only when something's being held up or is in view
+  const hit = await V.whatIsThis();
+  if (!hit) { shownHit = { name: null, n: 0 }; return; }
+  shownHit = hit.name === shownHit.name ? { name: hit.name, n: shownHit.n + 1 } : { name: hit.name, n: 1 };
+  if (shownHit.n === 2 && now() - shownAt > 120000) { shownAt = now(); V.known = hit.name; V.emit("known_thing", hit);
+    window.Mind?.event("object_seen", `you recognize ${hit.name} (he showed it to you before)`, { source: "SAW", conf: hit.score, salience: 0.45 });
+    react("thing-" + hit.name, `you recognize the thing in front of you: it's ${hit.name}, which he showed you before`, 20); }
+}, 4000);
+setTimeout(() => loadShown().catch(() => {}), 5000);
 V.learnGesture = async (name, trick) => {
   if (!V.hand) return "FAILED: you don't see a hand right now. He needs to hold the gesture up in front of your camera.";
   await loadGestures();

@@ -209,6 +209,8 @@
   // ---------- sound effects ----------
   const SFX = {
     beep() { osc("sine", 880, ac.currentTime, 0.12, 0.35); return 0.2; },
+    hm() { const t = ac.currentTime, o = osc("sine", 190, t, 0.38, 0.1); o.frequency.linearRampToValueAtTime(230, t + 0.18); o.frequency.linearRampToValueAtTime(205, t + 0.38); return 0.45; },   // a quiet "hmm"
+    chuckle() { const t = ac.currentTime; [330, 300, 280, 250].forEach((f, i) => osc("triangle", f, t + i * 0.11, 0.07, 0.16)); return 0.5; },
     boop() { const o = osc("sine", 440, ac.currentTime, 0.18, 0.35); o.frequency.exponentialRampToValueAtTime(300, ac.currentTime + 0.18); return 0.25; },
     chirp() { let t = ac.currentTime; for (let i = 0; i < 9; i++) { const d = 0.04 + Math.random() * 0.08, o = osc("sine", 600 + Math.random() * 2400, t, d, 0.22);
       o.frequency.exponentialRampToValueAtTime(400 + Math.random() * 3000, t + d); t += d + 0.02; } return t - ac.currentTime; },

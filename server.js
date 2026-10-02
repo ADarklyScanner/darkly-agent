@@ -410,7 +410,7 @@ async function readHardware() {
   return hwCache.data;
 }
 
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json", ".mjs": "text/javascript", ".wasm": "application/wasm", ".task": "application/octet-stream", ".tflite": "application/octet-stream" };
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json", ".mjs": "text/javascript", ".wasm": "application/wasm", ".task": "application/octet-stream", ".tflite": "application/octet-stream" };
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -593,6 +593,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === "/api/phone/stop" && req.method === "POST") return send(res, 200, { stopped: phone.stop() });
     if (p === "/api/phone/status") return send(res, 200, phone.status());
+    if (p === "/api/phone/routines" && req.method === "GET") return send(res, 200, { routines: phone.listRoutines() });
+    if (p === "/api/phone/routines" && req.method === "DELETE") return send(res, 200, { forgotten: phone.forgetRoutine(url.searchParams.get("goal") || "") });
     if (p === "/api/phone/quick" && req.method === "POST") {
       const body = await readBody(req);
       try { return send(res, 200, { result: await phone.quick(body.cmd, body.arg) }); }
@@ -736,7 +738,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 const PORT = Number(process.env.PORT) || config().port;
-phone.init({ apiKeys, geminiKeys, geminiModels, timedFetch, log, config: () => ({ ...config(), port: PORT }), GEMINI_BASE,
+phone.init({ dataDir: DATA, apiKeys, geminiKeys, geminiModels, timedFetch, log, config: () => ({ ...config(), port: PORT }), GEMINI_BASE,
   CLAUDE_URL: process.env.ROBOT_CLAUDE_URL || "https://api.anthropic.com/v1/messages" });
 // Listens on all interfaces so the optional remote page works; everything except /remote is refused
 // for other devices (see the isLocal check at the top of the handler).

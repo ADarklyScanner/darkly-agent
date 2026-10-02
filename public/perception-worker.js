@@ -30,6 +30,13 @@ self.onmessage = async ({ data: m }) => {
     self.postMessage({ type: "text", id: m.id, vecs, error });
     return;
   }
+  if (m.type === "embed-image") {                       // what a cut-out of the picture "looks like", as numbers
+    let vec = null;
+    try { const e = tasks?.embed?.embed(m.bitmap).embeddings?.[0]; if (e) vec = Array.from(e.floatEmbedding || e.quantizedEmbedding || []); } catch {}
+    finally { m.bitmap.close?.(); }
+    self.postMessage({ type: "image", id: m.id, vec });
+    return;
+  }
   if (m.type === "audio") {
     let cats = null; try { if (audio) cats = classify(audio, m.data, m.rate); } catch {}
     self.postMessage({ type: "audio", id: m.id, cats });

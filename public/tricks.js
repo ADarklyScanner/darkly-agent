@@ -95,6 +95,7 @@
     name_that_note: { about: "Tells you which note you're singing or whistling", steps: [{ say: "Sing me one note and hold it." }, { tool: "listen_pitch" }] },
     hum_it_back: { about: "Listens to a tune you hum and plays it back", steps: [{ say: "Hum me a little tune." }, { tool: "hum_back" }] },
     read_this: { about: "Reads printed text you hold up (no internet needed)", steps: [{ say: "Hold it up to my camera, nice and flat." }, { wait: 2 }, { tool: "read_text" }] },
+    systems_check: { about: "Runs a check of all her parts and reports", steps: [{ sfx: "powerup" }, { say: "Running a systems check." }, { tool: "self_check" }] },
     tag_check: { about: "Says which marker tags she can see", steps: [{ gesture: "scan_room" }, { tool: "see_tags" }] },
     scavenger_hunt: { about: "Scavenger hunt: you show her the things she names", steps: [{ game: "scavenger" }] },
     whats_missing: { about: "Close-your-eyes game: she says which object you took away", steps: [{ game: "missing" }] },
@@ -323,18 +324,22 @@
     // offline hearing (hearing.js) listens through this same microphone, so it keeps the ears open
     if (!force && !window.Hearing?.active && (!settings.ears || settings.listen === "always" || listening)) return false;
     try {
-      ears.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      ears.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 } } });   // both microphones, if the phone allows
+      // if Android takes the microphone away, take it back
+      const mt = ears.stream.getAudioTracks()[0], mine = ears.stream;
+      if (mt) mt.onended = () => { if (ears.stream !== mine) return; logEvent("error", { where: "ears", detail: "microphone stopped by itself; restarting it" }); earsStop(); setTimeout(() => earsStart(!!window.Hearing?.active), 2000); };
       ears.ctx = new (window.AudioContext || window.webkitAudioContext)();
       const src = ears.ctx.createMediaStreamSource(ears.stream);
       ears.an = ears.ctx.createAnalyser(); ears.an.fftSize = 512; src.connect(ears.an);
       // keep the last ~1 second of raw sound for the sound classifier (vision.js)
       ears.ring = new Float32Array(Math.round(ears.ctx.sampleRate)); ears.ringPos = 0;
-      const tap = ears.ctx.createScriptProcessor(4096, 1, 1);
+      const tap = ears.ctx.createScriptProcessor(4096, 2, 1);
       tap.onaudioprocess = e => {
         const d = e.inputBuffer.getChannelData(0), r = ears.ring;
         for (let i = 0; i < d.length; i++) { r[ears.ringPos] = d[i]; ears.ringPos = (ears.ringPos + 1) % r.length; }
         try { window.Hearing?.onAudio(d, ears.ctx.sampleRate); } catch {}
         try { window.AudioSmarts?.onAudio(d, ears.ctx.sampleRate); } catch {}
+        try { if (e.inputBuffer.numberOfChannels > 1) window.AudioSmarts?.onStereo(d, e.inputBuffer.getChannelData(1), ears.ctx.sampleRate); } catch {}
       };
       const mute = ears.ctx.createGain(); mute.gain.value = 0;
       src.connect(tap); tap.connect(mute); mute.connect(ears.ctx.destination);
@@ -700,6 +705,7 @@
   window.Tricks = {
     tools: TOOLS, handles: n => NAMES.has(n), run, runTrick, list: () => Object.keys(all()), all, registerGame, onCode, playGame,
     // the last second of sound, oldest first (null if her ears are off or she's making noise herself)
+    earsLevel: () => ears.running ? ears.base : null,          // the room's background sound level
     earsSamples() {
       if (!ears.running || !ears.ring || talking || Abilities.isPlaying()) return null;
       const r = ears.ring, out = new Float32Array(r.length);

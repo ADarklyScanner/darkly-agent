@@ -28,13 +28,36 @@
     { name: "read_notifications", description: "Read the notifications currently showing on the phone you live in (which app, title, text). Only when he asks.", input_schema: obj() },
     { name: "listen_pitch", description: "Listen for a couple of seconds and tell which musical note he's singing, humming, whistling or playing, and whether it's in tune.", input_schema: obj({ seconds: { type: "number" } }) },
     { name: "hum_back", description: "Listen to him hum, sing or whistle a tune for a few seconds, then play the same tune back on your synthesizer.", input_schema: obj({ seconds: { type: "number" }, instrument: { type: "string" } }) },
+    { name: "remember_face", description: "Learn the face of the person in front of your camera so you recognize them from now on (stored only on this phone). Use when he introduces someone or himself: 'this is Sam', 'remember my face'. They should face you for a few seconds.",
+      input_schema: obj({ name: { type: "string" }, notes: { type: "string", description: "optional: one line about who they are" } }, ["name"]) },
+    { name: "who_is_here", description: "Check who is in front of your camera right now: names of people you know by face, and whether there are strangers. Offline.", input_schema: obj() },
+    { name: "forget_face", description: "Forget someone's face (delete their face print).", input_schema: obj({ name: { type: "string" } }, ["name"]) },
+    { name: "list_people", description: "List everyone you know by face, how often you've seen them and when last.", input_schema: obj() },
+    { name: "note_about_person", description: "Add a short note about a person you know by face (who they are, what they like, how to greet them).", input_schema: obj({ name: { type: "string" }, note: { type: "string" } }, ["name", "note"]) },
+    { name: "phone_routines", description: "List the phone tasks you've learned to do from memory (these work with no internet and no AI).", input_schema: obj() },
+    { name: "forget_phone_routine", description: "Forget a learned phone routine, so next time you work the task out afresh.", input_schema: obj({ goal: { type: "string" } }, ["goal"]) },
+    { name: "self_check", description: "Run a check of every part of you (brains, hearing, voice, camera, vision, sensors, battery, temperature, memory, storage) and get the results. Use for 'are you okay', 'systems check', or when something seems wrong with you.", input_schema: obj() },
+    { name: "calibrate_ears", description: "Teach yourself which way is up for sound direction: he claps once right above the top edge of the phone and you note which microphone heard it first. Also reports whether the phone gives you two microphones at all.", input_schema: obj() },
+    { name: "name_room", description: "He tells you what room this is ('this is the kitchen'). You remember how it looks, recognize it later, and remember which room things were in.", input_schema: obj({ name: { type: "string" } }, ["name"]) },
+    { name: "which_room", description: "Which room are you in, going by how it looks?", input_schema: obj() },
+    { name: "learn_thing", description: "He's holding up a particular object and telling you its name ('this is Frank', 'this is my good screwdriver'). Remember what it looks like so you recognize that exact thing later. He must hold it in the middle of your view.", input_schema: obj({ name: { type: "string" } }, ["name"]) },
     { name: "remember_place", description: "Remember where you are right now under a name (home, workshop, mom's house), using the phone's location. Later you'll know when you're there again.", input_schema: obj({ name: { type: "string" } }, ["name"]) },
     { name: "where_am_i", description: "Check the phone's location and tell which remembered place you're at or near (or that it's somewhere new).", input_schema: obj() }
   ];
   const NAMES = new Set(E.tools.map(t => t.name));
   E.handles = n => NAMES.has(n);
   E.run = async (name, input = {}) => {
+    if (name === "name_room" || name === "which_room" || name === "learn_thing") return V()?.run ? await V().run(name, input) : "FAILED: vision isn't loaded.";
     if (name === "count_fingers" || name === "learn_gesture" || name === "forget_gesture") return V()?.run ? await V().run(name, input) : "FAILED: vision isn't loaded.";
+    if (name === "remember_face") return window.People ? await People.remember(input.name, input.notes) : "FAILED: not loaded.";
+    if (name === "who_is_here") return window.People ? await People.who() : "FAILED: not loaded.";
+    if (name === "forget_face") return window.People ? await People.forget(input.name) : "FAILED: not loaded.";
+    if (name === "list_people") return window.People ? await People.list() : "FAILED: not loaded.";
+    if (name === "note_about_person") return window.People ? await People.note(input.name, input.note) : "FAILED: not loaded.";
+    if (name === "phone_routines") { try { const r = (await api("/api/phone/routines")).routines; return r.length ? "Phone tasks you can do from memory: " + r.map(x => `"${x.goal}" (${x.steps} steps, done ${x.runs} more times since learning)`).join("; ") + "." : "You haven't learned any phone routines yet. You learn one each time you finish a phone task successfully."; } catch (err) { return "FAILED: " + err.message; } }
+    if (name === "forget_phone_routine") { try { return (await api("/api/phone/routines?goal=" + encodeURIComponent(input.goal || ""), { method: "DELETE" })).forgotten ? "Forgotten." : "No routine matched that."; } catch (err) { return "FAILED: " + err.message; } }
+    if (name === "calibrate_ears") return await calibrateEars();
+    if (name === "self_check") return window.selfCheck ? await selfCheck() : "FAILED: not loaded.";
     if (name === "see_tags") return window.Tags?.available ? Tags.describe() : "FAILED: the tag reader didn't load.";
     if (name === "name_tag") return window.Tags ? await Tags.name(input.name, input.id, input.trick) : "FAILED: the tag reader didn't load.";
     if (name === "forget_tag") return window.Tags ? await Tags.forget(input.tag) : "FAILED: the tag reader didn't load.";
@@ -73,6 +96,19 @@
       if (!mine.length) return "No notifications on the phone right now.";
       return "Notifications on the phone:\n" + mine.map(n => `- ${String(n.packageName || "").split(".").pop()}: ${n.title || ""}${n.content ? " — " + String(n.content).slice(0, 160) : ""}`).join("\n");
     } catch (e) { return "FAILED: " + e.message + " (To allow it: Android Settings > Notifications > Device & app notifications (Notification access) > Termux:API > Allow.)"; }
+  }
+
+  // ---- which microphone is the top one? ----
+  async function calibrateEars() {
+    const A = window.AudioSmarts; if (!A) return "FAILED: not loaded.";
+    if (!(await window.Tricks?.earsStart?.(true))) return "FAILED: your ears (microphone) aren't available right now.";
+    if (A.stereo.ok === false) return "The phone only gives you one microphone here, so you can't tell where sounds come from. Nothing to calibrate.";
+    await speak("Clap once, right above my head, close to the top edge of the phone.");
+    const t0 = performance.now(); let hit = null;
+    while (performance.now() - t0 < 8000 && !hit) { if (A.stereo.last && A.stereo.last.t > t0) hit = A.stereo.last; await sleep(100); }
+    if (!hit) return A.stereo.ok === true ? "You didn't catch a clear clap from one end. He should clap sharply, a hand's width above the top of the phone." : "You couldn't tell yet whether the phone has two usable microphones. Try again after a few louder sounds.";
+    if (hit.top < 0) { settings.micTopFirst = settings.micTopFirst === false ? true : false; saveSettings(); return "Calibrated: you had top and bottom swapped, and it's fixed now. Sounds from above will make you look up."; }
+    return "Calibrated: you already had it right. Sounds from above make you look up, from below make you look down.";
   }
 
   // ---- places ----
@@ -244,6 +280,23 @@
   const INTENTS = [
     [/\b(?:let'?s |wanna |want to |can we )?play\b(.*)/i, m => { const g = GAME_WORDS.find(([re]) => re.test(m[1].toLowerCase())); return g ? ["play_game", { game: g[1] }] : /\bgame\b/.test(m[1]) ? ["play_game", { game: pick(["simon", "reaction", "staring", "scavenger", "finger_math", "poses"]) }] : null; }],
     [/\b(?:do|show me|perform)\b.*\btrick\b/i, m => { const names = window.Tricks?.list?.() || []; const t = m[0].toLowerCase(); const hit = names.find(n => t.includes(n.replace(/_/g, " "))); return ["do_trick", { name: hit || "random" }]; }],
+    [/(?:remember|learn) my face(?: as| ?,? i'?m| ?,? my name is)? ?(.*)/i, m => ["remember_face", { name: m[1].replace(/[.!?]+$/, "").trim() || "him" }]],
+    [/^(?:this is|meet) (?!a |an |the |my (?!friend|wife|husband|son|daughter|mom|dad|brother|sister))(?:my \w+,? )?([A-Z][\w'-]+(?: [A-Z][\w'-]+)?)[.!]*$/, m => V()?.faces > 0 && !V()?.hand ? ["remember_face", { name: m[1] }] : null],   // a face in view and nothing held up: it's a person
+    [/who am i\b|do you (?:know|recognize|remember) (?:me|who i am|this (?:person|guy))|who(?:'s| is) (?:this|that|here)\b/i, () => ["who_is_here", {}]],
+    [/forget (\w+)'?s? face/i, m => ["forget_face", { name: m[1] }]],
+    [/who do you know|list (?:the )?people/i, () => ["list_people", {}]],
+    [/calibrate (?:your )?ears/i, () => ["calibrate_ears", {}]],
+    [/systems? check|self.?(?:check|test)|diagnostic|are you (?:ok|okay|working|broken)|what(?:'s| is) wrong with you/i, () => ["self_check", {}]],
+    [/^(?:use|on) (?:the|your|my) phone,? (?:to )?(.+)/i, m => ["use_phone", { goal: m[1].replace(/[.!]+$/, "") }]],
+    [/what phone (?:tasks|routines)|phone routines/i, () => ["phone_routines", {}]],
+    [/^(?:this is|you'?re in|we'?re in|this room is) (?:the |my |our )?(kitchen|bedroom|living room|bathroom|garage|workshop|office|hallway|basement|dining room|shop|den|porch|car|truck|[a-z]+ room)[.!]*$/i, m => ["name_room", { name: m[1] }]],
+    [/what room|which room|where are you right now/i, () => ["which_room", {}]],
+    // "this is my good screwdriver" / "this is Frank" while something is held up: learn what that thing looks like
+    [/^(?:this is|this thing is|call this|this one is) ((?:called |named )|(?:my |the |a |an ))?(.{2,40}?)[.!]*$/i, m => {
+      const name = m[2].trim(), proper = /^[A-Z]/.test(name);
+      const head = name.split(/\s+/).pop();                    // "a good idea" is not a thing she can look at
+      if (!(m[1] || proper) || /^(joke|test|problem|waste|mess|disaster|shame|lot|bit|mistake|nightmare|dream|idea|way|one|thing|kind|part|end|point|reason|question|time|day|life|fun)$/i.test(head)) return null;
+      return V()?.hand || V()?.objectsVisible?.().length ? ["learn_thing", { name }] : null; }],
     [/how many fingers|count my fingers/i, () => ["count_fingers", {}]],
     [/what (?:am i|i'?m) holding|what(?:'s| is) (?:this|that)\b|what (?:objects|things) (?:do|can) you see/i, () => ["see_objects", {}]],
     [/what (?:do|can) you see|who(?:'s| is) (?:there|here)|can you see me|how many (?:people|faces)|am i smiling|look at me/i, () => ["see_people", {}]],
