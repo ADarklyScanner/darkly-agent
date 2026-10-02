@@ -36,13 +36,19 @@ for T in $LIST; do
   sleep 3                                            # a breather, so heat from one run doesn't hurt the next
 done
 
+# The fewest threads that get within 10% of the best. A couple of tokens a second isn't worth taking every core:
+# her face and eyes need some too, and the brain slows badly when it has to fight them for cores.
+PICK=$(node -e 'const r=process.argv[1].trim().split(/\s+/).filter(Boolean).map(x=>{const [t,v]=x.split(":"),[rd,wr]=v.split("/");return{t:+t,rd:+rd,wr:+wr}}).sort((a,b)=>a.t-b.t);if(!r.length){console.log("");process.exit()}const bR=Math.max(...r.map(x=>x.rd)),bW=Math.max(...r.map(x=>x.wr));const tb=r.find(x=>x.rd>=bR*0.9),t=r.find(x=>x.wr>=bW*0.9);console.log([t.t,tb.t,tb.rd,t.wr].join(" "))' "$RESULTS")
+[ -n "$PICK" ] && read -r BEST_T BEST_TB BEST_R BEST_W <<< "$PICK"
+
 if [ "$BEST_R" = 0 ]; then
   echo "No test finished, so nothing was changed."
 else
   echo "$BEST_T $BEST_TB $(basename "$MODEL")" > "$D/.brain-threads"
   rm -f "$D/.brain-speed.json"                       # measured again with the new setting
-  echo "Fastest: $BEST_TB threads for reading ($BEST_R a second), $BEST_T for writing ($BEST_W a second)."
-  echo "Before (4 threads): reads $BASE_R, writes $BASE_W. Saved; her brain is restarting with it."
+  echo "Chosen: $BEST_TB threads for reading ($BEST_R a second), $BEST_T for writing ($BEST_W a second): the fewest that come within 10% of the fastest."
+  [ "$BASE_R" != 0 ] && echo "With 4 threads it was: reads $BASE_R, writes $BASE_W."
+  echo "Saved; her brain is restarting with it."
   echo "{\"t\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"kind\":\"brain\",\"detail\":\"tuned: $BEST_TB threads to read ($BEST_R/s), $BEST_T to write ($BEST_W/s); tried$RESULTS\"}" >> "$D/logs/robot-log.jsonl"
 fi
 resume_brain

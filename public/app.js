@@ -844,6 +844,7 @@ function systemPrompt(offline) {
     ? `Start every reply with your mood like [mood:happy]. Moods: ${MOOD_NAMES.join(", ")}.
 To act, put commands in your reply: [drive:forward:2] (forward, back, left, right; seconds), [part:left arm:wave] (part name, action), [stop].
 Fun commands: [song:NAME] (${Abilities.songList.join(", ")}), [sfx:NAME] (${Abilities.sfxList.join(", ")}), [vibrate:NAME] (${Abilities.vibeList.join(", ")}), [effect:NAME] (${Face.effects.join(", ")}).
+You have two floating hands: [hands:NAME] (${(window.Hands?.list || []).join(", ")}) or [hands:count:NUMBER] to show 0-10 on your fingers. Use them like a person would, not in every reply.
 Only use commands for parts listed as installed. If something is MISSING, complain instead.
 You are running on your offline brain: no internet, and you can't study a photo. But your on-phone senses still work (faces, hands, objects, marker tags, sounds), and you can still play games, do tricks, read text and remember things.
 When a bracket says "(You just did this for him: ...)", that really happened: tell him the result in your own words. Never claim you did something that no bracket confirms.`
@@ -1075,7 +1076,7 @@ function endAppend() {
 
 // Strip command tags, mood tags and any tag-like junk; also hide an unfinished "[..." still arriving.
 function cleanLocal(t) {
-  return takeMood(t.replace(/\[(drive|part|stop|song|sfx|vibrate|effect)(?::[^\]]*)?\]/gi, ""))
+  return takeMood(t.replace(/\[(drive|part|stop|song|sfx|vibrate|effect|hands?)(?::[^\]]*)?\]/gi, ""))
     .replace(/\[[a-z _-]{2,20}(?::[^\]\n]{0,40})?\]/gi, "").replace(/\[[^\]]*$/, "").replace(/\s{2,}/g, " ");
 }
 
@@ -1156,13 +1157,14 @@ async function askLocal(userText, { lively = false, temperature } = {}) {
   if (!lively) lastLocalExact = { user: userContent, assistant: text };       // exactly what the brain read and wrote, for next time
   const cmds = [];
   const allowMove = !autoTurn || settings.autoMove;
-  const clean = text.replace(/\[(drive|part|stop|song|sfx|vibrate|effect)(?::([^\]:]+))?(?::([^\]:]+))?\]/gi, (_, k, a, b) => { cmds.push([k.toLowerCase(), a?.trim(), b?.trim()]); return ""; });
+  const clean = text.replace(/\[(drive|part|stop|song|sfx|vibrate|effect|hands?)(?::([^\]:]+))?(?::([^\]:]+))?\]/gi, (_, k, a, b) => { cmds.push([k.toLowerCase(), a?.trim(), b?.trim()]); return ""; });
   // Any other leftover [word:thing] tags the small model invented: drop them too.
   const said = takeMood(clean).replace(/\[[a-z _-]{2,20}(?::[^\]\n]{0,40})?\]/gi, "").replace(/\s{2,}/g, " ").trim();
   (async () => {
     for (const [k, a, b] of cmds) {
       const fun = { song: () => playSong({ song: a }), sfx: () => Abilities.sfx(a), vibrate: () => Abilities.vibrate(a),
-        effect: () => { Face.effect(a, 6); return "effect " + a; } };
+        effect: () => { Face.effect(a, 6); return "effect " + a; },
+        hands: () => runTool("hands", /^count$/i.test(a || "") ? { count: Number(b) || 0 } : /^\d+$/.test(a || "") ? { count: Number(a) } : { gesture: a }), hand: () => fun.hands() };
       if (fun[k]) { transcriptLine("act", `${k} ${a} → ${await fun[k]()}`); continue; }
       if (!allowMove && k !== "stop") { transcriptLine("act", `${k} ${a || ""} skipped: moving on her own is off`); continue; }
       const out = k === "stop" ? (await stopAll("her own decision"), "stopped") : k === "drive" ? await drive(a, Number(b) || 1) : await usePart(a, b);

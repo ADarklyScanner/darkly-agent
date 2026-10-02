@@ -2,6 +2,11 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.20.1 · After the brain build
+The build made on your phone reads about five times faster than the ready-made one (48.5 against 9.8 tokens a second) and writes almost twice as fast (11.4 against 6.2). She sizes what she sends to the measured speed, so she now gets her full notes and a longer conversation again without waiting longer.
+- Thread tuning picked 8 threads for reading because it was 10% faster than 4 in a test where nothing else was running. In real use her face and eyes need cores too, and the brain slows badly when it has to fight for them. The rule is now: the fewest threads that come within 10% of the fastest. With your numbers that's 4 for reading and 3 for writing. Run robot-tune once to apply it.
+- With reading this fast there's room to tell the offline brain about her hands, so it can now choose a gesture itself ([hands:wave], [hands:count:3]) instead of only gesturing from what she happens to say.
+
 ## 2026-10-02 · v0.20 · A whole face, hands, and eyes on herself
 Tested here in a simulated browser at phone size, including pictures of every expression and gesture. How smoothly it draws on the S22 is for you to tell me.
 - Mouth: two real lips instead of a row of bars. They part when she talks, and the shape wanders between wide, tall and small-round so it isn't the same flap for every word. Teeth show when it opens, a tongue when it's wide (yawns), the corners lift into a smile with dimples or pull down in a frown. Her voice bars now live inside the mouth.
