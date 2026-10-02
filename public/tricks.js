@@ -283,8 +283,9 @@
   const ears = { running: false, stream: null, ctx: null, an: null, timer: null, base: 0.02, prev: 0, loudSince: 0 };
   let claps = [], clapCount = 0, clapGameActive = false;
   async function earsStart(force = false) {
-    if (ears.running) return true;
-    if (!force && (!settings.ears || settings.listen === "always" || listening)) return false;
+    if (ears.running) { ears.ctx?.resume?.(); return true; }
+    // offline hearing (hearing.js) listens through this same microphone, so it keeps the ears open
+    if (!force && !window.Hearing?.active && (!settings.ears || settings.listen === "always" || listening)) return false;
     try {
       ears.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
       ears.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -296,6 +297,7 @@
       tap.onaudioprocess = e => {
         const d = e.inputBuffer.getChannelData(0), r = ears.ring;
         for (let i = 0; i < d.length; i++) { r[ears.ringPos] = d[i]; ears.ringPos = (ears.ringPos + 1) % r.length; }
+        try { window.Hearing?.onAudio(d, ears.ctx.sampleRate); } catch {}
       };
       const mute = ears.ctx.createGain(); mute.gain.value = 0;
       src.connect(tap); tap.connect(mute); mute.connect(ears.ctx.destination);

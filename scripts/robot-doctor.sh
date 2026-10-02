@@ -21,17 +21,37 @@ else
   bad "Brain server isn't running" "Type: robot"
 fi
 
-# --- offline brain ---
+# --- can she work with NO internet? brain, ears, voice ---
+echo "-- Without internet --"
+OFFLINE_OK=1
 if pgrep -x llama-server >/dev/null; then
-  if curl -s -m 3 http://127.0.0.1:8080/health | grep -q ok; then ok "Offline brain is running and ready"
-  else warn "Offline brain is still loading (or stuck)" "Give it a minute. If it never gets ready: robot-stop; robot"; fi
+  H=$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health)
+  if [ "$H" = 200 ]; then
+    # a real question, straight to the offline brain and through her server (the same path she uses)
+    T0=$(date +%s)
+    OUT=$(curl -s -m 120 http://127.0.0.1:3000/api/local -H 'content-type: application/json' \
+      -d '{"messages":[{"role":"system","content":"You are a robot. Answer in five words or fewer."},{"role":"user","content":"Say hello."}],"max_tokens":24}')
+    T=$(( $(date +%s) - T0 ))
+    if echo "$OUT" | grep -q '"text":"[^"]'; then ok "Offline brain answers (${T}s): $(echo "$OUT" | sed 's/.*"text":"\([^"]*\)".*/\1/' | cut -c1-60)"
+    else OFFLINE_OK=0; bad "Offline brain is running but won't answer: $(echo "$OUT" | cut -c1-200)" "Send me that line. Meanwhile: robot-stop; robot"; fi
+    [ -f "$DIR/data/.brain-model" ] && echo "   model: $(basename "$(cat "$DIR/data/.brain-model")")"
+  else OFFLINE_OK=0; warn "Offline brain is still loading the model" "Give it a minute and run robot-doctor again. If it never gets ready: robot-stop; robot"; fi
 else
+  OFFLINE_OK=0
   if command -v llama-server >/dev/null || [ -x "$HOME/llama.cpp/build/bin/llama-server" ]; then
     MODELS=$(find "$HOME/models" "$HOME/storage/shared/Download" -maxdepth 2 -name '*.gguf' 2>/dev/null | grep -vi lora | head -5)
-    [ -z "$MODELS" ] && warn "No offline brain model found" "Put a .gguf file (like Llama-3.2-3B-Instruct-abliterated.Q4_0.gguf) in Download, then: robot-stop; robot" \
-                     || bad "Offline brain isn't running" "robot-stop; robot   (if it keeps dying, the phone is short on memory: run robot-dedicate)"
-  else warn "Offline brain program not installed" "pkg install llama-cpp"; fi
+    [ -z "$MODELS" ] && bad "No offline brain model found" "Put a .gguf file (like Llama-3.2-3B-Instruct-abliterated.Q4_0.gguf) in Download, then: robot-stop; robot" \
+                     || bad "Offline brain isn't running" "robot-stop; robot   (the reason is at the end of ~/robot/data/logs/llama.log; if it keeps dying, the phone is short on memory: run robot-dedicate)"
+    [ -f "$DIR/data/logs/llama.log" ] && tail -3 "$DIR/data/logs/llama.log" | sed 's/^/     /' | cut -c1-200
+  else bad "Offline brain program not installed" "pkg install llama-cpp"; fi
 fi
+if curl -s -m 3 -o /dev/null http://127.0.0.1:8081/health; then ok "Offline hearing is running (she understands speech with no internet)"
+elif { command -v whisper-server >/dev/null || [ -x "$HOME/whisper.cpp/build/bin/whisper-server" ]; } && ls "$HOME"/models/ggml-*.bin >/dev/null 2>&1; then
+  warn "Offline hearing is installed but not running" "robot-stop; robot"
+else OFFLINE_OK=0; bad "No offline hearing: without internet she can't hear you (typing still works)" "With internet on, run once: robot-hearing-setup"; fi
+if timeout 8 termux-tts-engines 2>/dev/null | grep -q '"name"'; then ok "Phone's own voice is available (backup when Chrome's voice needs internet)"
+else warn "Couldn't check the phone's own voice" "Needs Termux:API. Also: Settings > General management > Text-to-speech: make sure the voice data is downloaded."; fi
+[ "$OFFLINE_OK" = 1 ] && echo -e "${G}   She can work with no internet.${N}" || echo -e "${R}   She can NOT fully work without internet yet (see ✘ above).${N}"
 FREE=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)
 [ "$FREE" -gt 2500 ] && ok "Free memory: ${FREE} MB" || warn "Free memory is low: ${FREE} MB" "robot-dedicate turns off apps she doesn't need."
 

@@ -160,6 +160,11 @@
       <option value="offline">Offline brain when it's running (free, works without internet)</option>
       <option value="brain">Same brain as above</option>
     </select></label>
+    <label>Hearing <select id="setHearing">
+      <option value="auto">Auto: Google's when online, the phone's own when offline</option>
+      <option value="offline">Always the phone's own (private, works anywhere)</option>
+      <option value="online">Always Google's (needs internet)</option>
+    </select></label>
     <label>Listening <select id="setListen"><option value="push">Tap the mic to talk</option><option value="always">Always listening</option></select></label>
     <label>Wake word (always-listening only, blank = answer everything) <input id="setWake" placeholder="nessari"></label>
     <label>Voice <select id="setVoice"></select></label>
@@ -192,6 +197,7 @@
 <script src="abilities.js"></script>
 <script src="face.js"></script>
 <script src="tricks.js"></script>
+<script src="hearing.js"></script>
 <script src="variety.js"></script>
 <script src="mind.js"></script>
 <script src="behaviors.js"></script>

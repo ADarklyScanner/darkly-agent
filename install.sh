@@ -36,10 +36,14 @@ ln -sf "$DEST/robot-undedicate.sh" "$BIN/robot-undedicate"
 ln -sf "$DEST/robot-update.sh" "$BIN/robot-update"
 ln -sf "$DEST/robot-doctor.sh" "$BIN/robot-doctor"
 ln -sf "$DEST/robot-vision-download.sh" "$BIN/robot-vision-download"
+ln -sf "$DEST/robot-hearing-setup.sh" "$BIN/robot-hearing-setup"
 
 # Vision engine for face tracking and hand gestures (kept between updates; downloads only what's missing)
 mkdir -p "$DEST/public/vendor"
 bash "$DEST/robot-vision-download.sh" || echo "(Vision download failed; run robot-vision-download later.)"
+
+# Offline hearing (whisper.cpp): so she understands speech with no internet. Skips itself if already installed.
+bash "$DEST/robot-hearing-setup.sh" || echo "(Offline hearing isn't installed yet; run robot-hearing-setup later.)"
 
 # Start automatically when the phone boots (needs the Termux:Boot app)
 mkdir -p "$HOME/.termux/boot"
@@ -76,7 +80,8 @@ echo "Done. Commands:"
 echo "  robot             start her (brain + face)"
 echo "  robot-stop        shut her down"
 echo "  robot-update      get the newest version from GitHub and restart her"
-echo "  robot-doctor      check everything and say what's wrong"
+echo "  robot-doctor      check everything and say what's wrong (including: can she work with no internet?)"
+echo "  robot-hearing-setup  install offline hearing (once, needs internet)"
 echo "  robot-dedicate    give the whole phone to the robot (turns off other apps)"
 echo "  robot-undedicate  undo that"
 echo

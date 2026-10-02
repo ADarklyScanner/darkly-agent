@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /* ================= settings ================= */
 const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true,
-  auto: "normal", chatter: "offline", react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
+  auto: "normal", chatter: "offline", hearing: "auto", react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
 let settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("robot-settings") || "{}") };
 const saveSettings = () => localStorage.setItem("robot-settings", JSON.stringify(settings));
 
@@ -68,7 +68,22 @@ const VOICE_STYLES = {
 };
 // Android Chrome drops speech that starts right after cancel(), and cuts off long utterances,
 // so text is spoken in sentence-sized pieces with a short gap after cancelling.
-let speakToken = 0, speakingNow = [];
+let speakToken = 0, speakingNow = [], ttsBrokenUntil = 0;
+// The phone's own text-to-speech (through Termux:API), for when Chrome's voice needs the internet or stays silent.
+async function phoneVoice(text, vs = VOICE_STYLES[settings.voiceStyle] || VOICE_STYLES.normal) {
+  const my = speakToken;
+  talking = true; Face.setTalking(true);
+  const kick = setInterval(() => { if (my === speakToken) Face.kick(); else { clearInterval(kick); fetch("/api/say/stop", { method: "POST" }).catch(() => {}); } }, 170);
+  let ok = true;
+  try { await api("/api/say", { method: "POST", body: JSON.stringify({ text, rate: clamp(settings.rate * vs.rate, 0.3, 3), pitch: clamp(settings.pitch * vs.pitch, 0.1, 2) }) }); }
+  catch (e) { ok = false; ttsBrokenUntil = 0; logEvent("error", { where: "phone voice", detail: e.message }); }   // no phone voice either: give Chrome's another go next time
+  clearInterval(kick);
+  return ok;
+}
+async function phoneSay(text, my, vs) {
+  await phoneVoice(text, vs);
+  if (my === speakToken) { talking = false; Face.setTalking(false); speakingNow = []; resumeListening(); }
+}
 function speak(text) {
   return new Promise(async resolve => {
     $("#said").textContent = text;
@@ -80,9 +95,19 @@ function speak(text) {
     const parts = String(text).match(/[^.!?…]+[.!?…]*["')\]]*\s*/g)?.reduce((acc, p) => {
       if (acc.length && (acc[acc.length - 1] + p).length < 170) acc[acc.length - 1] += p; else acc.push(p); return acc;
     }, []) || [text];
-    const v = voices.find(v => v.voiceURI === settings.voice);
+    let v = voices.find(v => v.voiceURI === settings.voice);
+    if (v && v.localService === false && !navigator.onLine) v = voices.find(x => x.localService && x.lang === v.lang) || null;   // an online-only voice can't speak offline
     const vs = VOICE_STYLES[settings.voiceStyle] || VOICE_STYLES.normal;
     stopListening(true);
+    if (Date.now() < ttsBrokenUntil) { await phoneSay(text, my, vs); return resolve(); }
+    let started = false;
+    const fallBack = async why => {                       // Chrome's voice failed: say it with the phone's own voice instead
+      if (my !== speakToken || ttsBrokenUntil > Date.now()) return;
+      ttsBrokenUntil = Date.now() + 10 * 60000; logEvent("error", { where: "speech", detail: "Chrome's voice failed (" + why + "); using the phone's own voice for a while" });
+      speechSynthesis.cancel();
+      const rest = speakingNow.slice(window.speakIndex || 0).map(u => u.text).join(" ") || text;
+      await phoneSay(rest, my, vs); resolve();
+    };
     talking = true; window.Face?.setTalking(true);
     const finish = () => { if (my !== speakToken) return resolve(); talking = false; window.Face?.setTalking(false); speakingNow = []; resumeListening(); resolve(); };
     speakingNow = parts.map(p => {
@@ -92,11 +117,14 @@ function speak(text) {
       u.pitch = clamp(settings.pitch * vs.pitch + (mood === "excited" ? 0.15 : mood === "sad" ? -0.15 : 0), 0, 2);
       u.volume = vs.volume ?? 1;
       u.onboundary = e => { window.Face?.kick(); window.speakChar = e.charIndex; };   // each spoken word pulses the mouth
-      u.onstart = () => { window.speakIndex = speakingNow.indexOf(u); window.speakChar = 0; try { window.Behaviors?.onSentence(u.text, speakIndex, speakingNow.length); } catch {} };
+      u.onstart = () => { started = true; window.speakIndex = speakingNow.indexOf(u); window.speakChar = 0; try { window.Behaviors?.onSentence(u.text, speakIndex, speakingNow.length); } catch {} };
       return u;
     });                                                  // kept in a list so Chrome can't garbage-collect them mid-sentence
     speakingNow[speakingNow.length - 1].onend = finish;
-    speakingNow.forEach(u => { u.onerror = e => { if (e.error !== "interrupted" && e.error !== "canceled") logEvent("error", { where: "speech", detail: e.error }); finish(); }; speechSynthesis.speak(u); });
+    speakingNow.forEach(u => { u.onerror = e => {
+      if (/network|synthesis-unavailable|synthesis-failed|voice-unavailable|language-unavailable/.test(e.error)) return fallBack(e.error);
+      if (e.error !== "interrupted" && e.error !== "canceled") logEvent("error", { where: "speech", detail: e.error }); finish(); }; speechSynthesis.speak(u); });
+    setTimeout(() => { if (my === speakToken && !started && talking && !speechSynthesis.speaking) fallBack("never started"); }, 3500);
     // safety: if the speech engine never reports back, don't leave her stuck "talking"
     setTimeout(() => { if (my === speakToken && talking && !speechSynthesis.speaking) finish(); }, 4000 + text.length * 120);
   });
@@ -106,7 +134,11 @@ function speak(text) {
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, listening = false, pausedForSpeech = false;
 
+let hearingHelpShown = false;
 function startListening() {
+  // No internet (or set to offline): listen with the phone's own recognizer instead of Chrome's online one.
+  if (window.Hearing?.useOffline()) { if (!Hearing.active) Hearing.start({ oneShot: settings.listen !== "always" }); return; }
+  if (window.Hearing?.active) Hearing.stop();
   window.Tricks?.earsStop();
   if (!SR) { transcriptLine("act", "Speech recognition isn't available in this browser. Use the Talk tab."); return; }
   if (listening) return;
@@ -124,15 +156,30 @@ function startListening() {
     if (interim.trim()) window.Mind?.onUserSpeaking(interim);       // nods and little reactions while he talks
     if (final.trim()) onHeard(final.trim(), conf);
   };
-  rec.onerror = ev => { if (ev.error !== "no-speech" && ev.error !== "aborted") logEvent("error", { where: "hearing", detail: ev.error }); };
+  let netFail = false;
+  rec.onerror = ev => {
+    if (ev.error !== "no-speech" && ev.error !== "aborted") logEvent("error", { where: "hearing", detail: ev.error });
+    if (ev.error === "network" || ev.error === "service-not-allowed") {       // Chrome's recognizer needs the internet
+      netFail = true;
+      if (window.Hearing?.available()) Hearing.preferOffline(5);
+      else if (!hearingHelpShown) {
+        hearingHelpShown = true;
+        const msg = "I can't hear you without internet yet. In Termux run robot-hearing-setup once (needs internet that one time). Until then, type to me in Panel > Talk.";
+        transcriptLine("act", msg); $("#said").textContent = msg;
+      }
+    }
+  };
   rec.onend = () => {
     setTimeout(() => { if (!listening) window.Tricks?.earsStart(); }, 900);
     listening = false; setFaceState("listening", false); $("#micBtn").classList.remove("live");
+    if (netFail && window.Hearing?.available()) { setTimeout(startListening, 300); return; }      // carry on listening, offline
+    if (netFail) { if (settings.listen === "always") setTimeout(startListening, 20000); return; }  // don't hammer a dead connection
     if (settings.listen === "always" && !pausedForSpeech && !talking) setTimeout(startListening, 300);
   };
   try { rec.start(); listening = true; setFaceState("listening", true); $("#micBtn").classList.add("live"); } catch {}
 }
 function stopListening(forSpeech = false) {
+  if (window.Hearing?.active) { if (!forSpeech) Hearing.stop(); return; }   // offline hearing ignores her own voice by itself
   pausedForSpeech = forSpeech;
   if (rec && listening) { try { rec.abort(); } catch {} }
 }
@@ -153,7 +200,7 @@ function onHeard(text, conf = 1) {
 }
 $("#micBtn").onclick = () => {
   unlockExtras();
-  if (listening) { settings.listen === "always" ? (settings.listen = "push", saveSettings(), $("#setListen").value = "push") : null; stopListening(); }
+  if (listening || window.Hearing?.active) { settings.listen === "always" ? (settings.listen = "push", saveSettings(), $("#setListen").value = "push") : null; stopListening(); }
   else startListening();
 };
 
@@ -951,15 +998,28 @@ function speakAppend(text) {
     $("#said").textContent = ($("#said").dataset.stream === "1" ? $("#said").textContent + " " : "") + text;
     $("#said").dataset.stream = "1";
     if (settings.muted || !("speechSynthesis" in window)) return setTimeout(res, 200 + text.length * 40);
-    const u = new SpeechSynthesisUtterance(text);
-    const v = voices.find(v => v.voiceURI === settings.voice); if (v) u.voice = v;
     const vs = VOICE_STYLES[settings.voiceStyle] || VOICE_STYLES.normal;
-    u.rate = clamp(settings.rate * vs.rate, 0.3, 3); u.pitch = clamp(settings.pitch * vs.pitch, 0, 2); u.volume = vs.volume ?? 1;
-    u.onboundary = () => Face.kick();
-    u.onend = u.onerror = res; speakingNow.push(u);
     talking = true; Face.setTalking(true); stopListening(true);
+    if (Date.now() < ttsBrokenUntil) return phoneVoice(text, vs).then(res);      // Chrome's voice isn't working: the phone's own
+    const u = new SpeechSynthesisUtterance(text);
+    let v = voices.find(v => v.voiceURI === settings.voice);
+    if (v && v.localService === false && !navigator.onLine) v = voices.find(x => x.localService && x.lang === v.lang) || null;
+    if (v) u.voice = v;
+    u.rate = clamp(settings.rate * vs.rate, 0.3, 3); u.pitch = clamp(settings.pitch * vs.pitch, 0, 2); u.volume = vs.volume ?? 1;
+    let started = false, done = false;
+    const viaPhone = why => {
+      if (done || tok !== speakToken) return; done = true;
+      ttsBrokenUntil = Date.now() + 10 * 60000; logEvent("error", { where: "speech", detail: "Chrome's voice failed (" + why + "); using the phone's own voice for a while" });
+      speechSynthesis.cancel(); phoneVoice(text, vs).then(res);
+    };
+    u.onstart = () => { started = true; };
+    u.onboundary = () => Face.kick();
+    u.onend = () => { done = true; res(); };
+    u.onerror = e => { if (/network|synthesis-unavailable|synthesis-failed|voice-unavailable|language-unavailable/.test(e.error)) viaPhone(e.error); else { done = true; res(); } };
+    speakingNow.push(u);
     speechSynthesis.speak(u);
-    setTimeout(res, 3000 + text.length * 150);                // never hang if the engine goes quiet
+    setTimeout(() => { if (!started && !done && !speechSynthesis.speaking) viaPhone("never started"); }, 3500);
+    setTimeout(() => { if (!done) { done = true; res(); } }, 5000 + text.length * 150);          // never hang if the engine goes quiet
   }));
   return appendChain;
 }
@@ -976,7 +1036,10 @@ function cleanLocal(t) {
 // Offline brain with streaming: speaks each sentence as soon as it's written.
 async function askLocalStreaming(msgs) {
   const r = await fetch("/api/local-stream", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: msgs, max_tokens: 220 }) });
-  if (!r.ok || !r.body) throw new Error("offline brain didn't answer (" + r.status + ")");
+  if (!r.ok || !r.body) {                              // the server already retried every way it knows: report its reason
+    const j = await r.json().catch(() => ({}));
+    throw Object.assign(new Error(j.error || "offline brain didn't answer (" + r.status + ")"), { final: true });
+  }
   const reader = r.body.getReader(), dec = new TextDecoder();
   let buf = "", full = "", spoken = 0;
   const pump = final => {
@@ -1009,7 +1072,7 @@ async function askLocal(userText, { lively = false, temperature } = {}) {
   if (lively) ({ text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 120, lively, temperature }) }));
   else {
     try { text = await askLocalStreaming(msgs); localSpoke = true; }
-    catch (e) { ({ text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) })); }
+    catch (e) { if (e.final) throw e; ({ text } = await api("/api/local", { method: "POST", body: JSON.stringify({ messages: msgs, max_tokens: 220 }) })); }
   }
   const cmds = [];
   const allowMove = !autoTurn || settings.autoMove;
@@ -1043,6 +1106,9 @@ async function ask(userText, opts = {}) {
   const started = Date.now();
   try {
     // Brain order comes from Settings. Each online brain is tried in turn; offline is last.
+    // Make sure "online" is true right now, so she never sits waiting on an internet that isn't there.
+    if (!navigator.onLine) status.online = false;
+    else if (Date.now() - statusAt > 20000) await refreshStatus();
     const online = status.online && navigator.onLine;
     let order = { auto: ["gemini", "claude"], "auto-claude": ["claude", "gemini"], gemini: ["gemini"], claude: ["claude"], local: [] }[settings.brain] || ["gemini", "claude"];
     // her own chatter goes to the offline brain when it's running: free, private, works with no internet
@@ -1072,7 +1138,7 @@ async function ask(userText, opts = {}) {
     } else setFaceState("offline", false);
   } catch (e) {
     setMood("confused"); failed = true;
-    reply = status.local ? "My brain just glitched. " + e.message : "Both my brains are down. Start the local model in Termux, or get me some internet.";
+    reply = "My brain just glitched. " + e.message;
     logEvent("error", { where: "ask", detail: e.message });
   }
   // Her own chatter: never repeat herself. Too close to something she already said → one more try, then silence.
@@ -1583,9 +1649,10 @@ function refreshChips() {
 }
 
 let serverFails = 0;
+let statusAt = 0;
 async function refreshStatus() {
   try {
-    status = await api("/api/status");
+    status = await api("/api/status"); statusAt = Date.now();
     if (serverFails >= 2) { $("#said").textContent = "I'm back."; setFaceState("offline", false); logEvent("boot", { detail: "server came back" }); }
     serverFails = 0;
   } catch {
@@ -1602,7 +1669,10 @@ function renderStatus() {
     ["Claude key", status.keyCount ? `#${status.keyInUse} of ${status.keyCount}` : "none"],
     ["Gemini key", status.geminiKeyCount ? `#${status.geminiKeyInUse} of ${status.geminiKeyCount}` : "none"],
     ["Cache savings", (() => { const t = cacheStats.read + cacheStats.written + cacheStats.fresh; return t ? Math.round(cacheStats.read / t * 100) + "% reused" : "—"; })()],
-    ["Offline brain", status.local ? "Nessari running" : "not running"],
+    ["Offline brain", status.local ? "running" : status.localState === "loading" ? "loading…" : status.localError ? "error: " + status.localError.slice(0, 60) : "not running"],
+    ["Offline hearing", { ready: "ready", slow: "works (slow start)", none: "not installed" }[status.hearing] || "?"],
+    ["Hearing now", window.Hearing?.active ? "phone's own (offline)" : listening ? "Google's (online)" : "off"],
+    ["Offline voice", voices.some(v => v.localService) ? "ready" : ttsBrokenUntil > Date.now() ? "phone's own" : voices.length ? "online voices only" : "?"],
     ["Brain mode", settings.brain],
     ["Body", link.connected ? link.kind + (link.hello ? " ✓" : " (silent)") : "not connected"],
     ["Mood", mood],
@@ -1726,12 +1796,13 @@ function bindSetting(id, key, cast = v => v) {
 }
 function onSettingChange(key) {
   if (key === "listen") { stopListening(); if (settings.listen === "always") startListening(); }
+  if (key === "hearing") { stopListening(); window.Hearing?.stop(); if (settings.listen === "always") setTimeout(startListening, 400); }
   if (key === "facing" && camStream) { camOff(); camOn().catch(() => {}); }
-  if (key === "ears") { if (settings.ears) Tricks.earsStart(); else Tricks.earsStop(); }
+  if (key === "ears") { if (settings.ears) Tricks.earsStart(); else if (!window.Hearing?.active) Tricks.earsStop(); }
   if (key === "track") { if (settings.track) startTracking(); else { stopTracking(); camOff(); } }
   refreshChips();
 }
-bindSetting("#setBrain", "brain"); bindSetting("#setChatter", "chatter"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
+bindSetting("#setBrain", "brain"); bindSetting("#setChatter", "chatter"); bindSetting("#setHearing", "hearing"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
 bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bindSetting("#setPitch", "pitch", Number);
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
 bindSetting("#setTrack", "track"); bindSetting("#setVision", "vision"); bindSetting("#setEars", "ears"); bindSetting("#setQr", "qr");

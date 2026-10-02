@@ -2,6 +2,15 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.16 · Actually works with no internet
+- Offline hearing: she used to listen through Chrome's speech recognition, which sends your voice to Google, so with no internet she was deaf and nothing reached her brain. Now she has her own on-phone recognizer (whisper.cpp, open source) and switches to it by herself when there's no internet. Install it once with robot-hearing-setup (robot-update does this for you). Settings › Hearing lets you keep it on the phone's own recognizer all the time (private).
+- Offline brain fixed ("My brain just glitched. Local brain error"): the on-phone model has a small window for text and refused anything bigger. Her server now measures that window and trims old chat and long notes to fit, waits if the model is still loading, and retries in simpler forms if the model still refuses. If it fails anyway she tells you the real reason instead of a generic error.
+- The offline brain looks after itself: if it isn't running when she needs it, her server starts it. If a big model keeps getting killed for memory, she drops to the next smaller one. If the personality adapter doesn't fit the model, she starts without it rather than not at all.
+- Offline voice: if Chrome's voice needs the internet or stays silent, she speaks with the phone's own text-to-speech instead.
+- No more waiting on a dead connection: she checks the internet is really there before trying Gemini or Claude, and a failed call marks her offline straight away.
+- robot-doctor has a "Without internet" section: it asks the offline brain a real question, checks hearing and voice, and says plainly whether she can work offline.
+- Status tab shows offline brain, offline hearing, which hearing is in use, and offline voice.
+
 ## 2026-10-01 · v0.15 · She stops repeating herself
 - She remembers everything she's said lately (data/said-recently.json, kept across restarts). Before saying something on her own she's shown what she already said and which words she's overusing (no more "is that a ghost?" for the twelfth time).
 - Every spontaneous line gets a random angle, tone and length: about 3,900 combinations (guesses, complaints, nature-documentary narration, made-up statistics, playful threats, tiny poems, sports commentary...). An angle isn't reused until 15 others have been.

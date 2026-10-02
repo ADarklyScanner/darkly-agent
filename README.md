@@ -1,7 +1,7 @@
 # Darkly Robot: Nessari in a tank body
 
-The S22 is her head and brain. Claude is her main brain when there's internet, and the
-local Nessari model takes over when there isn't. The face is the home screen.
+The S22 is her head and brain. She works with no internet at all (on-phone brain, hearing, voice and eyes),
+and uses Gemini or Claude as a smarter brain when there is internet. The face is the home screen.
 Tap **Panel** for status, talk, body, sensors, files, logs and settings. The red **STOP**
 button is always on screen.
 
@@ -49,6 +49,19 @@ add `"geminiModel": "name"` to `data/config.json`.
 
 **Cost:** she uses prompt caching. Her personality, tools and older chat are stored by Claude for a few
 minutes, and re-reading them costs about a tenth of the normal price. The Status tab shows how much is being reused.
+
+## Working with no internet
+
+Everything she needs runs on the phone:
+- **Brain:** llama.cpp with a .gguf model in `~/models`. Her server starts it when needed, trims the conversation to fit
+  the model's window, and falls back to a smaller model if a big one keeps getting killed for memory.
+- **Hearing:** whisper.cpp, installed by `robot-hearing-setup` (run once, with internet). In Settings › Hearing, "Auto"
+  uses Google's recognizer when online and the phone's own when offline.
+- **Voice:** Chrome's voice when it works offline, otherwise the phone's own text-to-speech (through Termux:API).
+- **Eyes and sound recognition:** MediaPipe, installed by `robot-vision-download`.
+
+`robot-doctor` has a "Without internet" section that tests each of these and says whether she's ready.
+Only Gemini, Claude and looking at photos with them need the internet.
 
 ## Give the whole phone to her
 

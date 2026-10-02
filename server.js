@@ -51,6 +51,7 @@ function config() {
     port: 3000,
     claudeModel: "claude-sonnet-5-5",
     localUrl: "http://127.0.0.1:8080",
+    whisperUrl: "http://127.0.0.1:8081",
     ...readJson(path.join(DATA, "config.json"), {})
   };
 }
@@ -160,10 +161,13 @@ function send(res, status, body, type = "application/json") {
 async function timedFetch(url, opts = {}, ms = 60000) {
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), ms);
-  try { return await fetch(url, { ...opts, signal: c.signal }); } finally { clearTimeout(t); }
+  try { return await fetch(url, { ...opts, signal: c.signal }); }
+  catch (e) { if (/^https:/.test(String(url))) markOffline(); throw e; }   // the internet just failed: don't make her wait on it again
+  finally { clearTimeout(t); }
 }
 
 let onlineCache = { at: 0, ok: false };
+const markOffline = () => { onlineCache = { at: Date.now(), ok: false }; };
 async function checkOnline() {
   if (Date.now() - onlineCache.at < 15000) return onlineCache.ok;
   let ok = false;
@@ -172,12 +176,75 @@ async function checkOnline() {
   return ok;
 }
 
-async function checkLocal() {
-  try { const r = await timedFetch(config().localUrl + "/health", {}, 2000); return r.ok; } catch { return false; }
+// "ok" (ready), "loading" (started, still reading the model into memory) or "down"
+async function localState() {
+  try { const r = await timedFetch(config().localUrl + "/health", {}, 2000); return r.ok ? "ok" : r.status === 503 ? "loading" : "down"; } catch { return "down"; }
+}
+async function checkLocal() { return (await localState()) === "ok"; }
+
+// The whole point is that she works with no internet, so the offline brain is looked after:
+// if it isn't running, start it (brain.sh picks a model that fits), at most once every 2 minutes.
+const BRAIN_SH = path.join(ROOT, "brain.sh");
+let brainStartedAt = 0;
+function startBrain(why) {
+  if (Date.now() - brainStartedAt < 120000 || !fs.existsSync(BRAIN_SH) || fs.existsSync(path.join(DATA, ".stopping"))) return false;
+  brainStartedAt = Date.now();
+  log({ kind: "brain", detail: "offline brain isn't running; starting it (" + why + ")" });
+  try { const c = spawn("bash", [BRAIN_SH], { detached: true, stdio: "ignore" }); c.on("error", () => {}); c.unref(); } catch { return false; }
+  return true;
+}
+// Wait for the offline brain to be ready (it can take a while to load a big model).
+async function waitForBrain(maxMs = 120000) {
+  const t0 = Date.now();
+  let st = await localState();
+  if (st === "down") startBrain("needed now");
+  while (st !== "ok" && Date.now() - t0 < maxMs) {
+    await new Promise(r => setTimeout(r, 1500)); st = await localState();
+    if (st === "down" && Date.now() - t0 > 20000 && Date.now() - brainStartedAt > 20000 && !brainRunning()) break;   // it isn't coming
+  }
+  return st === "ok";
+}
+function brainRunning() { try { return execFileSync("pgrep", ["-x", "llama-server"], { timeout: 3000 }).length > 0; } catch { return false; } }
+
+// ---- offline hearing: whisper.cpp on the phone (robot-hearing-setup installs it) ----
+const WHISPER_DIRS = [path.join(os.homedir(), "whisper.cpp/build/bin"), "/data/data/com.termux/files/usr/bin"];
+const findBin = name => { for (const d of WHISPER_DIRS) { const f = path.join(d, name); if (fs.existsSync(f)) return f; } return null; };
+function whisperModel() {
+  const c = config().whisperModel; if (c && fs.existsSync(c.replace(/^~/, os.homedir()))) return c.replace(/^~/, os.homedir());
+  const dir = path.join(os.homedir(), "models");
+  try { const f = fs.readdirSync(dir).filter(n => /^ggml-.*\.bin$/.test(n)).sort((a, b) => fs.statSync(path.join(dir, b)).size - fs.statSync(path.join(dir, a)).size)[0]; return f ? path.join(dir, f) : null; } catch { return null; }
+}
+async function whisperUp() { try { const r = await timedFetch(config().whisperUrl + "/health", {}, 1500); return r.status > 0; } catch { return false; } }
+async function hearingState() {
+  if (await whisperUp()) return "ready";
+  return findBin("whisper-cli") && whisperModel() ? "slow" : "none";      // "slow": works, but loads the model for every sentence
+}
+// Whisper invents these when it's handed silence or noise.
+const HALLUCINATED = /^\W*(\[.*\]|\(.*\)|thank you\.?|thanks for watching\.?|you\.?|bye\.?|\.+|so\.?|okay\.?)\W*$/i;
+async function transcribe(wav) {
+  let text = null;
+  if (await whisperUp()) {
+    const form = new FormData();
+    form.append("file", new Blob([wav], { type: "audio/wav" }), "speech.wav");
+    form.append("temperature", "0.0"); form.append("temperature_inc", "0.2"); form.append("response_format", "json");
+    const r = await timedFetch(config().whisperUrl + "/inference", { method: "POST", body: form }, 60000);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error("whisper: " + (j.error || r.status));
+    text = j.text || "";
+  } else {
+    const cli = findBin("whisper-cli"), model = whisperModel();
+    if (!cli || !model) return null;
+    const tmp = path.join(os.tmpdir(), `nessari-${Date.now()}.wav`);
+    fs.writeFileSync(tmp, wav);
+    try { text = await run(cli, ["-m", model, "-f", tmp, "-nt", "-np", "-l", "en", "-t", "4"], 90000); } finally { fs.rmSync(tmp, { force: true }); }
+    if (text === null) throw new Error("whisper-cli failed");
+  }
+  text = text.replace(/\[[^\]]*\]|\([^)]*\)/g, " ").replace(/\s+/g, " ").trim();
+  return HALLUCINATED.test(text) ? "" : text;
 }
 
 // ---- whole-phone hardware via Termux:API (every sensor the phone has) ----
-import { execFile } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 function run(cmd, args, ms = 6000) {
   return new Promise(resolve => {
     execFile(cmd, args, { timeout: ms, maxBuffer: 4 * 1024 * 1024 }, (err, out) => resolve(err && !out ? null : String(out || "")));
@@ -217,6 +284,79 @@ function localSampling(body) {
     seed: Math.floor(Math.random() * 2 ** 31)
   };
 }
+// ---- talking to the offline brain so that it always gets an answer out ----
+// Small on-phone models have a small context window; a request that doesn't fit is refused outright.
+// So: measure the window, trim the conversation to fit, and if it's still refused, retry in simpler shapes.
+let localProps = { at: 0, n_ctx: 4096 };
+async function localCtx() {
+  if (Date.now() - localProps.at < 60000) return localProps.n_ctx;
+  try {
+    const j = await (await timedFetch(config().localUrl + "/props", {}, 3000)).json();
+    const n = j.default_generation_settings?.n_ctx || j.n_ctx;
+    if (n > 256) localProps = { at: Date.now(), n_ctx: n };
+  } catch {}
+  return localProps.n_ctx;
+}
+const estTokens = s => Math.ceil(String(s).length / 3.2) + 8;            // on the safe side
+function fitMessages(messages, budget) {
+  const msgs = (messages || []).map(m => ({ role: m.role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content) }));
+  const total = () => msgs.reduce((n, m) => n + estTokens(m.content), 0);
+  // her notes may take at most 60% of the window, so there's always room for the conversation
+  if (msgs.length && msgs[0].role === "system" && estTokens(msgs[0].content) > budget * 0.6) {
+    const keep = Math.floor(budget * 0.6 * 3.2), c = msgs[0].content;
+    msgs[0].content = c.slice(0, Math.floor(keep * 0.7)) + "\n…\n" + c.slice(-Math.floor(keep * 0.3));
+  }
+  while (total() > budget && msgs.length > 2) msgs.splice(msgs[0].role === "system" ? 1 : 0, 1);      // oldest chat goes first
+  if (total() > budget && msgs.length && msgs[0].role === "system") {                                   // then the middle of her notes
+    const keep = Math.max(600, Math.floor((budget - estTokens(msgs[msgs.length - 1].content)) * 3.2 * 0.9)), c = msgs[0].content;
+    if (c.length > keep) msgs[0].content = c.slice(0, Math.floor(keep * 0.7)) + "\n…\n" + c.slice(-Math.floor(keep * 0.3));
+  }
+  const last = msgs[msgs.length - 1];
+  if (last && total() > budget) last.content = last.content.slice(0, Math.max(200, Math.floor(budget * 3.2 * 0.4)));
+  return msgs;
+}
+// The plainest shape there is, for models whose chat format rejects system messages or uneven turns:
+// instructions folded into the first user message, strictly user/assistant/user.
+function compatMessages(msgs) {
+  const sys = msgs.filter(m => m.role === "system").map(m => m.content).join("\n\n");
+  const out = [];
+  for (const m of msgs.filter(m => m.role !== "system")) {
+    const role = m.role === "assistant" ? "assistant" : "user";
+    if (out.length && out[out.length - 1].role === role) out[out.length - 1].content += "\n" + m.content; else out.push({ role, content: m.content });
+  }
+  while (out.length && out[0].role !== "user") out.shift();
+  if (!out.length) out.push({ role: "user", content: "Hello." });
+  if (sys) out[0].content = sys + "\n\n---\n\n" + out[0].content;
+  return out;
+}
+let lastLocalError = "";
+async function localChat(body, stream) {
+  const nctx = await localCtx();
+  const maxTok = Math.min(body.max_tokens || 300, Math.floor(nctx / 3));
+  const budget = nctx - maxTok - 64;
+  const attempts = [
+    () => ({ messages: fitMessages(body.messages, budget), ...localSampling(body) }),
+    () => ({ messages: compatMessages(fitMessages(body.messages, Math.floor(budget * 0.8))), temperature: 0.8 }),
+    () => ({ messages: compatMessages(fitMessages(body.messages, Math.floor(budget * 0.45))) })
+  ];
+  let err = "";
+  for (const [i, make] of attempts.entries()) {
+    let r;
+    try {
+      r = await timedFetch(config().localUrl + "/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...make(), max_tokens: maxTok, stream, cache_prompt: true }) }, stream ? 300000 : 180000);
+    } catch (e) { err = "no answer (" + (e.name === "AbortError" ? "took too long" : e.message) + ")"; log({ kind: "error", where: "local brain", try: i + 1, detail: err }); continue; }
+    if (r.ok) { lastLocalError = ""; return { r }; }
+    const t = await r.text(); let msg = t;
+    try { const j = JSON.parse(t); msg = j.error?.message || (typeof j.error === "string" ? j.error : "") || j.message || t; } catch {}
+    err = `${r.status} ${String(msg).replace(/\s+/g, " ").slice(0, 240)}`;
+    log({ kind: "error", where: "local brain", try: i + 1, detail: err });
+    if (r.status === 503) await waitForBrain(120000);               // still loading the model: wait, then go again
+  }
+  lastLocalError = err;
+  return { error: err };
+}
+
 let hwCache = { at: 0, data: null }, sensorList = null, hwRunning = null, sensorFails = 0, sensorPauseUntil = 0;
 // Reading EVERY sensor at once, or starting a new read while the last is still running, makes Termux:API pop up
 // "Error in termuxApiReceiver". So: only the sensors she uses, one read at a time, cleanup after, and back off on errors.
@@ -339,10 +479,12 @@ const server = http.createServer(async (req, res) => {
     }
     // ---- status ----
     if (p === "/api/status") {
-      const [online, local] = await Promise.all([checkOnline(), checkLocal()]);
+      const [online, lstate, hearing] = await Promise.all([checkOnline(), localState(), hearingState()]);
+      const local = lstate === "ok";
+      if (lstate === "down") startBrain("status check found it down");
       const keys = apiKeys();
       const gkeys = geminiKeys();
-      return send(res, 200, { online, local, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
+      return send(res, 200, { online, local, localState: lstate, localError: lastLocalError || undefined, hearing, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
         geminiKeyCount: gkeys.length, geminiKeyInUse: gkeys.length ? Math.min(activeGemini, gkeys.length - 1) + 1 : 0, geminiModel: geminiModelCache,
         model: config().claudeModel, time: new Date().toISOString() });
     }
@@ -484,29 +626,42 @@ const server = http.createServer(async (req, res) => {
     // ---- offline brain: local llama-server (Nessari) ----
     if (p === "/api/local" && req.method === "POST") {
       const body = await readBody(req);
-      const r = await timedFetch(config().localUrl + "/v1/chat/completions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        // cache_prompt: reuse the already-read start of the conversation instead of re-reading it every time
-        body: JSON.stringify({ messages: body.messages, max_tokens: body.max_tokens || 300, ...localSampling(body), stream: false, cache_prompt: true })
-      }, 180000);
+      if (!(await waitForBrain())) return send(res, 503, { error: "The offline brain isn't running and wouldn't start. In Termux run: robot-doctor" });
+      const { r, error } = await localChat(body, false);
+      if (error) return send(res, 502, { error: "The offline brain refused: " + error });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) return send(res, 502, { error: "Local brain error", detail: j });
       return send(res, 200, { text: j.choices?.[0]?.message?.content || "" });
     }
 
     // ---- offline brain, streamed: words arrive as they're generated so she can start talking sooner ----
     if (p === "/api/local-stream" && req.method === "POST") {
       const body = await readBody(req);
-      const r = await timedFetch(config().localUrl + "/v1/chat/completions", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: body.messages, max_tokens: body.max_tokens || 300, ...localSampling(body), stream: true, cache_prompt: true })
-      }, 300000);
-      if (!r.ok || !r.body) return send(res, 502, { error: "Local brain error " + r.status });
+      if (!(await waitForBrain())) return send(res, 503, { error: "The offline brain isn't running and wouldn't start. In Termux run: robot-doctor" });
+      const { r, error } = await localChat(body, true);
+      if (error || !r.body) return send(res, 502, { error: "The offline brain refused: " + (error || "empty answer") });
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
       for await (const chunk of r.body) res.write(chunk);
       return res.end();
     }
+
+    // ---- offline hearing: a WAV clip in, the words out ----
+    if (p === "/api/hear" && req.method === "POST") {
+      const wav = await readRaw(req, 6 * 1024 * 1024);
+      const t0 = Date.now();
+      const text = await transcribe(wav);
+      if (text === null) return send(res, 503, { error: "Offline hearing isn't installed. In Termux run: robot-hearing-setup" });
+      return send(res, 200, { text, ms: Date.now() - t0 });
+    }
+    // ---- offline voice: the phone's own text-to-speech, for when Chrome's voice needs the internet ----
+    if (p === "/api/say" && req.method === "POST") {
+      const body = await readBody(req);
+      const text = String(body.text || "").slice(0, 1500); if (!text) return send(res, 200, { ok: true });
+      const args = ["-r", String(Math.min(3, Math.max(0.3, Number(body.rate) || 1))), "-p", String(Math.min(2, Math.max(0.1, Number(body.pitch) || 1))), text];
+      const out = await run("termux-tts-speak", args, 15000 + text.length * 150);
+      if (out === null) return send(res, 503, { error: "The phone's text-to-speech didn't answer (Termux:API)" });
+      return send(res, 200, { ok: true });
+    }
+    if (p === "/api/say/stop" && req.method === "POST") { run("pkill", ["-f", "termux-tts-speak"], 3000); return send(res, 200, { ok: true }); }
 
     // ---- files ----
     if (p === "/api/files" && req.method === "GET") {
