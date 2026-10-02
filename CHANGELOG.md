@@ -2,6 +2,10 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.16.1 · Offline brain start fix
+- Fixed: the offline brain refused to start ("too big for the free memory right now") even with a small 3B model. Android reports less free memory than it can actually hand over, and I was trusting that number. Now no model is ruled out: she tries the ones that look like they fit first, then the rest, and only gives up on a model if it really gets killed.
+- robot-doctor: no longer says the brain server is down when it's up (it was writing to a folder Termux doesn't have), key numbers print correctly, and the phone-voice check is more patient.
+
 ## 2026-10-02 · v0.16 · Actually works with no internet
 - Offline hearing: she used to listen through Chrome's speech recognition, which sends your voice to Google, so with no internet she was deaf and nothing reached her brain. Now she has her own on-phone recognizer (whisper.cpp, open source) and switches to it by herself when there's no internet. Install it once with robot-hearing-setup (robot-update does this for you). Settings › Hearing lets you keep it on the phone's own recognizer all the time (private).
 - Offline brain fixed ("My brain just glitched. Local brain error"): the on-phone model has a small window for text and refused anything bigger. Her server now measures that window and trims old chat and long notes to fit, waits if the model is still loading, and retries in simpler forms if the model still refuses. If it fails anyway she tells you the real reason instead of a generic error.

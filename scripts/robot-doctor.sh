@@ -15,7 +15,7 @@ echo "== Nessari check-up =="
 command -v node >/dev/null && ok "Node $(node -v)" || bad "Node is missing" "pkg install nodejs-lts"
 
 # --- server ---
-if curl -s -m 3 http://127.0.0.1:3000/api/status >/tmp/robot-status 2>/dev/null; then
+if curl -s -m 5 -o /dev/null http://127.0.0.1:3000/api/status 2>/dev/null; then
   ok "Brain server is running"
 else
   bad "Brain server isn't running" "Type: robot"
@@ -49,7 +49,7 @@ if curl -s -m 3 -o /dev/null http://127.0.0.1:8081/health; then ok "Offline hear
 elif { command -v whisper-server >/dev/null || [ -x "$HOME/whisper.cpp/build/bin/whisper-server" ]; } && ls "$HOME"/models/ggml-*.bin >/dev/null 2>&1; then
   warn "Offline hearing is installed but not running" "robot-stop; robot"
 else OFFLINE_OK=0; bad "No offline hearing: without internet she can't hear you (typing still works)" "With internet on, run once: robot-hearing-setup"; fi
-if timeout 8 termux-tts-engines 2>/dev/null | grep -q '"name"'; then ok "Phone's own voice is available (backup when Chrome's voice needs internet)"
+if [ -n "$(timeout 20 termux-tts-engines 2>/dev/null | tr -d '[:space:][]')" ]; then ok "Phone's own voice is available (backup when Chrome's voice needs internet)"
 else warn "Couldn't check the phone's own voice" "Needs Termux:API. Also: Settings > General management > Text-to-speech: make sure the voice data is downloaded."; fi
 [ "$OFFLINE_OK" = 1 ] && echo -e "${G}   She can work with no internet.${N}" || echo -e "${R}   She can NOT fully work without internet yet (see ✘ above).${N}"
 FREE=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)
@@ -84,23 +84,23 @@ else warn "Phone controls not set up (needed for 'use the phone' tasks)" "Turn o
 echo "-- Online brains --"
 CLAUDE=$(grep -E '^sk-ant-' "$HOME/.robot-key" 2>/dev/null)
 if [ -z "$CLAUDE" ]; then warn "No Claude key" "nano ~/.robot-key and paste it (starts with sk-ant-)"; fi
-N=0; for K in $CLAUDE; do N=$((N+1))
+KN=0; for K in $CLAUDE; do KN=$((KN+1))
   OUT=$(curl -s -m 20 https://api.anthropic.com/v1/messages -H "x-api-key: $K" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
     -d '{"model":"claude-haiku-4-5-20251001","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}')
-  if echo "$OUT" | grep -q '"text"'; then ok "Claude key #$N $(mask "$K") works"
-  elif echo "$OUT" | grep -qi 'credit'; then bad "Claude key #$N $(mask "$K"): no credit" "Use a key from the Console organization that has credit, or add credit."
-  elif echo "$OUT" | grep -qi 'authentication\|invalid x-api-key'; then bad "Claude key #$N $(mask "$K"): invalid" "Make a new key in the Console and replace it in ~/.robot-key"
-  elif [ -z "$OUT" ]; then warn "Claude key #$N: no answer" "Is the internet on?"
-  else warn "Claude key #$N: $(echo "$OUT" | head -c 160)"; fi
+  if echo "$OUT" | grep -q '"text"'; then ok "Claude key #$KN $(mask "$K") works"
+  elif echo "$OUT" | grep -qi 'credit'; then bad "Claude key #$KN $(mask "$K"): no credit" "Use a key from the Console organization that has credit, or add credit."
+  elif echo "$OUT" | grep -qi 'authentication\|invalid x-api-key'; then bad "Claude key #$KN $(mask "$K"): invalid" "Make a new key in the Console and replace it in ~/.robot-key"
+  elif [ -z "$OUT" ]; then warn "Claude key #$KN: no answer" "Is the internet on?"
+  else warn "Claude key #$KN: $(echo "$OUT" | head -c 160)"; fi
 done
 GEM=$(grep -E '^[A-Za-z0-9_-]{30,}$' "$HOME/.robot-gemini-key" 2>/dev/null)
-N=0; for K in $GEM; do N=$((N+1))
+KN=0; for K in $GEM; do KN=$((KN+1))
   CODE=$(curl -s -m 15 -o /dev/null -w '%{http_code}' "https://generativelanguage.googleapis.com/v1beta/models?key=$K")
   case "$CODE" in
-    200) ok "Gemini key #$N $(mask "$K") works";;
-    400|401|403) bad "Gemini key #$N $(mask "$K") is invalid" "Make a new one at aistudio.google.com";;
-    000) warn "Gemini key #$N: no answer" "Is the internet on?";;
-    *) warn "Gemini key #$N: answered $CODE";;
+    200) ok "Gemini key #$KN $(mask "$K") works";;
+    400|401|403) bad "Gemini key #$KN $(mask "$K") is invalid" "Make a new one at aistudio.google.com";;
+    000) warn "Gemini key #$KN: no answer" "Is the internet on?";;
+    *) warn "Gemini key #$KN: answered $CODE";;
   esac
 done
 [ -z "$GEM" ] && echo "  (no Gemini key; optional)"

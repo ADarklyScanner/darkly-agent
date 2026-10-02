@@ -27,15 +27,23 @@ candidates() {
 
 LORA="$(cfg localLora)"; LORA="${LORA/#\~/$HOME}"
 TRIED=0
+# Order to try them in: the ones that look like they fit (biggest first), then the rest (smallest first).
+# "Free memory" on Android is an underestimate (it gives memory back from idle apps when asked), so nothing is
+# ruled out: a model that really doesn't fit gets killed quickly and the loop moves on to the next one.
+ordered() {
+  local free_kb named; free_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+  named="$(cfg localModel)"; named="${named/#\~/$HOME}"
+  local fits=() rest=()
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if [ "$f" = "$named" ] || [ "$(stat -c %s "$f")" -le $(( free_kb * 1024 - 600*1024*1024 )) ]; then fits+=("$f"); else rest+=("$f"); fi
+  done < <(candidates | awk '!seen[$0]++')
+  printf '%s\n' "${fits[@]}"
+  for (( i=${#rest[@]}-1; i>=0; i-- )); do printf '%s\n' "${rest[$i]}"; done
+}
 while IFS= read -r MODEL; do
   [ -n "$MODEL" ] || continue
   [ -f "$DIR/data/.stopping" ] && exit 0
-  # does it fit? keep ~1.7 GB for the face, voice, hearing and Android (a model named in config.json is always tried)
-  FREE_KB=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
-  SIZE=$(stat -c %s "$MODEL")
-  if [ "$MODEL" != "$(cfg localModel | sed "s#^~#$HOME#")" ] && [ "$SIZE" -gt $(( FREE_KB * 1024 - 1700*1024*1024 )) ]; then
-    echo "$(date) skipping $(basename "$MODEL"): too big for the free memory right now"; continue
-  fi
   TRIED=$((TRIED+1))
   EXTRA=()
   # The personality adapter only works with the base model it was trained on: use it with the first (biggest) model only.
@@ -57,5 +65,5 @@ while IFS= read -r MODEL; do
     if [ "$QUICK" -ge 2 ]; then echo "$(date) $(basename "$MODEL") keeps dying right away; trying a smaller model"; break; fi
     sleep 5
   done
-done < <(candidates)
+done < <(ordered)
 echo "$(date) no offline brain model could run. Put a .gguf in ~/models (a 3B Q4 model fits on any phone)."
