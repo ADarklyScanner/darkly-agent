@@ -57,7 +57,8 @@ Everything she needs runs on the phone:
   model if a big one keeps getting killed for memory. It measures how fast the phone's brain reads and sizes what it
   sends to match (`data/.brain-speed.json`), has the brain read her standing notes ahead of time so answers only need
   the new message read, and drops any setting a given llama.cpp version refuses. `robot-doctor` asks it a real
-  question and prints its speed.
+  question and prints its speed. `robot-tune` (once, about 3 minutes) times different thread counts on the phone and
+  keeps the fastest (`data/.brain-threads`).
 - **Hearing:** whisper.cpp, installed by `robot-hearing-setup` (run once, with internet). In Settings › Hearing, "Auto"
   uses Google's recognizer when online and the phone's own when offline.
 - **Voice:** Chrome's voice when it works offline, otherwise the phone's own text-to-speech (through Termux:API).

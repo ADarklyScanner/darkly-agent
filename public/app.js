@@ -1097,6 +1097,24 @@ async function askLocalStreaming(msgs) {
   return full;
 }
 
+// The offline brain reads slowly, but it keeps what it has already read as long as the next request starts with
+// exactly the same text. So: earlier turns are sent word for word as it saw and wrote them (kept on each history
+// entry as .x), and the window of turns it's sent only moves in big steps, never one turn at a time.
+let lastLocalExact = null, localFirst = null;
+function localWindow(newLen) {
+  const room = status.localChatRoom || 1900;
+  const text = m => typeof (m.x ?? m.content) === "string" ? (m.x ?? m.content) : JSON.stringify(m.content);
+  const total = from => { let n = newLen + 26; for (let k = from; k < history.length; k++) n += text(history[k]).length + 26; return n; };
+  let i = localFirst ? history.indexOf(localFirst) : -1;
+  if (i < 0 || total(i) > room) {             // choose a new start: the newest turns, up to half the room, so the next few turns just add on
+    i = history.length; let n = newLen + 26;
+    while (i > 0 && n + text(history[i - 1]).length + 26 <= room * 0.5) { i--; n += text(history[i]).length + 26; }
+    while (i < history.length && history[i].role !== "user") i++;
+    localFirst = history[i] || null;
+  }
+  return history.slice(i).map(m => ({ role: m.role, content: text(m) }));
+}
+
 async function askLocal(userText, { lively = false, temperature } = {}) {
   // Offline skills: the offline brain can't call tools, so a plain request ("how many fingers", "play scavenger hunt")
   // is recognized here, really done, and the result handed over for it to say.
@@ -1109,7 +1127,10 @@ async function askLocal(userText, { lively = false, temperature } = {}) {
     transcriptLine("act", `${intent.tool} ${JSON.stringify(intent.input)} → ${String(out).slice(0, 160)}`);
     did = `\n(You just did this for him: ${intent.tool.replace(/_/g, " ")}. Result: ${String(out).slice(0, 700)}. Tell him the result in your own words, briefly.)`;
   }
-  const msgs = [{ role: "system", content: systemPrompt(true) }, ...recentHistory(12), { role: "user", content: userText + did + "\n" + quickSenses() + "\n(" + (window.Mind?.context(true) || "") + ")" }];
+  // What rides along with each message is kept short, sized to how fast this phone's brain reads.
+  const ctxText = window.Mind?.context(true, Math.max(160, Math.min(900, Math.round((status.localSpeed?.read || 10) * 24)))) || "";
+  const userContent = userText + did + "\n" + quickSenses() + (ctxText ? "\n(" + ctxText + ")" : "");
+  const msgs = [{ role: "system", content: systemPrompt(true) }, ...localWindow(userContent.length), { role: "user", content: userContent }];
   let text;
   // her own chatter isn't streamed: it gets checked for repeats before she says it
   if (lively) ({ text } = await api("/api/local", { method: "POST", signal: askAbort?.signal, body: JSON.stringify({ messages: msgs, max_tokens: 120, lively, temperature }) }));
@@ -1117,6 +1138,7 @@ async function askLocal(userText, { lively = false, temperature } = {}) {
     try { text = await askLocalStreaming(msgs); localSpoke = true; }
     catch (e) { if (e.final || e.name === "AbortError") throw e; ({ text } = await api("/api/local", { method: "POST", signal: askAbort?.signal, body: JSON.stringify({ messages: msgs, max_tokens: 220 }) })); }
   }
+  if (!lively) lastLocalExact = { user: userContent, assistant: text };       // exactly what the brain read and wrote, for next time
   const cmds = [];
   const allowMove = !autoTurn || settings.autoMove;
   const clean = text.replace(/\[(drive|part|stop|song|sfx|vibrate|effect)(?::([^\]:]+))?(?::([^\]:]+))?\]/gi, (_, k, a, b) => { cmds.push([k.toLowerCase(), a?.trim(), b?.trim()]); return ""; });
@@ -1168,7 +1190,7 @@ async function ask(userText, opts = {}) {
   if (!opts.quiet) { if (!opts.shown) transcriptLine("me", userText); logEvent("heard", { text: userText }); lastTalk = Date.now(); window.Mind?.onUserSaid(userText); }
   window.Face?.poke();
   let reply = "", brain = "", failed = false;
-  localSpoke = false;
+  localSpoke = false; lastLocalExact = null;
   const started = Date.now();
   try {
     // Brain order comes from Settings. Each online brain is tried in turn; offline is last.
@@ -1231,9 +1253,11 @@ async function ask(userText, opts = {}) {
   autoTurn = false;
   if (failed) transcriptLine("act", reply);               // shown, but not saved into the conversation
   else if (opts.auto) { if (reply) history.push({ role: "user", content: "(" + (opts.note || "you spoke up on your own") + ")", auto: true }); }
-  else if (!opts.quiet) history.push({ role: "user", content: userText });
+  const exact = brain === "nessari-offline" && !opts.auto && !opts.quiet && !failed ? lastLocalExact : null;
+  if (failed || opts.auto) {}
+  else if (!opts.quiet) history.push(exact ? { role: "user", content: userText, x: exact.user } : { role: "user", content: userText });
   if (reply && !failed) {
-    history.push({ role: "assistant", content: reply });
+    history.push(exact ? { role: "assistant", content: reply, x: exact.assistant } : { role: "assistant", content: reply });
     window.Mind?.onSheSaid(reply);
     window.Variety?.record(reply, opts.topic || (opts.auto ? "auto" : "chat"));
     transcriptLine("bot", reply);
@@ -1674,7 +1698,14 @@ function unlockExtras() {
   if ("wakeLock" in navigator && !window._wl) navigator.wakeLock.request("screen").then(l => { window._wl = l; l.onrelease = () => window._wl = null; }).catch(() => {});
   if (settings.nfc) window.Extras?.startNfc();           // NFC stickers as triggers (asks permission the first time)
 }
-document.addEventListener("visibilitychange", () => { if (!document.hidden) unlockExtras(); });
+// Chrome refuses the camera and microphone to a page that isn't on the screen ("Permission denied"), which is
+// what happens when she restarts while you're in Termux. So when the page comes back to the front, anything
+// that failed to start gets another go.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  unlockExtras();
+  setTimeout(() => { if (settings.track && !trackTimer) startTracking(); if (!listening) window.Tricks?.earsStart(); }, 600);
+});
 
 $("#openPanel").onclick = () => { $("#panel").hidden = false; document.body.classList.add("panel-open"); showTab("status"); };
 $("#openTalk").onclick = () => { $("#panel").hidden = false; document.body.classList.add("panel-open"); showTab("talk"); $("#typeBox").focus(); };
@@ -1745,6 +1776,7 @@ async function refreshStatus() {
     if (++serverFails === 2) { setMood("confused"); setFaceState("offline", true); $("#said").textContent = "My brain server stopped. Open Termux and type: robot"; }
   }
   refreshChips(); if (!$("#panel").hidden && !$("#tab-status").hidden) renderStatus();
+  if (window.Variety) Variety.slim = !!(status.local && status.localSpeed && status.localSpeed.read < 25);
   warmLocal();
 }
 setInterval(refreshStatus, 15000);

@@ -2,6 +2,16 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.18.2 · Shorter waits for offline answers
+Your check-up showed the offline brain answering, but reading only 10 tokens a second. At that speed, every 40 characters she hands it costs about a second before it can start answering. Tested here against the real llama.cpp program with a stand-in model; your phone's numbers are the ones that count.
+- She no longer makes the brain re-read the conversation. Earlier turns are sent word for word as the brain saw and wrote them, so it recognizes them and reads only your new message. The window of turns it's sent moves in big steps instead of sliding every turn (sliding forced a full re-read each time).
+- What rides along with each message (what she sees, recent events, her state) is cut to the essentials when the brain is slow: about 240 characters on your phone, down from several hundred.
+- Her own spontaneous lines get a shorter prompt on a slow brain, and they no longer wipe the brain's memory of your conversation.
+- Writing was being slowed by one of my own settings: for every token, the brain was sorting its whole 128,000-word vocabulary. Fixed; nothing about her variety changes. On the test machine that step went from 15 ms to 4 ms per token.
+- New command: robot-tune. It tries different numbers of processor threads, times each one on your phone, saves the fastest and restarts the brain with it. About three minutes, once. Phones mix fast and slow cores, so the best number has to be measured.
+- The check-up's own test question no longer leaves the brain "cold": her notes are read again right after.
+- Camera and microphone: if she restarts while you're in Termux, Chrome refuses them ("Permission denied" in the log) because her page isn't on the screen. She now tries again as soon as the page is back in front.
+
 ## 2026-10-02 · v0.18.1 · Why her offline brain never answered, fixed
 Your check-up finally showed the real reason, and this time I rebuilt the same brain program here (llama.cpp, current version) and tested against it instead of a stand-in. I still can't run your 3B model or your phone, so speed on the S22 is the one thing left to see.
 - The actual error: I was sending the brain a setting ("dry_penalty_last_n: -1") that the current llama.cpp refuses, so it turned down every request with "400 Field 'dry_penalty_last_n'...". I reproduced that exact message here and fixed it. If a future version refuses some other setting, she now drops that setting and asks again by herself instead of failing.

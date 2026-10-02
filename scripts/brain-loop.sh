@@ -21,7 +21,15 @@ trap '[ -n "$CHILD" ] && kill "$CHILD" 2>/dev/null; rm -f "$DIR/data/.brain-pid"
 HELP="$("$LLAMA" --help 2>&1)"
 has() { printf '%s' "$HELP" | grep -q -- "$1"; }
 # One conversation at a time: the brain then keeps what it has already read (her notes) and only reads what's new.
-OPTS=(--host 127.0.0.1 --port 8080 -t 4 -c 4096)
+# Thread counts: robot-tune measures what's fastest on this phone and saves it; 4 until then.
+THREADS=4; BATCH=""
+if [ -f "$DIR/data/.brain-threads" ]; then
+  read -r T TB _ < "$DIR/data/.brain-threads"
+  case "$T" in [1-9]|1[0-6]) THREADS=$T;; esac
+  case "$TB" in [1-9]|1[0-6]) BATCH=$TB;; esac
+fi
+OPTS=(--host 127.0.0.1 --port 8080 -t "$THREADS" -c 4096)
+[ -n "$BATCH" ] && has "--threads-batch" && OPTS+=(--threads-batch "$BATCH")
 has "--parallel" && OPTS+=(--parallel 1)
 has "--cache-reuse" && OPTS+=(--cache-reuse 256)
 

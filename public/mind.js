@@ -343,7 +343,23 @@
   }
 
   // ---------------- what goes to the brain each message (compact) ----------------
-  function context(short = false) {
+  // max: a character limit, for the slow offline brain (every 40 characters costs it about a second of reading).
+  // Then only the most useful things go in: who and what she sees, the last couple of events, her last action.
+  function context(short = false, max = 0) {
+    if (max) {
+      const parts = [];
+      if (window.Vision?.available) parts.push(`Eyes: ${Vision.faces ? Vision.describe() : "nobody in view"}`);
+      const who = window.People?.context?.(); if (who) parts.push(who + ".");
+      const recent = events.filter(e => nowMs() - e.t < 15 * 60000 && e.salience >= 0.45 && e.type !== "she_said" && e.type !== "he_said").slice(-2);
+      for (const e of recent.reverse()) parts.push(`${ago(e.t)}: ${String(e.text).slice(0, 90)}`);
+      if (lastAction && nowMs() - lastAction.t < 10 * 60000) parts.push(`Your last action: ${lastAction.name}${/^FAILED/.test(lastAction.result) ? " (failed)" : ""}`);
+      const st = Object.entries(S).filter(([k, v]) => Math.abs(v - BASELINE[k]) > 0.2).map(([k, v]) => `${k} ${v > BASELINE[k] ? "high" : "low"}`);
+      if (st.length || sleepMode) parts.push(`Mood inside: ${st.join(", ")}${sleepMode ? " (sleep mode)" : ""}`);
+      if (window.Vision?.room) parts.push(`You're in the ${Vision.room}.`);
+      const out = []; let n = 0;
+      for (const p of parts) { if (n + p.length + 1 > max) continue; out.push(p); n += p.length + 1; }
+      return out.join("\n");
+    }
     const lines = [];
     const st = Object.entries(S).filter(([k, v]) => Math.abs(v - BASELINE[k]) > 0.12).map(([k, v]) => `${k} ${v.toFixed(2)}`);
     lines.push(`Inner state (let it color your tone, don't announce it): ${st.join(", ") || "neutral"}${sleepMode ? ", in sleep mode" : ""}.`);

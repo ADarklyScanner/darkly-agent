@@ -191,9 +191,11 @@ async function checkLocal() { return (await localState()) === "ok"; }
 // The whole point is that she works with no internet, so the offline brain is looked after:
 // if it isn't running, start it (brain.sh picks a model that fits), at most once every 2 minutes.
 const BRAIN_SH = path.join(ROOT, "brain.sh");
+// robot-tune is timing the brain and has it stopped on purpose (a leftover marker older than 15 minutes is ignored)
+const tuning = () => { try { return Date.now() - fs.statSync(path.join(DATA, ".tuning")).mtimeMs < 15 * 60000; } catch { return false; } };
 let brainStartedAt = 0;
 function startBrain(why) {
-  if (Date.now() - brainStartedAt < 120000 || !fs.existsSync(BRAIN_SH) || fs.existsSync(path.join(DATA, ".stopping")) || brainRunning()) return false;
+  if (Date.now() - brainStartedAt < 120000 || !fs.existsSync(BRAIN_SH) || fs.existsSync(path.join(DATA, ".stopping")) || tuning() || brainRunning()) return false;
   brainStartedAt = Date.now();
   log({ kind: "brain", detail: "offline brain isn't running; starting it (" + why + ")" });
   try { const c = spawn("bash", [BRAIN_SH], { detached: true, stdio: "ignore" }); c.on("error", () => {}); c.unref(); } catch { return false; }
@@ -291,7 +293,7 @@ function localSampling(body) {
   const lively = body.lively ? 1 : 0;                  // spontaneous lines get more variety than answers to questions
   return {
     temperature: Math.min(1.3, Number(body.temperature) || (lively ? 1.0 : 0.8)),
-    top_p: 0.95, min_p: 0.05, top_k: 0,
+    top_p: 0.95, min_p: 0.05, top_k: 80,                // (0 would mean "weigh every word in the vocabulary": a sort of 128,000 numbers for each token written)
     repeat_penalty: 1.12, repeat_last_n: 512, presence_penalty: lively ? 0.5 : 0.25, frequency_penalty: lively ? 0.3 : 0.1,
     dry_multiplier: 0.8, dry_base: 1.75, dry_allowed_length: 2, dry_penalty_last_n: 1024,
     seed: Math.floor(Math.random() * 2 ** 31)
@@ -338,7 +340,9 @@ function budgets(nctx, maxTok) {
   const read = speed.model === brainModel() && speed.basis > 0 ? speed.basis : 12;     // unmeasured: assume a slow phone
   const step = n => Math.floor(n / 150) * 150;
   const sys = Math.min(Math.max(450, step(read * 60)), step(nctx * 0.5));       // about 40 s of reading, done ahead of time
-  const chat = Math.max(200, Math.min(Math.max(300, step(read * 20)), nctx - sys - maxTok - 64));
+  // The conversation is only read in full after a restart or when old turns are dropped; normally the brain
+  // already holds it and reads just the newest message. So it may be as long as the notes.
+  const chat = Math.max(200, Math.min(Math.max(600, step(read * 60)), nctx - sys - maxTok - 64));
   return { sys, chat };
 }
 const squeeze = (c, tokens) => { const keep = Math.floor(tokens * 3.2); return c.length <= keep ? c : c.slice(0, Math.floor(keep * 0.7)) + "\n…\n" + c.slice(-Math.floor(keep * 0.3)); };
@@ -398,6 +402,10 @@ async function llamaPost(payload, ms, signal) {
   return { status: 400, msg: "too many refused settings" };
 }
 let lastLocalError = "", warmAbort = null;
+// Which standing notes the brain's cache currently starts with ("" = something else, e.g. after the check-up's
+// test question). Warming up is skipped only while it still holds hers.
+let cacheSys = "";
+const sysHash = content => crypto.createHash("sha1").update(brainKey() + "\n" + content).digest("hex");
 async function localChat(body, stream, signal) {
   warmAbort?.abort();                                                    // a real question beats warming up
   const nctx = await localCtx();
@@ -412,7 +420,10 @@ async function localChat(body, stream, signal) {
   for (let i = 0; i < attempts.length; i++) {
     if (signal?.aborted) return { error: "cancelled" };                  // she moved on (he said something new): stop generating
     let out;
-    try { out = await llamaPost({ ...attempts[i](), max_tokens: maxTok, stream, cache_prompt: true }, stream ? 240000 : 180000, signal); }
+    const payload = attempts[i]();
+    const holds = payload.messages[0]?.role === "system" ? sysHash(payload.messages[0].content) : "";
+    cacheSys = "";
+    try { out = await llamaPost({ ...payload, max_tokens: maxTok, stream, cache_prompt: true }, stream ? 240000 : 180000, signal); }
     catch (e) {
       if (signal?.aborted) return { error: "cancelled" };
       const slow = e.name === "AbortError";
@@ -422,7 +433,7 @@ async function localChat(body, stream, signal) {
       else if (!(await waitForBrain(60000, signal))) break;              // it went away: give it a chance to come back, once
       continue;
     }
-    if (out.r?.ok) { lastLocalError = ""; return { r: out.r }; }
+    if (out.r?.ok) { lastLocalError = ""; cacheSys = holds; return { r: out.r }; }
     const msg = out.msg ?? llamaError(await out.r.text()), status = out.status || out.r.status;
     err = `${status} ${msg}`;
     log({ kind: "error", where: "local brain", try: i + 1, detail: err });
@@ -443,6 +454,7 @@ async function benchBrain() {
   benchRunning = true;
   const c = warmAbort = new AbortController();
   try {
+    cacheSys = "";
     const filler = "The quick brown robot rolls across the kitchen floor, looks at the cat, and wonders what to say next. ".repeat(9);
     const { r } = await llamaPost({ messages: [{ role: "user", content: `Note ${Math.floor(Math.random() * 1e9)}. ${filler}\nCount from one to ten in words.` }], max_tokens: 16, temperature: 0.5, stream: false }, 120000, c.signal);
     if (r?.ok) { const j = await r.json().catch(() => ({})); noteSpeed(j.timings); benchedFor = key; log({ kind: "brain", detail: `offline brain speed on this phone: reads ${speed.read || "?"} and writes ${speed.write || "?"} tokens a second` }); }
@@ -450,7 +462,6 @@ async function benchBrain() {
 }
 // Have the brain read her standing notes ahead of time (it keeps them in its cache), so the first real
 // question only has to read the question. Stopped the moment a real question arrives.
-let warmedKey = "";
 async function warmBrain(system) {
   if (!system) return { ok: false };
   if (warmAbort || inFlight) return { ok: false, busy: warmAbort ? "warming or measuring already" : "answering" };
@@ -458,13 +469,13 @@ async function warmBrain(system) {
   if (st !== "ok") return { ok: false, busy: "brain is " + st };
   if (!speedKnown()) { benchBrain(); return { ok: false, measuring: true }; }           // know the speed first: it decides how much she gets to read
   const nctx = await localCtx(), b = budgets(nctx, 220), content = fitSystem(system, b.sys);
-  const key = crypto.createHash("sha1").update(brainKey() + content).digest("hex");
-  if (key === warmedKey) return { ok: true, already: true };
+  const key = sysHash(content);
+  if (key === cacheSys) return { ok: true, already: true };
   const c = warmAbort = new AbortController(), t0 = Date.now();
   try {
     const { r } = await llamaPost({ messages: [{ role: "system", content }, { role: "user", content: "Hi." }], max_tokens: 1, stream: false, cache_prompt: true }, 240000, c.signal);
     if (!r?.ok) return { ok: false };
-    const j = await r.json().catch(() => ({})); noteSpeed(j.timings); warmedKey = key;
+    const j = await r.json().catch(() => ({})); noteSpeed(j.timings); cacheSys = key;
     return { ok: true, ms: Date.now() - t0, tokens: j.timings?.prompt_n };
   } catch { return { ok: false, interrupted: c.signal.aborted }; }
   finally { if (warmAbort === c) warmAbort = null; }
@@ -597,7 +608,7 @@ const server = http.createServer(async (req, res) => {
       if (lstate === "down") startBrain("status check found it down");
       const keys = apiKeys();
       const gkeys = geminiKeys();
-      return send(res, 200, { online, local, localState: lstate, localError: lastLocalError || undefined, localSpeed: speed.read ? { read: speed.read, write: speed.write } : undefined, localModel: brainModel() || undefined, localRoom: Math.floor((budgets(localProps.n_ctx, 220).sys - 8) * 3.2), hearing, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
+      return send(res, 200, { online, local, localState: lstate, localError: lastLocalError || undefined, localSpeed: speed.read ? { read: speed.read, write: speed.write } : undefined, localModel: brainModel() || undefined, localRoom: Math.floor((budgets(localProps.n_ctx, 220).sys - 8) * 3.2), localChatRoom: Math.floor(budgets(localProps.n_ctx, 220).chat * 3.2), hearing, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
         geminiKeyCount: gkeys.length, geminiKeyInUse: gkeys.length ? Math.min(activeGemini, gkeys.length - 1) + 1 : 0, geminiModel: geminiModelCache,
         model: config().claudeModel, time: new Date().toISOString() });
     }
@@ -744,6 +755,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/local" && req.method === "POST") {
       const body = await readBody(req);
       const gone = new AbortController(); res.on("close", () => { if (!res.writableEnded) gone.abort(); });
+      if (tuning()) return send(res, 503, { error: "The offline brain is being tuned right now (robot-tune). It'll be back in a few minutes." });
       if (!(await waitForBrain(120000, gone.signal))) return send(res, 503, { error: "The offline brain isn't running and wouldn't start. In Termux run: robot-doctor" });
       const { r, error } = await localChat(body, false, gone.signal);
       if (error) return send(res, 502, { error: "The offline brain refused: " + error });
@@ -760,6 +772,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/local-stream" && req.method === "POST") {
       const body = await readBody(req);
       const gone = new AbortController(); res.on("close", () => { if (!res.writableEnded) gone.abort(); });
+      if (tuning()) return send(res, 503, { error: "The offline brain is being tuned right now (robot-tune). It'll be back in a few minutes." });
       if (!(await waitForBrain(120000, gone.signal))) return send(res, 503, { error: "The offline brain isn't running and wouldn't start. In Termux run: robot-doctor" });
       const { r, error } = await localChat(body, true, gone.signal);
       if (error || !r.body) return send(res, 502, { error: "The offline brain refused: " + (error || "empty answer") });

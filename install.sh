@@ -41,6 +41,7 @@ ln -sf "$DEST/robot-update.sh" "$BIN/robot-update"
 ln -sf "$DEST/robot-doctor.sh" "$BIN/robot-doctor"
 ln -sf "$DEST/robot-vision-download.sh" "$BIN/robot-vision-download"
 ln -sf "$DEST/robot-hearing-setup.sh" "$BIN/robot-hearing-setup"
+ln -sf "$DEST/robot-tune.sh" "$BIN/robot-tune"
 
 # Vision engine for face tracking and hand gestures (kept between updates; downloads only what's missing)
 mkdir -p "$DEST/public/vendor"
@@ -86,6 +87,7 @@ echo "  robot-stop        shut her down"
 echo "  robot-update      get the newest version from GitHub and restart her"
 echo "  robot-doctor      check everything and say what's wrong (including: can she work with no internet?)"
 echo "  robot-hearing-setup  install offline hearing (once, needs internet)"
+echo "  robot-tune        find the fastest setting for the offline brain on this phone (once, about 3 minutes)"
 echo "  robot-dedicate    give the whole phone to the robot (turns off other apps)"
 echo "  robot-undedicate  undo that"
 echo

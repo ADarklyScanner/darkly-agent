@@ -40,8 +40,11 @@ if [ "$BH" = 200 ]; then
     [ -f "$DIR/data/.brain-model" ] && echo "   model: $(basename "$(cat "$DIR/data/.brain-model")")"
     if [ "${RS:-0}" -gt 0 ]; then
       echo "   speed: reads $RS and writes $WS tokens a second (a token is about three quarters of a word)"
-      [ "$RS" -lt 10 ] && warn "That's slow, so her offline answers will take a while" "Plug her in, close other apps, and run robot-dedicate. She sends the brain less to read when it's slow, so she'll still answer."
+      if [ -f "$DIR/data/.brain-threads" ]; then echo "   threads (set by robot-tune): $(cut -d' ' -f1 "$DIR/data/.brain-threads") to write, $(cut -d' ' -f2 "$DIR/data/.brain-threads") to read"
+      elif [ "$RS" -lt 20 ]; then warn "It reads slowly, so there's a pause before each offline answer" "Run robot-tune once (about 3 minutes): it finds the fastest setting for this phone. She already sends the brain less to read when it's slow."; fi
     fi
+    LS="$(command -v llama-server || echo "$HOME/llama.cpp/build/bin/llama-server")"
+    echo "   program: $("$LS" --version 2>&1 | head -1 | cut -c1-80), $(nproc 2>/dev/null) cores"
   else
     OFFLINE_OK=0; bad "Offline brain is running but won't answer: $(printf '%s' "$RES" | cut -f2)" "Send me that line and the lines below."
     grep '"local brain"' "$DIR/data/logs/"*.jsonl 2>/dev/null | tail -3 | cut -c1-260 | sed 's/^/     /'

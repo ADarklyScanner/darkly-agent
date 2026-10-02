@@ -58,11 +58,14 @@
   const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago"; };
 
   // ---------------- what to tell the brain ----------------
-  function avoidBlock(topic, n = 10) {
-    const same = said.filter(s => s.topic === topic).slice(-6);
+  // slim: for a slow offline brain, where every line it has to read first costs seconds. Fewer, shorter reminders;
+  // the repeat check after she writes the line still catches reruns.
+  let slim = false;
+  function avoidBlock(topic, n = slim ? 4 : 10) {
+    const same = said.filter(s => s.topic === topic).slice(slim ? -2 : -6);
     const recent = said.filter(s => s.topic !== topic).slice(-(n - same.length));
-    const lines = [...same, ...recent].sort((a, b) => a.t - b.t).map(s => `- "${s.text.slice(0, 110)}" (${ago(s.t)})`);
-    const bad = overused();
+    const lines = [...same, ...recent].sort((a, b) => a.t - b.t).map(s => slim ? `- "${s.text.slice(0, 60)}"` : `- "${s.text.slice(0, 110)}" (${ago(s.t)})`);
+    const bad = overused().slice(0, slim ? 6 : 12);
     let out = "";
     if (lines.length) out += `Things you ALREADY said (don't reuse their idea, joke, opening or wording):\n${lines.join("\n")}\n`;
     if (bad.length) out += `Words you're overusing, don't use them now: ${bad.join(", ")}.\n`;
@@ -143,7 +146,7 @@
   // Too many comments on one thing today: just react with the face.
   const shouldStayQuiet = topic => timesToday(topic, 6) >= 5 || Date.now() < quietUntil;
 
-  window.Variety = { feedback, get likes() { return likes; }, get quietUntil() { return quietUntil; }, weight, load, record, similarity, mostSimilar, overused, avoidBlock, angle, guide, timesToday, shouldStayQuiet,
+  window.Variety = { set slim(v) { slim = !!v; }, get slim() { return slim; }, feedback, get likes() { return likes; }, get quietUntil() { return quietUntil; }, weight, load, record, similarity, mostSimilar, overused, avoidBlock, angle, guide, timesToday, shouldStayQuiet,
     get said() { return said; }, get loaded() { return loaded; },
     reactAngles: REACT_ANGLES.length, idleAngles: IDLE_ANGLES.length, combos: (REACT_ANGLES.length + IDLE_ANGLES.length) * TONES.length * LENGTHS.length };
   // readFile lives in app.js, which loads after this file

@@ -5,6 +5,8 @@ DIR="$HOME/robot"
 LOGS="$DIR/data/logs"
 mkdir -p "$LOGS" "$HOME/models"
 [ -f "$DIR/data/.stopping" ] && [ "$1" != "--force" ] && exit 0
+# robot-tune is timing the brain right now and will start it again itself (a leftover marker older than 15 minutes is ignored)
+[ -n "$(find "$DIR/data/.tuning" -mmin -15 2>/dev/null)" ] && exit 0
 
 # ---------- offline brain (llama.cpp) ----------
 # alive FILE WORD: is the process whose number is saved in FILE still running, and is it really ours (WORD in its command line)?
