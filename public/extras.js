@@ -42,6 +42,7 @@
     { name: "which_room", description: "Which room are you in, going by how it looks?", input_schema: obj() },
     { name: "learn_thing", description: "He's holding up a particular object and telling you its name ('this is Frank', 'this is my good screwdriver'). Remember what it looks like so you recognize that exact thing later. He must hold it in the middle of your view.", input_schema: obj({ name: { type: "string" } }, ["name"]) },
     { name: "remember_place", description: "Remember where you are right now under a name (home, workshop, mom's house), using the phone's location. Later you'll know when you're there again.", input_schema: obj({ name: { type: "string" } }, ["name"]) },
+    { name: "screen", description: "Turn your screen dark (pure black; you keep seeing, hearing and talking, it just saves the display and the battery) or bring your face back. Use when he says 'go dark', 'screen off', 'lights out', 'screen on', 'show your face'.", input_schema: obj({ state: { type: "string", enum: ["dark", "on"] } }, ["state"]) },
     { name: "where_am_i", description: "Check the phone's location and tell which remembered place you're at or near (or that it's somewhere new).", input_schema: obj() }
   ];
   const NAMES = new Set(E.tools.map(t => t.name));
@@ -57,6 +58,7 @@
     if (name === "phone_routines") { try { const r = (await api("/api/phone/routines")).routines; return r.length ? "Phone tasks you can do from memory: " + r.map(x => `"${x.goal}" (${x.steps} steps, done ${x.runs} more times since learning)`).join("; ") + "." : "You haven't learned any phone routines yet. You learn one each time you finish a phone task successfully."; } catch (err) { return "FAILED: " + err.message; } }
     if (name === "forget_phone_routine") { try { return (await api("/api/phone/routines?goal=" + encodeURIComponent(input.goal || ""), { method: "DELETE" })).forgotten ? "Forgotten." : "No routine matched that."; } catch (err) { return "FAILED: " + err.message; } }
     if (name === "calibrate_ears") return await calibrateEars();
+    if (name === "screen") return window.Dark ? Dark.set(input.state) : "FAILED: not loaded.";
     if (name === "self_check") return window.selfCheck ? await selfCheck() : "FAILED: not loaded.";
     if (name === "see_tags") return window.Tags?.available ? Tags.describe() : "FAILED: the tag reader didn't load.";
     if (name === "name_tag") return window.Tags ? await Tags.name(input.name, input.id, input.trick) : "FAILED: the tag reader didn't load.";
@@ -286,6 +288,8 @@
     [/forget (\w+)'?s? face/i, m => ["forget_face", { name: m[1] }]],
     [/who do you know|list (?:the )?people/i, () => ["list_people", {}]],
     [/calibrate (?:your )?ears/i, () => ["calibrate_ears", {}]],
+    [/\b(?:go dark|screen off|lights out|(?:turn|switch) (?:off )?(?:your|the) (?:screen|face|display)(?: off)?\b(?!.* on\b)|hide your face|black ?out)/i, () => ["screen", { state: "dark" }]],
+    [/\b(?:screen on|(?:turn|switch) (?:your|the) (?:screen|face|display) (?:back )?on|show (?:me )?your face|lights on|face on)\b/i, () => ["screen", { state: "on" }]],
     [/systems? check|self.?(?:check|test)|diagnostic|are you (?:ok|okay|working|broken)|what(?:'s| is) wrong with you/i, () => ["self_check", {}]],
     [/^(?:use|on) (?:the|your|my) phone,? (?:to )?(.+)/i, m => ["use_phone", { goal: m[1].replace(/[.!]+$/, "") }]],
     [/what phone (?:tasks|routines)|phone routines/i, () => ["phone_routines", {}]],

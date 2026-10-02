@@ -58,7 +58,8 @@ Everything she needs runs on the phone:
   sends to match (`data/.brain-speed.json`), has the brain read her standing notes ahead of time so answers only need
   the new message read, and drops any setting a given llama.cpp version refuses. `robot-doctor` asks it a real
   question and prints its speed. `robot-tune` (once, about 3 minutes) times different thread counts on the phone and
-  keeps the fastest (`data/.brain-threads`).
+  keeps the fastest (`data/.brain-threads`). `robot-brain-build` (once, 20-30 minutes) builds llama.cpp on the phone for
+  its own processor, times it against the Termux package, and uses it only if it's faster (`data/.brain-program`).
 - **Hearing:** whisper.cpp, installed by `robot-hearing-setup` (run once, with internet). In Settings › Hearing, "Auto"
   uses Google's recognizer when online and the phone's own when offline.
 - **Voice:** Chrome's voice when it works offline, otherwise the phone's own text-to-speech (through Termux:API).
@@ -125,6 +126,16 @@ Ask her to do things on the phone ("open YouTube and search for cat videos", "tu
 It uses Wireless debugging (set up once with `robot-dedicate`), not root. After that she keeps her own connection:
 you don't need to leave Wireless debugging open, and after a restart she switches it back on herself. A notification with a STOP button shows while she
 works. She won't buy, pay, send, post or delete anything unless that's what you asked for.
+
+## Screen off
+
+- **Go dark** ("go dark", "screen off", "lights out"; or the `screen` tool): the page shows pure black and everything keeps
+  running. A touch or "screen on" brings the face back. `public/dark.js`.
+- **Power button:** Chrome stops the camera when the screen is really off. She keeps listening with offline hearing
+  (whisper) and answers to her name, or within 45 seconds of her last answer. The microphone has to be open before the
+  screen goes off (tap-to-talk mode, or Settings › Hearing › phone's own).
+- **Lock screen:** a media card (Media Session API) with a snapshot of her face, her state, her last line and buttons:
+  pause/play = mute/unmute, next = say something, previous = repeat. A silent audio loop keeps it alive.
 
 ## Real eyes (offline vision)
 

@@ -2,6 +2,19 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.19 · Screen off, and a card on the lock screen
+Tested here in a simulated browser. How Chrome on your phone behaves with the screen really off is the part I can't see from here.
+- Go dark: say "go dark", "screen off" or "lights out" (or she can do it herself as a tool). Her page stays up but shows pure black, which on this kind of screen means the pixels are off. Everything keeps running: camera, eyes, ears, voice, brain. Touch the screen or say "screen on" and her face is back. This is the way to have the screen off and lose nothing.
+- The power button: with the screen really off, Chrome takes her camera away. What keeps going is sound. She switches to the phone's own hearing and keeps listening; because she can't see who's talking, she only answers when she hears her name (spelled however the hearing spells it), or within 45 seconds of her own last answer so a conversation can continue. This needs the microphone to be open already when the screen goes off: it is in tap-to-talk mode and with Hearing set to the phone's own. In always-listening mode with Google's recognizer, Android may refuse to hand the microphone over in the dark.
+- Lock screen: a web page can't draw over Android's lock screen, so her full moving face isn't possible there. What she has instead is a media card, the kind a music player shows: a picture of her face in her current mood, her name and state, the last thing she said, and three buttons. Pause mutes her and play unmutes her; next makes her say something; previous makes her repeat her last line. A silent sound loop keeps the card and her page alive in the background, which also means other apps' music pauses while her page is open (Settings has a switch).
+- Settings: "Keeps listening when the screen is off" and "Shows on the lock screen", both on by default. The Status tab has a Screen row.
+
+## 2026-10-02 · v0.18.3 · A brain program built for this phone
+Your tuning run showed thread count barely matters (9.5 to 10.8 tokens a second reading, whatever the number), so the limit is somewhere else. My best guess is the program itself: the ready-made llama.cpp from Termux has to run on every phone, so it likely can't use the newer processor instructions your chip has. That's a guess until it's measured, so the new command measures it.
+- New command: robot-brain-build. It builds llama.cpp on the phone for the phone's own processor (the same version her server was tested against here), then times it against the ready-made one with your model. She switches only if the new one is really faster; otherwise nothing changes. If it wins, thread tuning runs again for it. About 20-30 minutes, once, with internet; plug her in.
+- robot-tune: a run that fails now says so instead of printing "reads 0".
+- The check-up's "program" line was printing a log line instead of anything useful. It now says which brain program she's using.
+
 ## 2026-10-02 · v0.18.2 · Shorter waits for offline answers
 Your check-up showed the offline brain answering, but reading only 10 tokens a second. At that speed, every 40 characters she hands it costs about a second before it can start answering. Tested here against the real llama.cpp program with a stand-in model; your phone's numbers are the ones that count.
 - She no longer makes the brain re-read the conversation. Earlier turns are sent word for word as the brain saw and wrote them, so it recognizes them and reads only your new message. The window of turns it's sent moves in big steps instead of sliding every turn (sliding forced a full re-read each time).

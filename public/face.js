@@ -611,7 +611,9 @@
 
   // ---------- frame loop ----------
   let last = performance.now();
+  let paused = false;                                   // her screen is dark (dark.js): keep time, draw nothing
   function frame(now) {
+    if (paused) { last = now; setTimeout(() => requestAnimationFrame(frame), 500); return; }
     const dt = Math.min(0.05, (now - last) / 1000); last = now;
     const t = now / 1000;
     if (canvas.clientWidth !== Math.round(W) || canvas.clientHeight !== Math.round(H)) resize();
@@ -888,6 +890,7 @@
       const p = Z[zone]; if (!p) return;
       highlight = { x: p[0], y: p[1], until: nowMs() + ms, ms, hue };
     },
+    pause(on) { paused = !!on; },
     setNightDim(v) { nightDim = clamp(v, 0, 0.7); },
     setIdleDim(v) { idleDim = clamp(v, 0, 0.8); },                  // nobody around: dim the screen (saves battery and the display)
     effect(name, seconds = 6) { fx = { name, until: nowMs() + Math.min(seconds, 60) * 1000 }; lastActivity = nowMs(); },

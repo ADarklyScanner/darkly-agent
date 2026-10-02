@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /* ================= settings ================= */
 const DEFAULTS = { brain: "auto", listen: "push", wake: "", voice: "", rate: 1.05, pitch: 1.1, facing: "user", tipStop: true,
-  auto: "normal", chatter: "offline", hearing: "auto", faces: true, tags: true, nfc: false, autoPhoto: false, react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
+  auto: "normal", chatter: "offline", hearing: "auto", faces: true, tags: true, nfc: false, autoPhoto: false, offListen: true, lockCard: true, react: true, night: true, autoMove: false, track: true, ears: true, qr: true, vision: true, eyeMode: "motion", muted: false, voiceStyle: "normal" };
 let settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("robot-settings") || "{}") };
 const saveSettings = () => localStorage.setItem("robot-settings", JSON.stringify(settings));
 
@@ -191,13 +191,15 @@ function resumeListening() {
 }
 let styleOnce = null;                                    // a voice style for just the next reply (whisper back to a whisper)
 function onHeard(text, conf = 1, how = {}) {
+  // Screen off: she can't see who's talking, so she only answers to her name (or while a conversation is going).
+  if (document.hidden && window.Dark && !Dark.forMe(text)) { logEvent("auto", { detail: "screen off, heard something not addressed to her: " + text.slice(0, 80) }); return; }
   if (settings.listen === "always" && settings.wake.trim()) {
     const w = settings.wake.trim().toLowerCase();
     const i = text.toLowerCase().indexOf(w);
     if (i < 0) return;
     text = text.slice(i + w.length).replace(/^[\s,.!?]+/, "") || "hey";
   }
-  if (settings.listen === "push") stopListening();
+  if (settings.listen === "push" && !document.hidden) stopListening();
   // unsure speech recognition: tell her, so she can check instead of guessing
   styleOnce = how.quiet ? "whisper" : null;
   let note = how.quiet ? "\n(he whispered that: answer quietly and briefly)" : how.noisy ? "\n(the room is noisy right now: keep it short and clear)" : "";
@@ -1269,6 +1271,7 @@ async function ask(userText, opts = {}) {
   if (pendingAsk) { const p = pendingAsk; pendingAsk = null; setTimeout(() => ask(p.userText, p.opts), 50); }   // what he said while she was busy
   if (localSpoke && !failed) { await endAppend(); $("#said").textContent = reply; }      // already said it while streaming
   else if (reply) await speak(reply);
+  if (reply) window.lastSpokeAt = Date.now();
   if (gen === askGen) styleOnce = null;
 }
 let localSpoke = false;
@@ -1801,6 +1804,7 @@ function renderStatus() {
     ["Offline hearing", { ready: "ready", slow: "works (slow start)", none: "not installed" }[status.hearing] || "?"],
     ["Hearing now", window.Hearing?.active ? "phone's own (offline)" : listening ? "Google's (online)" : "off"],
     ["Offline voice", voices.some(v => v.localService) ? "ready" : ttsBrokenUntil > Date.now() ? "phone's own" : voices.length ? "online voices only" : "?"],
+    ["Screen", window.Dark ? Dark.status() : "?"],
     ["Brain mode", settings.brain],
     ["Body", link.connected ? link.kind + (link.hello ? " ✓" : " (silent)") : "not connected"],
     ["Mood", mood],
@@ -1925,6 +1929,7 @@ function bindSetting(id, key, cast = v => v) {
 function onSettingChange(key) {
   if (key === "listen") { stopListening(); if (settings.listen === "always") startListening(); }
   if (key === "nfc" && settings.nfc) window.Extras?.startNfc();
+  if (key === "lockCard") settings.lockCard ? window.Dark?.startCard() : window.Dark?.stopCard();
   if (key === "hearing") { stopListening(); window.Hearing?.stop(); if (settings.listen === "always") setTimeout(startListening, 400); }
   if (key === "facing" && camStream) { camOff(); camOn().catch(() => {}); }
   if (key === "ears") { if (settings.ears) Tricks.earsStart(); else if (!window.Hearing?.active) Tricks.earsStop(); }
@@ -1932,7 +1937,7 @@ function onSettingChange(key) {
   refreshChips();
 }
 bindSetting("#setBrain", "brain"); bindSetting("#setChatter", "chatter"); bindSetting("#setHearing", "hearing");
-bindSetting("#setFaces", "faces"); bindSetting("#setTags", "tags"); bindSetting("#setNfc", "nfc"); bindSetting("#setAutoPhoto", "autoPhoto"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
+bindSetting("#setFaces", "faces"); bindSetting("#setTags", "tags"); bindSetting("#setNfc", "nfc"); bindSetting("#setOffListen", "offListen"); bindSetting("#setLockCard", "lockCard"); bindSetting("#setAutoPhoto", "autoPhoto"); bindSetting("#setListen", "listen"); bindSetting("#setWake", "wake");
 bindSetting("#setVoice", "voice"); bindSetting("#setRate", "rate", Number); bindSetting("#setPitch", "pitch", Number);
 bindSetting("#setFacing", "facing"); bindSetting("#setTipStop", "tipStop");
 bindSetting("#setTrack", "track"); bindSetting("#setVision", "vision"); bindSetting("#setEars", "ears"); bindSetting("#setQr", "qr");

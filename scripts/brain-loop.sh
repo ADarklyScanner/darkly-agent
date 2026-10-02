@@ -5,6 +5,9 @@
 DIR="$HOME/robot"
 LLAMA="$(command -v llama-server || true)"
 [ -z "$LLAMA" ] && [ -x "$HOME/llama.cpp/build/bin/llama-server" ] && LLAMA="$HOME/llama.cpp/build/bin/llama-server"
+# robot-brain-build may have made a faster program for this phone's own processor; use it if it's there.
+OWN="$(cat "$DIR/data/.brain-program" 2>/dev/null)"
+[ -n "$OWN" ] && [ -x "$OWN" ] && LLAMA="$OWN"
 [ -z "$LLAMA" ] && { echo "$(date) no llama-server program found (pkg install llama-cpp)"; exit 1; }
 
 # Only one of these at a time, and never a second brain on top of one that's already answering.

@@ -13,8 +13,10 @@
   H.available = () => typeof status !== "undefined" && (status.hearing === "ready" || status.hearing === "slow");
   H.useOffline = () => {
     const want = (typeof settings !== "undefined" && settings.hearing) || "auto";
-    if (want === "online") return false;
     if (!H.available()) return false;
+    // screen off: Google's recognizer stops with the screen, the phone's own keeps going
+    if (document.hidden && (typeof settings === "undefined" || settings.offListen !== false)) return true;
+    if (want === "online") return false;
     if (want === "offline") return true;
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     return !SR || !navigator.onLine || !status.online || now() < H.forcedUntil;     // auto: offline whenever the internet isn't there
@@ -114,8 +116,8 @@
   };
   // keep the microphone open while she's supposed to be listening (other things borrow and return it)
   setInterval(() => {
-    if (!H.active || (typeof recording !== "undefined" && recording) || document.hidden) return;
-    window.Tricks?.earsStart?.(true);
+    if (!H.active || (typeof recording !== "undefined" && recording)) return;
+    window.Tricks?.earsStart?.(true);                              // (also with the screen off: it resumes the sound engine if Chrome paused it)
   }, 4000);
   H.stop = () => {
     H.active = false; H.state = "idle"; reset();
