@@ -14,10 +14,11 @@ MODEL="$(cat "$D/.brain-model" 2>/dev/null)"
 CORES=$(nproc --all 2>/dev/null || nproc 2>/dev/null || echo 8)
 LIST=""; for t in 4 2 3 5 6 8; do [ "$t" -le "$CORES" ] && LIST="$LIST $t"; done
 echo "== Tuning the offline brain: $(basename "$MODEL"), $CORES cores =="
+touch "$D/.tuning"                                   # her page sees this and makes room for the brain, as it does whenever the brain is working
 if [ "$1" != "--here" ]; then
   echo "Switch to her page now and leave it on the screen. The test starts in 12 seconds and takes about 3 minutes."
   echo "She'll say when it's done; then come back here for the result."
-  sleep 12
+  sleep 14
 fi
 trap 'resume_brain; exit 1' INT TERM
 pause_brain

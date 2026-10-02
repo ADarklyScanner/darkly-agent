@@ -87,7 +87,7 @@
     canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
     U = Math.min(W * 0.47, H * 0.28);
     CX = W / 2; CY = H * 0.4;
-    hexHue = -999;
+    hexHue = -999; bgHue = -999; fgLayer = null;
     buildScan(); buildTraces(); buildParticles();
   }
 
@@ -141,7 +141,10 @@
 
   // ---------- helpers ----------
   const col = (dl = 0, a = 1, dh = 0) => `hsla(${(cur.hue + dh + 360) % 360},${cur.sat}%,${clamp(cur.light + dl, 0, 100)}%,${a})`;
-  function glow(on, blur = 0.08) { ctx.shadowColor = on ? col(5, 0.9) : "transparent"; ctx.shadowBlur = on ? U * blur : 0; }
+  // A glow is a blur pass, and blur passes are the expensive part of a frame. While her brain is working
+  // (lowPower) only the big ones stay: the rims of her eyes and her voice.
+  let lowPower = false, fpsCap = 30;
+  function glow(on, blur = 0.08) { if (on && lowPower && blur < 0.065) on = false; ctx.shadowColor = on ? col(5, 0.9) : "transparent"; ctx.shadowBlur = on ? U * blur : 0; }
   function noise(i, t) { return Math.abs(Math.sin(t * 9 + i * 1.7) * 0.5 + Math.sin(t * 13.3 + i * 0.6) * 0.3 + Math.sin(t * 5.1 + i * 2.9) * 0.2); }
   function pointOnTrace(tr, p) {
     let d = p * tr.len;
@@ -264,30 +267,45 @@
   }
 
   // ---------- draw pieces ----------
-  function background(t) {
-    const g = ctx.createRadialGradient(CX, CY, U * 0.2, CX, CY, Math.max(W, H) * 0.8);
-    g.addColorStop(0, `hsla(${cur.hue},60%,${12 * cur.dim}%,1)`);
-    g.addColorStop(1, "#05020a");
-    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-
+  // Everything that doesn't move is painted once into two off-screen pictures and then stamped on each frame:
+  // the backdrop (glow, hexagons, circuit traces) under her face, and the scan lines and dark corners over it.
+  // Painting them fresh every frame was most of the cost of drawing her, and that cost comes out of her brain's share of the processor.
+  let bgLayer = null, bgHue = -999, bgDim = -9, fgLayer = null;
+  function buildBackdrop() {
+    if (!bgLayer || bgLayer.width !== canvas.width || bgLayer.height !== canvas.height) { bgLayer = document.createElement("canvas"); bgLayer.width = canvas.width; bgLayer.height = canvas.height; }
+    const g = bgLayer.getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const gr = g.createRadialGradient(CX, CY, U * 0.2, CX, CY, Math.max(W, H) * 0.8);
+    gr.addColorStop(0, `hsla(${cur.hue},60%,${12 * cur.dim}%,1)`); gr.addColorStop(1, "#05020a");
+    g.globalAlpha = 1; g.fillStyle = gr; g.fillRect(0, 0, W, H);
     if (Math.abs(((cur.hue - hexHue + 540) % 360) - 180) > 8 || !hexLayer) buildHex(Math.round(cur.hue));
-    ctx.save(); ctx.globalAlpha = (0.05 + 0.025 * Math.sin(t * 0.7)) * cur.dim;
-    ctx.drawImage(hexLayer, 0, 0, W, H); ctx.restore();
-
-    // circuit traces with light pulses running toward her face
-    ctx.save(); ctx.lineWidth = 1;
+    g.globalAlpha = 0.06 * cur.dim; g.drawImage(hexLayer, 0, 0, W, H); g.globalAlpha = 1;
+    g.lineWidth = 1;
     for (const tr of traces) {
-      ctx.strokeStyle = col(-10, 0.12 * cur.dim);
-      ctx.beginPath(); tr.pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+      g.strokeStyle = col(-10, 0.12 * cur.dim);
+      g.beginPath(); tr.pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke();
       const [ex, ey] = tr.pts[tr.pts.length - 1];
-      ctx.fillStyle = col(0, 0.25 * cur.dim); ctx.beginPath(); ctx.arc(ex, ey, 2, 0, TAU); ctx.fill();
-      const [px, py] = pointOnTrace(tr, tr.p);
-      ctx.fillStyle = col(20, 0.7 * cur.dim); glow(true, 0.05);
-      ctx.beginPath(); ctx.arc(px, py, 1.6, 0, TAU); ctx.fill(); glow(false);
+      g.fillStyle = col(0, 0.25 * cur.dim); g.beginPath(); g.arc(ex, ey, 2, 0, TAU); g.fill();
     }
-    ctx.restore();
-
-    for (const p of particles) {
+    bgHue = cur.hue; bgDim = cur.dim;
+  }
+  function buildForeground() {
+    fgLayer = document.createElement("canvas"); fgLayer.width = canvas.width; fgLayer.height = canvas.height;
+    const g = fgLayer.getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    g.globalAlpha = 0.22; g.fillStyle = scanPattern; g.fillRect(0, 0, W, H); g.globalAlpha = 1;
+    const v = g.createRadialGradient(CX, H / 2, Math.min(W, H) * 0.35, CX, H / 2, Math.max(W, H) * 0.75);
+    v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,0,0.6)");
+    g.fillStyle = v; g.fillRect(0, 0, W, H);
+  }
+  function background(t) {
+    if (!bgLayer || bgLayer.width !== canvas.width || Math.abs(((cur.hue - bgHue + 540) % 360) - 180) > 5 || Math.abs(cur.dim - bgDim) > 0.05) buildBackdrop();
+    ctx.drawImage(bgLayer, 0, 0, W, H);
+    // light pulses running along the traces toward her face (a soft halo drawn as a second, fainter dot: no blur needed)
+    for (const tr of traces) {
+      const [px, py] = pointOnTrace(tr, tr.p);
+      ctx.fillStyle = col(20, 0.16 * cur.dim); ctx.beginPath(); ctx.arc(px, py, 4.5, 0, TAU); ctx.fill();
+      ctx.fillStyle = col(20, 0.7 * cur.dim); ctx.beginPath(); ctx.arc(px, py, 1.6, 0, TAU); ctx.fill();
+    }
+    if (!lowPower) for (const p of particles) {
       ctx.fillStyle = col(20, (0.25 + 0.25 * Math.sin(t * 2 + p.ph)) * cur.dim);
       ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, TAU); ctx.fill();
     }
@@ -712,21 +730,21 @@
 
   function overlays(t) {
     if (st.offline > 0.02) {
-      ctx.fillStyle = `rgba(255,200,0,${0.05 * st.offline})`; ctx.fillRect(0, 0, W, H);
+      if (!lowPower) { ctx.fillStyle = `rgba(255,200,0,${0.05 * st.offline})`; ctx.fillRect(0, 0, W, H); }
       ctx.font = `${Math.round(U * 0.05)}px ui-monospace, monospace`; ctx.textAlign = "center";
       ctx.fillStyle = `rgba(255,210,60,${0.8 * st.offline})`;
       ctx.fillText("OFFLINE BRAIN", CX, CY - 0.95 * U);
     }
-    // scan lines + a slow bright band rolling down
-    ctx.save(); ctx.globalAlpha = 0.22; ctx.fillStyle = scanPattern; ctx.fillRect(0, 0, W, H); ctx.restore();
-    const by = ((t * 0.12) % 1.3) * H - 0.15 * H;
-    const g = ctx.createLinearGradient(0, by, 0, by + H * 0.12);
-    g.addColorStop(0, "rgba(255,255,255,0)"); g.addColorStop(0.5, `hsla(${cur.hue},100%,80%,0.05)`); g.addColorStop(1, "rgba(255,255,255,0)");
-    ctx.fillStyle = g; ctx.fillRect(0, by, W, H * 0.12);
-    // vignette
-    const v = ctx.createRadialGradient(CX, H / 2, Math.min(W, H) * 0.35, CX, H / 2, Math.max(W, H) * 0.75);
-    v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,0,0.6)");
-    ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+    // a slow bright band rolling down
+    if (!lowPower) {
+      const by = ((t * 0.12) % 1.3) * H - 0.15 * H;
+      const g = ctx.createLinearGradient(0, by, 0, by + H * 0.12);
+      g.addColorStop(0, "rgba(255,255,255,0)"); g.addColorStop(0.5, `hsla(${cur.hue},100%,80%,0.05)`); g.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = g; ctx.fillRect(0, by, W, H * 0.12);
+    }
+    // scan lines and dark corners (painted once, stamped each frame)
+    if (!fgLayer || fgLayer.width !== canvas.width || fgLayer.height !== canvas.height) buildForeground();
+    ctx.drawImage(fgLayer, 0, 0, W, H);
   }
 
   let glitchUntil = 0;
@@ -752,7 +770,10 @@
   let paused = false;                                   // her screen is dark (dark.js): keep time, draw nothing
   function frame(now) {
     if (paused) { last = now; setTimeout(() => requestAnimationFrame(frame), 500); return; }
-    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    // Phones refresh the screen up to 120 times a second; her face doesn't need that, and every frame she draws
+    // is processor time her brain doesn't get. 30 a second normally, 20 while her brain is working.
+    if (now - last < 1000 / (lowPower ? Math.min(20, fpsCap) : fpsCap) - 4) { requestAnimationFrame(frame); return; }
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
     const t = now / 1000;
     if (canvas.clientWidth !== Math.round(W) || canvas.clientHeight !== Math.round(H)) resize();
     update(dt, t);
@@ -1033,6 +1054,10 @@
       highlight = { x: p[0], y: p[1], until: nowMs() + ms, ms, hue };
     },
     pause(on) { paused = !!on; },
+    // Her brain is working (offline): draw fewer frames and skip the small glows, so the brain gets the processor.
+    lowPower(on) { lowPower = !!on; },
+    fps(n) { if (n) fpsCap = clamp(+n || 30, 10, 120); return fpsCap; },
+    get drawing() { return { fps: lowPower ? Math.min(20, fpsCap) : fpsCap, lowPower, paused }; },
     // A picture of her face exactly as it's drawn right now (JPEG, base64), for her own brain to look at.
     picture(max = 900) {
       const k = Math.min(1, max / Math.max(canvas.width, canvas.height));

@@ -608,7 +608,7 @@ const server = http.createServer(async (req, res) => {
       if (lstate === "down") startBrain("status check found it down");
       const keys = apiKeys();
       const gkeys = geminiKeys();
-      return send(res, 200, { online, local, localState: lstate, localError: lastLocalError || undefined, localSpeed: speed.read ? { read: speed.read, write: speed.write } : undefined, localModel: brainModel() || undefined, localRoom: Math.floor((budgets(localProps.n_ctx, 220).sys - 8) * 3.2), localChatRoom: Math.floor(budgets(localProps.n_ctx, 220).chat * 3.2), hearing, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
+      return send(res, 200, { online, local, localState: lstate, localError: lastLocalError || undefined, localSpeed: speed.read ? { read: speed.read, write: speed.write } : undefined, localModel: brainModel() || undefined, tuning: tuning() || undefined, localRoom: Math.floor((budgets(localProps.n_ctx, 220).sys - 8) * 3.2), localChatRoom: Math.floor(budgets(localProps.n_ctx, 220).chat * 3.2), hearing, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
         geminiKeyCount: gkeys.length, geminiKeyInUse: gkeys.length ? Math.min(activeGemini, gkeys.length - 1) + 1 : 0, geminiModel: geminiModelCache,
         model: config().claudeModel, time: new Date().toISOString() });
     }

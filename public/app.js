@@ -1131,7 +1131,20 @@ function localWindow(newLen) {
   return history.slice(i).map(m => ({ role: m.role, content: text(m) }));
 }
 
-async function askLocal(userText, { lively = false, temperature } = {}) {
+// While the offline brain is reading or writing, it needs the processor more than her face and eyes do:
+// the face draws fewer frames and her senses check less often. Measured on the S22, an idle-looking face was
+// costing the brain two thirds of its speed.
+let brainWork = 0;
+function brainBusy(on) {
+  brainWork = Math.max(0, brainWork + (on ? 1 : -1));
+  window.Face?.lowPower?.(brainWork > 0);
+  if (window.Power) Power.thinking = brainWork;
+}
+async function askLocal(userText, opts = {}) {
+  brainBusy(true);
+  try { return await askLocalNow(userText, opts); } finally { brainBusy(false); }
+}
+async function askLocalNow(userText, { lively = false, temperature } = {}) {
   // Offline skills: the offline brain can't call tools, so a plain request ("how many fingers", "play scavenger hunt")
   // is recognized here, really done, and the result handed over for it to say.
   let did = "";
@@ -1733,6 +1746,7 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
   unlockExtras();
   setTimeout(() => { if (settings.track && !trackTimer) startTracking(); if (!listening) window.Tricks?.earsStart(); }, 600);
+  refreshStatus();
 });
 
 $("#openPanel").onclick = () => { $("#panel").hidden = false; document.body.classList.add("panel-open"); showTab("status"); };
@@ -1771,6 +1785,17 @@ function transcriptLine(who, text) {
   t.append(d); while (t.children.length > 200) t.firstChild.remove();
   if (nearBottom || who === "me" || t.offsetParent === null) t.scrollTop = t.scrollHeight;
 }
+// Her words fade from her face a few seconds after she's done saying them (they stay in Chat).
+// Muted, the caption is the only way to get her answer, so it stays long enough to read.
+let captionKey = "", captionAt = 0;
+setInterval(() => {
+  const said = $("#said").textContent, key = said + "|" + $("#heard").textContent;
+  if (key !== captionKey) { captionKey = key; captionAt = Date.now(); $("#caption").classList.remove("gone"); return; }
+  if (talking || busy || listening || window.Hearing?.state === "hearing") { captionAt = Date.now(); $("#caption").classList.remove("gone"); return; }
+  const hold = settings.muted ? clamp(2500 + said.length * 60, 5000, 20000) : 3000;
+  if (Date.now() - captionAt > hold) $("#caption").classList.add("gone");
+}, 400);
+
 // A picture to send her (a screenshot, a photo): shrunk to a size the brain can take, shown as a small preview until sent.
 let attached = null;
 async function attachPicture(file) {
@@ -1815,7 +1840,7 @@ function refreshChips() {
   $("#chipBatt").textContent = battery ? `🔋 ${Math.round(battery.level * 100)}%${battery.charging ? "⚡" : ""}` : "🔋 ?";
 }
 
-let serverFails = 0;
+let serverFails = 0, tuningNow = false;
 let statusAt = 0;
 async function refreshStatus() {
   try {
@@ -1828,6 +1853,7 @@ async function refreshStatus() {
   }
   refreshChips(); if (!$("#panel").hidden && !$("#tab-status").hidden) renderStatus();
   if (window.Variety) Variety.slim = !!(status.local && status.localSpeed && status.localSpeed.read < 25);
+  if (!!status.tuning !== tuningNow) { tuningNow = !!status.tuning; brainBusy(tuningNow); }   // robot-tune is timing the brain: behave as she does when it's working
   warmLocal();
 }
 setInterval(refreshStatus, 15000);
@@ -1838,8 +1864,8 @@ setInterval(refreshStatus, 15000);
 let warming = false;
 async function warmLocal() {
   if (warming || busy || talking || !status.local || !personality) return;
-  warming = true;
-  try { await api("/api/local/warm", { method: "POST", body: JSON.stringify({ system: systemPrompt(true) }) }); } catch {} finally { warming = false; }
+  warming = true; brainBusy(true);
+  try { await api("/api/local/warm", { method: "POST", body: JSON.stringify({ system: systemPrompt(true) }) }); } catch {} finally { warming = false; brainBusy(false); }
 }
 
 function renderStatus() {

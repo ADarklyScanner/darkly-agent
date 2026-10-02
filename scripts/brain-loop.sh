@@ -35,6 +35,8 @@ OPTS=(--host 127.0.0.1 --port 8080 -t "$THREADS" -c 4096)
 [ -n "$BATCH" ] && has "--threads-batch" && OPTS+=(--threads-batch "$BATCH")
 has "--parallel" && OPTS+=(--parallel 1)
 has "--cache-reuse" && OPTS+=(--cache-reuse 256)
+# Don't spin while waiting for work: she shares the processor with her own face, and a brain that spins fights it.
+has "--poll <" && OPTS+=(--poll 0)
 
 cfg() { grep -o "\"$1\"[^,}]*" "$DIR/data/config.json" 2>/dev/null | sed 's/.*: *"\(.*\)"/\1/'; }
 

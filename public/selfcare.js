@@ -7,7 +7,9 @@
 (() => {
   "use strict";
   const now = () => Date.now();
-  const P = window.Power = { level: "normal", slow: 1, runtime: "", why: "" };
+  // slow: how much less often her senses run (1 = full speed). Hot phone or low battery raises it; so does her
+  // offline brain being at work (thinking > 0), because eyes and brain share one processor and the brain should win.
+  const P = window.Power = { level: "normal", base: 1, thinking: 0, get slow() { return Math.max(this.base, this.thinking > 0 ? 3 : 1); }, runtime: "", why: "" };
   const SLOW = { normal: 1, saver: 2, critical: 4 };
 
   // ---------------- power level ----------------
@@ -23,7 +25,7 @@
     else if (low <= 0.2) { level = "saver"; why = "the battery is getting low"; }
     if (level !== P.level) {
       const worse = SLOW[level] > SLOW[P.level];
-      P.level = level; P.slow = SLOW[level]; P.why = why;
+      P.level = level; P.base = SLOW[level]; P.why = why;
       window.Mind?.event("power", worse ? `you slowed your senses down because ${why}` : "you're back to full speed", { source: "FELT", salience: 0.45 });
       if (worse && typeof react === "function") react("power-" + level, `you've slowed your eyes and ears down to save energy because ${why}`, 30);
       if (typeof logEvent === "function") logEvent("auto", { detail: `power level: ${level}${why ? " (" + why + ")" : ""}` });

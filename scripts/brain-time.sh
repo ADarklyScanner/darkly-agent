@@ -7,6 +7,7 @@ time_brain() {
   local prog="$1" model="$2" t="$3" tb="$4"; shift 4 2>/dev/null || shift $#
   local logf="$HOME/robot/data/logs/tune.log" opts=(-m "$model" --host 127.0.0.1 --port $TIME_PORT -t "$t" -c 2048 --parallel 1 "$@")
   [ -n "$tb" ] && [ "$tb" != "$t" ] && opts+=(--threads-batch "$tb")
+  "$prog" --help 2>&1 | grep -q -- "--poll <" && opts+=(--poll 0)
   "$prog" "${opts[@]}" > "$logf" 2>&1 &
   TIME_CHILD=$!
   local up=0 i

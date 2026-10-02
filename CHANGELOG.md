@@ -2,6 +2,18 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.21 · Her face stops stealing from her brain
+Your tuning run with her page on the screen showed the brain at a third of its speed (reads 16 instead of 46 tokens a second, writes 3 instead of 10), and slower still with more threads. Her face and her brain share one processor, and the face was taking most of it. Measured here in a test browser; the phone's graphics chip behaves differently, so run robot-tune again to see the real effect.
+- The face was being redrawn as often as the screen refreshes, which on your phone is up to 120 times a second. It's now 30, and 20 while her brain is working.
+- The parts of the picture that never move (backdrop glow, hexagons, circuit traces, scan lines, dark corners) were repainted from scratch every frame. They're now painted once and stamped on.
+- Fewer glow passes: the trace pulses use a cheap halo instead, and while the brain is working only the big glows stay (eye rims, her voice).
+- In my test browser a frame costs about a quarter of what it did, and the page's processor use went from pinned at 100% to 58% (48% while the brain works; 35% of that is her senses, not the face).
+- While the offline brain is reading or writing, her eyes, tag reader and face recognition check a third as often. They go back to full speed the moment it finishes.
+- The brain no longer spins while waiting for work, which made it fight the face for cores.
+- robot-tune now measures her the way she really runs (with her page stepping back for the brain).
+- "Go dark" is the fastest she can think: nothing is drawn at all.
+- Her words fade from her face about three seconds after she finishes talking; they stay in Chat. A long answer shows only its newest four lines instead of climbing over her chin and hands. Muted, the caption stays long enough to read.
+
 ## 2026-10-02 · v0.20.1 · After the brain build
 The build made on your phone reads about five times faster than the ready-made one (48.5 against 9.8 tokens a second) and writes almost twice as fast (11.4 against 6.2). She sizes what she sends to the measured speed, so she now gets her full notes and a longer conversation again without waiting longer.
 - Thread tuning picked 8 threads for reading because it was 10% faster than 4 in a test where nothing else was running. In real use her face and eyes need cores too, and the brain slows badly when it has to fight for them. The rule is now: the fewest threads that come within 10% of the fastest. With your numbers that's 4 for reading and 3 for writing. Run robot-tune once to apply it.
