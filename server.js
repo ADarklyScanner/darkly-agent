@@ -9,6 +9,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import * as phone from "./phone.js";
 
@@ -179,7 +180,11 @@ async function checkOnline() {
 
 // "ok" (ready), "loading" (started, still reading the model into memory) or "down"
 async function localState() {
-  try { const r = await timedFetch(config().localUrl + "/health", {}, 2000); return r.ok ? "ok" : r.status === 503 ? "loading" : "down"; } catch { return "down"; }
+  try {
+    const r = await timedFetch(config().localUrl + "/health", {}, 2000);
+    if (r.ok) setTimeout(benchBrain, 0);
+    return r.ok ? "ok" : r.status === 503 ? "loading" : "down";
+  } catch { return brainBusy() ? "ok" : "down"; }
 }
 async function checkLocal() { return (await localState()) === "ok"; }
 
@@ -188,7 +193,7 @@ async function checkLocal() { return (await localState()) === "ok"; }
 const BRAIN_SH = path.join(ROOT, "brain.sh");
 let brainStartedAt = 0;
 function startBrain(why) {
-  if (Date.now() - brainStartedAt < 120000 || !fs.existsSync(BRAIN_SH) || fs.existsSync(path.join(DATA, ".stopping"))) return false;
+  if (Date.now() - brainStartedAt < 120000 || !fs.existsSync(BRAIN_SH) || fs.existsSync(path.join(DATA, ".stopping")) || brainRunning()) return false;
   brainStartedAt = Date.now();
   log({ kind: "brain", detail: "offline brain isn't running; starting it (" + why + ")" });
   try { const c = spawn("bash", [BRAIN_SH], { detached: true, stdio: "ignore" }); c.on("error", () => {}); c.unref(); } catch { return false; }
@@ -205,7 +210,14 @@ async function waitForBrain(maxMs = 120000, signal) {
   }
   return st === "ok";
 }
-function brainRunning() { try { return execFileSync("pgrep", ["-x", "llama-server"], { timeout: 3000 }).length > 0; } catch { return false; } }
+// Is the brain's program alive (even if it isn't answering yet)? Not by process name alone: on some Termux
+// versions programs run under another name, so the brain loop also writes its process number to a file.
+function brainRunning() {
+  for (const f of [".brain-pid", ".brain-loop-pid"]) {
+    try { const pid = parseInt(fs.readFileSync(path.join(DATA, f), "utf8")); if (pid > 1 && /llama|brain-loop/.test(fs.readFileSync(`/proc/${pid}/cmdline`, "utf8"))) return true; } catch {}
+  }
+  try { return execFileSync("pgrep", ["-f", "llama-server"], { timeout: 3000 }).length > 0; } catch { return false; }
+}
 
 // ---- offline hearing: whisper.cpp on the phone (robot-hearing-setup installs it) ----
 const WHISPER_DIRS = [path.join(os.homedir(), "whisper.cpp/build/bin"), "/data/data/com.termux/files/usr/bin"];
@@ -281,7 +293,7 @@ function localSampling(body) {
     temperature: Math.min(1.3, Number(body.temperature) || (lively ? 1.0 : 0.8)),
     top_p: 0.95, min_p: 0.05, top_k: 0,
     repeat_penalty: 1.12, repeat_last_n: 512, presence_penalty: lively ? 0.5 : 0.25, frequency_penalty: lively ? 0.3 : 0.1,
-    dry_multiplier: 0.8, dry_base: 1.75, dry_allowed_length: 2, dry_penalty_last_n: -1,
+    dry_multiplier: 0.8, dry_base: 1.75, dry_allowed_length: 2, dry_penalty_last_n: 1024,
     seed: Math.floor(Math.random() * 2 ** 31)
   };
 }
@@ -299,22 +311,56 @@ async function localCtx() {
   return localProps.n_ctx;
 }
 const estTokens = s => Math.ceil(String(s).length / 3.2) + 8;            // on the safe side
-function fitMessages(messages, budget) {
+
+// How fast THIS phone's offline brain reads and writes (tokens a second), measured from its real answers and
+// remembered in data/.brain-speed.json. A phone brain reads slowly: hand it more than it can get through in
+// about half a minute and it never answers in time. So what she sends is sized to the measured speed.
+const SPEED_FILE = path.join(DATA, ".brain-speed.json");
+const brainModel = () => { try { return path.basename(fs.readFileSync(path.join(DATA, ".brain-model"), "utf8").trim()); } catch { return ""; } };
+let speed = { read: 0, write: 0, basis: 0, model: "" };
+try { speed = { ...speed, ...JSON.parse(fs.readFileSync(SPEED_FILE, "utf8")) }; } catch {}
+const saveSpeed = () => { try { fs.writeFileSync(SPEED_FILE, JSON.stringify(speed)); } catch {} };
+function noteSpeed(t) {
+  if (!t) return;
+  const model = brainModel();
+  if (speed.model !== model) speed = { read: 0, write: 0, basis: 0, model };          // a different brain: measure again
+  const mix = (old, v) => old ? old * 0.6 + v * 0.4 : v;
+  if (t.prompt_n >= 40 && t.prompt_per_second > 0) speed.read = +mix(speed.read, t.prompt_per_second).toFixed(1);
+  if (t.predicted_n >= 6 && t.predicted_per_second > 0) speed.write = +mix(speed.write, t.predicted_per_second).toFixed(1);
+  // "basis" is the speed the prompt sizes are worked out from. It only moves when the real speed has clearly
+  // changed: every change reshuffles her notes, and the brain then has to read them all over again.
+  if (speed.read && (!speed.basis || speed.read < speed.basis * 0.7 || speed.read > speed.basis * 1.6)) speed.basis = speed.read;
+  saveSpeed();
+}
+// Token budgets: her standing notes (read once, then remembered by the brain's cache) and the live conversation.
+// Neither depends on how long the answer may be, so every kind of request shares the same notes.
+function budgets(nctx, maxTok) {
+  const read = speed.model === brainModel() && speed.basis > 0 ? speed.basis : 12;     // unmeasured: assume a slow phone
+  const step = n => Math.floor(n / 150) * 150;
+  const sys = Math.min(Math.max(450, step(read * 60)), step(nctx * 0.5));       // about 40 s of reading, done ahead of time
+  const chat = Math.max(200, Math.min(Math.max(300, step(read * 20)), nctx - sys - maxTok - 64));
+  return { sys, chat };
+}
+const squeeze = (c, tokens) => { const keep = Math.floor(tokens * 3.2); return c.length <= keep ? c : c.slice(0, Math.floor(keep * 0.7)) + "\n…\n" + c.slice(-Math.floor(keep * 0.3)); };
+const fitSystem = (content, sys) => squeeze(String(content || ""), sys - 8);
+// Her notes are cut to their budget the same way every time (so the brain's cache of them stays valid),
+// then the newest messages are kept until the conversation budget is used up.
+function fitMessages(messages, { sys, chat }) {
   const msgs = (messages || []).map(m => ({ role: m.role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content) }));
-  const total = () => msgs.reduce((n, m) => n + estTokens(m.content), 0);
-  // her notes may take at most 60% of the window, so there's always room for the conversation
-  if (msgs.length && msgs[0].role === "system" && estTokens(msgs[0].content) > budget * 0.6) {
-    const keep = Math.floor(budget * 0.6 * 3.2), c = msgs[0].content;
-    msgs[0].content = c.slice(0, Math.floor(keep * 0.7)) + "\n…\n" + c.slice(-Math.floor(keep * 0.3));
+  const out = [];
+  if (msgs.length && msgs[0].role === "system") out.push({ role: "system", content: fitSystem(msgs.shift().content, sys) });
+  if (!msgs.length) return out;
+  const last = msgs.pop();
+  last.content = squeeze(last.content, Math.max(150, Math.floor(chat * 0.7)));
+  let left = chat - estTokens(last.content);
+  const kept = [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const cost = estTokens(msgs[i].content);
+    if (cost > left) break;
+    left -= cost; kept.unshift(msgs[i]);
   }
-  while (total() > budget && msgs.length > 2) msgs.splice(msgs[0].role === "system" ? 1 : 0, 1);      // oldest chat goes first
-  if (total() > budget && msgs.length && msgs[0].role === "system") {                                   // then the middle of her notes
-    const keep = Math.max(600, Math.floor((budget - estTokens(msgs[msgs.length - 1].content)) * 3.2 * 0.9)), c = msgs[0].content;
-    if (c.length > keep) msgs[0].content = c.slice(0, Math.floor(keep * 0.7)) + "\n…\n" + c.slice(-Math.floor(keep * 0.3));
-  }
-  const last = msgs[msgs.length - 1];
-  if (last && total() > budget) last.content = last.content.slice(0, Math.max(200, Math.floor(budget * 3.2 * 0.4)));
-  return msgs;
+  while (kept.length && kept[0].role !== "user") kept.shift();           // the conversation has to start with him
+  return [...out, ...kept, last];
 }
 // The plainest shape there is, for models whose chat format rejects system messages or uneven turns:
 // instructions folded into the first user message, strictly user/assistant/user.
@@ -330,33 +376,98 @@ function compatMessages(msgs) {
   if (sys) out[0].content = sys + "\n\n---\n\n" + out[0].content;
   return out;
 }
-let lastLocalError = "";
+const llamaError = t => { let msg = t; try { const j = JSON.parse(t); msg = j.error?.message || (typeof j.error === "string" ? j.error : "") || j.message || t; } catch {} return String(msg).replace(/\s+/g, " ").slice(0, 240); };
+// One request to the offline brain. Different llama.cpp versions accept different settings, and a setting one
+// version refuses ("Field 'x': ...") must never cost her the answer: it's dropped and the request sent again.
+const refusedFields = new Set();
+let inFlight = 0;                                                        // requests the brain is working on right now
+const brainBusy = () => inFlight > 0;
+async function llamaPost(payload, ms, signal) {
+  for (let i = 0; i < 6; i++) {
+    for (const f of refusedFields) delete payload[f];
+    let r; inFlight++;
+    try { r = await timedFetch(config().localUrl + "/v1/chat/completions", { method: "POST", signal, headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }, ms); }
+    finally { inFlight--; }
+    if (r.status !== 400) return { r };
+    const msg = llamaError(await r.text());
+    const f = (msg.match(/Field '([\w.]+)'/i) || msg.match(/(?:unknown|unsupported|invalid|unrecognized)\s+(?:field|parameter|key|option)\s*:?\s*['"`]?([\w.]+)/i) || [])[1];
+    if (!f || !(f in payload) || ["messages", "max_tokens", "stream"].includes(f)) return { status: 400, msg };
+    refusedFields.add(f);
+    log({ kind: "brain", detail: `this llama version refuses the setting "${f}"; leaving it out from now on (${msg.slice(0, 120)})` });
+  }
+  return { status: 400, msg: "too many refused settings" };
+}
+let lastLocalError = "", warmAbort = null;
 async function localChat(body, stream, signal) {
+  warmAbort?.abort();                                                    // a real question beats warming up
   const nctx = await localCtx();
   const maxTok = Math.min(body.max_tokens || 300, Math.floor(nctx / 3));
-  const budget = nctx - maxTok - 64;
+  const b = budgets(nctx, maxTok), small = { sys: Math.min(b.sys, 300), chat: Math.min(b.chat, 250) };
   const attempts = [
-    () => ({ messages: fitMessages(body.messages, budget), ...localSampling(body) }),
-    () => ({ messages: compatMessages(fitMessages(body.messages, Math.floor(budget * 0.8))), temperature: 0.8 }),
-    () => ({ messages: compatMessages(fitMessages(body.messages, Math.floor(budget * 0.45))) })
+    () => ({ messages: fitMessages(body.messages, b), ...localSampling(body) }),
+    () => ({ messages: compatMessages(fitMessages(body.messages, b)), temperature: 0.8 }),
+    () => ({ messages: compatMessages(fitMessages(body.messages, small)) })
   ];
   let err = "";
-  for (const [i, make] of attempts.entries()) {
+  for (let i = 0; i < attempts.length; i++) {
     if (signal?.aborted) return { error: "cancelled" };                  // she moved on (he said something new): stop generating
-    let r;
-    try {
-      r = await timedFetch(config().localUrl + "/v1/chat/completions", { method: "POST", signal, headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...make(), max_tokens: maxTok, stream, cache_prompt: true }) }, stream ? 300000 : 180000);
-    } catch (e) { err = "no answer (" + (e.name === "AbortError" ? "took too long" : e.message) + ")"; log({ kind: "error", where: "local brain", try: i + 1, detail: err }); continue; }
-    if (r.ok) { lastLocalError = ""; return { r }; }
-    const t = await r.text(); let msg = t;
-    try { const j = JSON.parse(t); msg = j.error?.message || (typeof j.error === "string" ? j.error : "") || j.message || t; } catch {}
-    err = `${r.status} ${String(msg).replace(/\s+/g, " ").slice(0, 240)}`;
+    let out;
+    try { out = await llamaPost({ ...attempts[i](), max_tokens: maxTok, stream, cache_prompt: true }, stream ? 240000 : 180000, signal); }
+    catch (e) {
+      if (signal?.aborted) return { error: "cancelled" };
+      const slow = e.name === "AbortError";
+      err = slow ? "it was still reading after 3 minutes (this phone is reading slowly; she'll send it less next time)" : "no answer (" + (e.cause?.code || e.message) + ")";
+      log({ kind: "error", where: "local brain", try: i + 1, detail: err });
+      if (slow) { const r = Math.max(2, (speed.basis || 12) / 2); speed = { ...speed, model: brainModel(), read: r, basis: r }; saveSpeed(); if (i < 2) i = 1; }   // straight to the smallest request
+      else if (!(await waitForBrain(60000, signal))) break;              // it went away: give it a chance to come back, once
+      continue;
+    }
+    if (out.r?.ok) { lastLocalError = ""; return { r: out.r }; }
+    const msg = out.msg ?? llamaError(await out.r.text()), status = out.status || out.r.status;
+    err = `${status} ${msg}`;
     log({ kind: "error", where: "local brain", try: i + 1, detail: err });
-    if (r.status === 503) await waitForBrain(120000, signal);       // still loading the model: wait, then go again
+    if (status === 503) await waitForBrain(120000, signal);              // still loading the model: wait, then go again
   }
   lastLocalError = err;
   return { error: err };
+}
+// Right after the brain starts: a short test so its speed is known before the first real question.
+// (A number at the front makes the text new every time; otherwise the brain would remember it and "read" it instantly.)
+let benchRunning = false, benchedFor = "";
+const brainKey = () => brainModel() + "|" + (() => { try { return fs.readFileSync(path.join(DATA, ".brain-pid"), "utf8").trim(); } catch { return ""; } })();
+const speedKnown = () => speed.model === brainModel() && speed.basis > 0;
+async function benchBrain() {
+  const key = brainKey();
+  if (speedKnown()) { benchedFor = key; return; }                        // already measured for this model (kept between restarts)
+  if (benchRunning || warmAbort || inFlight || benchedFor === key) return;
+  benchRunning = true;
+  const c = warmAbort = new AbortController();
+  try {
+    const filler = "The quick brown robot rolls across the kitchen floor, looks at the cat, and wonders what to say next. ".repeat(9);
+    const { r } = await llamaPost({ messages: [{ role: "user", content: `Note ${Math.floor(Math.random() * 1e9)}. ${filler}\nCount from one to ten in words.` }], max_tokens: 16, temperature: 0.5, stream: false }, 120000, c.signal);
+    if (r?.ok) { const j = await r.json().catch(() => ({})); noteSpeed(j.timings); benchedFor = key; log({ kind: "brain", detail: `offline brain speed on this phone: reads ${speed.read || "?"} and writes ${speed.write || "?"} tokens a second` }); }
+  } catch {} finally { benchRunning = false; if (warmAbort === c) warmAbort = null; }
+}
+// Have the brain read her standing notes ahead of time (it keeps them in its cache), so the first real
+// question only has to read the question. Stopped the moment a real question arrives.
+let warmedKey = "";
+async function warmBrain(system) {
+  if (!system) return { ok: false };
+  if (warmAbort || inFlight) return { ok: false, busy: warmAbort ? "warming or measuring already" : "answering" };
+  const st = await localState();
+  if (st !== "ok") return { ok: false, busy: "brain is " + st };
+  if (!speedKnown()) { benchBrain(); return { ok: false, measuring: true }; }           // know the speed first: it decides how much she gets to read
+  const nctx = await localCtx(), b = budgets(nctx, 220), content = fitSystem(system, b.sys);
+  const key = crypto.createHash("sha1").update(brainKey() + content).digest("hex");
+  if (key === warmedKey) return { ok: true, already: true };
+  const c = warmAbort = new AbortController(), t0 = Date.now();
+  try {
+    const { r } = await llamaPost({ messages: [{ role: "system", content }, { role: "user", content: "Hi." }], max_tokens: 1, stream: false, cache_prompt: true }, 240000, c.signal);
+    if (!r?.ok) return { ok: false };
+    const j = await r.json().catch(() => ({})); noteSpeed(j.timings); warmedKey = key;
+    return { ok: true, ms: Date.now() - t0, tokens: j.timings?.prompt_n };
+  } catch { return { ok: false, interrupted: c.signal.aborted }; }
+  finally { if (warmAbort === c) warmAbort = null; }
 }
 
 let hwCache = { at: 0, data: null }, sensorList = null, hwRunning = null, sensorFails = 0, sensorPauseUntil = 0;
@@ -486,7 +597,7 @@ const server = http.createServer(async (req, res) => {
       if (lstate === "down") startBrain("status check found it down");
       const keys = apiKeys();
       const gkeys = geminiKeys();
-      return send(res, 200, { online, local, localState: lstate, localError: lastLocalError || undefined, hearing, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
+      return send(res, 200, { online, local, localState: lstate, localError: lastLocalError || undefined, localSpeed: speed.read ? { read: speed.read, write: speed.write } : undefined, localModel: brainModel() || undefined, localRoom: Math.floor((budgets(localProps.n_ctx, 220).sys - 8) * 3.2), hearing, remote: !!config().remote, hasKey: keys.length > 0, keyCount: keys.length, keyInUse: keys.length ? Math.min(activeKey, keys.length - 1) + 1 : 0,
         geminiKeyCount: gkeys.length, geminiKeyInUse: gkeys.length ? Math.min(activeGemini, gkeys.length - 1) + 1 : 0, geminiModel: geminiModelCache,
         model: config().claudeModel, time: new Date().toISOString() });
     }
@@ -637,7 +748,12 @@ const server = http.createServer(async (req, res) => {
       const { r, error } = await localChat(body, false, gone.signal);
       if (error) return send(res, 502, { error: "The offline brain refused: " + error });
       const j = await r.json().catch(() => ({}));
-      return send(res, 200, { text: j.choices?.[0]?.message?.content || "" });
+      noteSpeed(j.timings);
+      return send(res, 200, { text: j.choices?.[0]?.message?.content || "", timings: j.timings && { read: j.timings.prompt_n, readPerSec: j.timings.prompt_per_second, cached: j.timings.cache_n, wrote: j.timings.predicted_n, writePerSec: j.timings.predicted_per_second } });
+    }
+    if (p === "/api/local/warm" && req.method === "POST") {
+      const body = await readBody(req);
+      return send(res, 200, await warmBrain(body.system));
     }
 
     // ---- offline brain, streamed: words arrive as they're generated so she can start talking sooner ----
@@ -648,7 +764,10 @@ const server = http.createServer(async (req, res) => {
       const { r, error } = await localChat(body, true, gone.signal);
       if (error || !r.body) return send(res, 502, { error: "The offline brain refused: " + (error || "empty answer") });
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
-      for await (const chunk of r.body) res.write(chunk);
+      let tail = "";
+      try { for await (const chunk of r.body) { res.write(chunk); tail = (tail + Buffer.from(chunk).toString("utf8")).slice(-3000); } } catch {}
+      const m = tail.match(/"timings":(\{[^{}]*\})/);                    // the last piece says how fast it went
+      if (m) try { noteSpeed(JSON.parse(m[1])); } catch {}
       return res.end();
     }
 

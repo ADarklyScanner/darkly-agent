@@ -24,25 +24,40 @@ fi
 # --- can she work with NO internet? brain, ears, voice ---
 echo "-- Without internet --"
 OFFLINE_OK=1
-if pgrep -x llama-server >/dev/null; then
-  H=$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health)
-  if [ "$H" = 200 ]; then
-    # a real question, straight to the offline brain and through her server (the same path she uses)
-    T0=$(date +%s)
-    OUT=$(curl -s -m 120 http://127.0.0.1:3000/api/local -H 'content-type: application/json' \
-      -d '{"messages":[{"role":"system","content":"You are a robot. Answer in five words or fewer."},{"role":"user","content":"Say hello."}],"max_tokens":24}')
-    T=$(( $(date +%s) - T0 ))
-    if echo "$OUT" | grep -q '"text":"[^"]'; then ok "Offline brain answers (${T}s): $(echo "$OUT" | sed 's/.*"text":"\([^"]*\)".*/\1/' | cut -c1-60)"
-    else OFFLINE_OK=0; bad "Offline brain is running but won't answer: $(echo "$OUT" | cut -c1-200)" "Send me that line. Meanwhile: robot-stop; robot"; fi
+# Checked by asking it, not by looking for the program's name (which isn't reliable on every Termux version).
+BH=$(curl -s -m 4 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health 2>/dev/null)
+BPID="$(cat "$DIR/data/.brain-pid" 2>/dev/null)"
+if [ "$BH" = 200 ]; then
+  # a real question, through her server (the same path she uses), long enough to time how fast the brain reads
+  T0=$(date +%s)
+  OUT=$(curl -s -m 200 http://127.0.0.1:3000/api/local -H 'content-type: application/json' \
+    -d '{"messages":[{"role":"system","content":"You are a small robot named Nessari who lives in an old phone. You are curious, a little cheeky, and you like short answers. You can see with a camera, hear with a microphone, and you remember the people you meet. When someone greets you, greet them back in your own way. Keep every answer to one short sentence."},{"role":"user","content":"Say hello and tell me one thing you like."}],"max_tokens":32}')
+  T=$(( $(date +%s) - T0 ))
+  RES=$(printf '%s' "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s),t=j.timings||{};if(j.text&&j.text.trim())console.log(["OK",j.text.replace(/\s+/g," ").trim().slice(0,70),Math.round(t.readPerSec||0),Math.round(t.writePerSec||0)].join("\t"));else console.log("ERR\t"+String(j.error||s).slice(0,220))}catch{console.log("ERR\t"+(s.slice(0,220)||"no reply from her server"))}})' 2>/dev/null)
+  if [ "$(printf '%s' "$RES" | cut -f1)" = OK ]; then
+    ok "Offline brain answers (${T}s): $(printf '%s' "$RES" | cut -f2)"
+    RS=$(printf '%s' "$RES" | cut -f3); WS=$(printf '%s' "$RES" | cut -f4)
     [ -f "$DIR/data/.brain-model" ] && echo "   model: $(basename "$(cat "$DIR/data/.brain-model")")"
-  else OFFLINE_OK=0; warn "Offline brain is still loading the model" "Give it a minute and run robot-doctor again. If it never gets ready: robot-stop; robot"; fi
+    if [ "${RS:-0}" -gt 0 ]; then
+      echo "   speed: reads $RS and writes $WS tokens a second (a token is about three quarters of a word)"
+      [ "$RS" -lt 10 ] && warn "That's slow, so her offline answers will take a while" "Plug her in, close other apps, and run robot-dedicate. She sends the brain less to read when it's slow, so she'll still answer."
+    fi
+  else
+    OFFLINE_OK=0; bad "Offline brain is running but won't answer: $(printf '%s' "$RES" | cut -f2)" "Send me that line and the lines below."
+    grep '"local brain"' "$DIR/data/logs/"*.jsonl 2>/dev/null | tail -3 | cut -c1-260 | sed 's/^/     /'
+    [ -f "$DIR/data/logs/llama.log" ] && tail -6 "$DIR/data/logs/llama.log" | sed 's/^/     /' | cut -c1-200
+  fi
+elif [ "$BH" = 503 ]; then
+  OFFLINE_OK=0; warn "Offline brain is still loading the model" "Give it a minute and run robot-doctor again. If it never gets ready: robot-stop; robot"
+elif { [ -n "$BPID" ] && [ -r "/proc/$BPID/cmdline" ]; } || pgrep -f "llama-server .*--port 8080" >/dev/null; then
+  OFFLINE_OK=0; warn "Offline brain has started but isn't answering yet" "Give it a minute and run robot-doctor again. If it never gets ready: robot-stop; robot"
 else
   OFFLINE_OK=0
   if command -v llama-server >/dev/null || [ -x "$HOME/llama.cpp/build/bin/llama-server" ]; then
     MODELS=$(find "$HOME/models" "$HOME/storage/shared/Download" -maxdepth 2 -name '*.gguf' 2>/dev/null | grep -vi lora | head -5)
     [ -z "$MODELS" ] && bad "No offline brain model found" "Put a .gguf file (like Llama-3.2-3B-Instruct-abliterated.Q4_0.gguf) in Download, then: robot-stop; robot" \
                      || bad "Offline brain isn't running" "robot-stop; robot   (the reason is at the end of ~/robot/data/logs/llama.log; if it keeps dying, the phone is short on memory: run robot-dedicate)"
-    [ -f "$DIR/data/logs/llama.log" ] && tail -3 "$DIR/data/logs/llama.log" | sed 's/^/     /' | cut -c1-200
+    [ -f "$DIR/data/logs/llama.log" ] && grep -v "^$" "$DIR/data/logs/llama.log" | tail -8 | sed 's/^/     /' | cut -c1-200
   else bad "Offline brain program not installed" "pkg install llama-cpp"; fi
 fi
 if curl -s -m 3 -o /dev/null http://127.0.0.1:8081/health; then ok "Offline hearing is running (she understands speech with no internet)"

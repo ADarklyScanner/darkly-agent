@@ -848,7 +848,19 @@ ${window.Mind?.RULES || ""}`;
   // Both brains reuse work when the start of the prompt stays the same (offline: llama's
   // cache, Claude: prompt caching, billed at a fraction of the price). So things that change
   // every second (sensors, clock) are NOT in here; they ride along at the end of your message.
-  return `${persona}\n\n## Your body right now\n${bodyReport()}\n\n## Your memory\n${memory || "(empty)"}\n\n## Rules\n${rules}\nYour current senses are attached in brackets at the end of each message from him.`;
+  let who = persona, mem = memory || "(empty)";
+  const bodyNow = bodyReport(), tail = "Your current senses are attached in brackets at the end of each message from him.";
+  // The offline brain reads slowly, so the server says how many characters it has time for (worked out from this
+  // phone's measured speed). The rules and body always go in whole; her personality gets most of what's left,
+  // and memory gets the rest, newest notes first to be kept.
+  if (offline && status.localRoom) {
+    const left = Math.max(500, status.localRoom - rules.length - bodyNow.length - tail.length - 80);
+    const cut = (t, n) => { if (t.length <= n) return t; const c = t.slice(0, n), e = Math.max(c.lastIndexOf(". "), c.lastIndexOf("\n")); return (e > n * 0.6 ? c.slice(0, e + 1) : c).trim(); };
+    who = cut(who, Math.max(400, Math.floor(left * (mem.length > 40 ? 0.6 : 1))));
+    const room = Math.max(0, left - who.length);
+    if (mem.length > room) { const lines = mem.split("\n"); let out = []; let n = 0; for (let i = lines.length - 1; i >= 0 && n + lines[i].length + 1 <= room; i--) { out.unshift(lines[i]); n += lines[i].length + 1; } mem = out.join("\n").trim() || "(nothing that fits right now)"; }
+  }
+  return `${who}\n\n## Your body right now\n${bodyNow}\n\n## Your memory\n${mem}\n\n## Rules\n${rules}\n${tail}`;
 }
 
 function quickSenses() {
@@ -1733,8 +1745,19 @@ async function refreshStatus() {
     if (++serverFails === 2) { setMood("confused"); setFaceState("offline", true); $("#said").textContent = "My brain server stopped. Open Termux and type: robot"; }
   }
   refreshChips(); if (!$("#panel").hidden && !$("#tab-status").hidden) renderStatus();
+  warmLocal();
 }
 setInterval(refreshStatus, 15000);
+
+// The offline brain reads slowly, but it remembers what it has already read. So while nothing is going on,
+// it's handed her standing notes (who she is, her memory, the rules) to read ahead of time; when you then say
+// something, it only has to read what you said. The server skips this if those notes are already read.
+let warming = false;
+async function warmLocal() {
+  if (warming || busy || talking || !status.local || !personality) return;
+  warming = true;
+  try { await api("/api/local/warm", { method: "POST", body: JSON.stringify({ system: systemPrompt(true) }) }); } catch {} finally { warming = false; }
+}
 
 function renderStatus() {
   const items = [
@@ -1742,7 +1765,7 @@ function renderStatus() {
     ["Claude key", status.keyCount ? `#${status.keyInUse} of ${status.keyCount}` : "none"],
     ["Gemini key", status.geminiKeyCount ? `#${status.geminiKeyInUse} of ${status.geminiKeyCount}` : "none"],
     ["Cache savings", (() => { const t = cacheStats.read + cacheStats.written + cacheStats.fresh; return t ? Math.round(cacheStats.read / t * 100) + "% reused" : "—"; })()],
-    ["Offline brain", status.local ? "running" : status.localState === "loading" ? "loading…" : status.localError ? "error: " + status.localError.slice(0, 60) : "not running"],
+    ["Offline brain", status.local ? "running" + (status.localSpeed ? ` (reads ${Math.round(status.localSpeed.read)}, writes ${Math.round(status.localSpeed.write)} tokens/s)` : "") : status.localState === "loading" ? "loading…" : status.localError ? "error: " + status.localError.slice(0, 60) : "not running"],
     ["Offline hearing", { ready: "ready", slow: "works (slow start)", none: "not installed" }[status.hearing] || "?"],
     ["Hearing now", window.Hearing?.active ? "phone's own (offline)" : listening ? "Google's (online)" : "off"],
     ["Offline voice", voices.some(v => v.localService) ? "ready" : ttsBrokenUntil > Date.now() ? "phone's own" : voices.length ? "online voices only" : "?"],

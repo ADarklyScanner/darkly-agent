@@ -7,6 +7,24 @@ LLAMA="$(command -v llama-server || true)"
 [ -z "$LLAMA" ] && [ -x "$HOME/llama.cpp/build/bin/llama-server" ] && LLAMA="$HOME/llama.cpp/build/bin/llama-server"
 [ -z "$LLAMA" ] && { echo "$(date) no llama-server program found (pkg install llama-cpp)"; exit 1; }
 
+# Only one of these at a time, and never a second brain on top of one that's already answering.
+# (Checked by the port and by saved process numbers, not by program name: some Termux versions run programs under another name.)
+# alive FILE WORD: is the process whose number is saved in FILE still running, and is it really ours (WORD in its command line)?
+alive() { local p; p="$(cat "$1" 2>/dev/null)"; [ -n "$p" ] && [ -r "/proc/$p/cmdline" ] && tr '\0' ' ' < "/proc/$p/cmdline" | grep -q "$2"; }
+if alive "$DIR/data/.brain-loop-pid" brain-loop && [ "$(cat "$DIR/data/.brain-loop-pid")" != "$$" ]; then exit 0; fi
+if [ -n "$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health 2>/dev/null | grep -v '^000$')" ]; then
+  echo "$(date) an offline brain is already running on port 8080; leaving it alone"; exit 0
+fi
+echo $$ > "$DIR/data/.brain-loop-pid"
+CHILD=""
+trap '[ -n "$CHILD" ] && kill "$CHILD" 2>/dev/null; rm -f "$DIR/data/.brain-pid" "$DIR/data/.brain-loop-pid"; exit 0' TERM INT
+HELP="$("$LLAMA" --help 2>&1)"
+has() { printf '%s' "$HELP" | grep -q -- "$1"; }
+# One conversation at a time: the brain then keeps what it has already read (her notes) and only reads what's new.
+OPTS=(--host 127.0.0.1 --port 8080 -t 4 -c 4096)
+has "--parallel" && OPTS+=(--parallel 1)
+has "--cache-reuse" && OPTS+=(--cache-reuse 256)
+
 cfg() { grep -o "\"$1\"[^,}]*" "$DIR/data/config.json" 2>/dev/null | sed 's/.*: *"\(.*\)"/\1/'; }
 
 # A brain file sitting in Download loads and runs slowly (Android's shared storage is slow). Move it in once.
@@ -53,8 +71,10 @@ while IFS= read -r MODEL; do
     echo "$(date) starting offline brain: $(basename "$MODEL")"
     echo "$MODEL" > "$DIR/data/.brain-model"
     START=$(date +%s)
-    "$LLAMA" -m "$MODEL" "${EXTRA[@]}" --host 127.0.0.1 --port 8080 -t 4 -c 4096
-    CODE=$?
+    "$LLAMA" -m "$MODEL" "${EXTRA[@]}" "${OPTS[@]}" &
+    CHILD=$!; echo "$CHILD" > "$DIR/data/.brain-pid"
+    wait "$CHILD"; CODE=$?
+    CHILD=""; rm -f "$DIR/data/.brain-pid"
     [ -f "$DIR/data/.stopping" ] && exit 0
     RAN=$(( $(date +%s) - START ))
     echo "$(date) offline brain stopped after ${RAN}s (code $CODE)"
@@ -66,4 +86,6 @@ while IFS= read -r MODEL; do
     sleep 5
   done
 done < <(ordered)
+rm -f "$DIR/data/.brain-loop-pid"
+[ "$TRIED" = 0 ] && { echo "$(date) no offline brain model found. Put a .gguf file in Download or ~/models (a 3B Q4 model fits on any phone)."; exit 1; }
 echo "$(date) no offline brain model could run. Put a .gguf in ~/models (a 3B Q4 model fits on any phone)."

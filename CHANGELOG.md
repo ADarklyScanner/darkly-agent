@@ -2,6 +2,15 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-02 · v0.18.1 · Why her offline brain never answered, fixed
+Your check-up finally showed the real reason, and this time I rebuilt the same brain program here (llama.cpp, current version) and tested against it instead of a stand-in. I still can't run your 3B model or your phone, so speed on the S22 is the one thing left to see.
+- The actual error: I was sending the brain a setting ("dry_penalty_last_n: -1") that the current llama.cpp refuses, so it turned down every request with "400 Field 'dry_penalty_last_n'...". I reproduced that exact message here and fixed it. If a future version refuses some other setting, she now drops that setting and asks again by herself instead of failing.
+- Behind that was a second problem: "no answer (took too long)". She was handing the brain up to about 3,000 tokens of notes and chat to read before every answer, and a phone reads slowly. Now she measures how fast this phone's brain reads and writes, and sizes what she sends so reading takes about half a minute at most. Slower phone, shorter notes.
+- The brain now handles one conversation at a time and keeps what it has already read. While nothing is happening she has it read her standing notes (who she is, her memory, the rules) ahead of time, so when you speak it only reads what you said. In the test here a follow-up message needed 18 new tokens read instead of about 1,850.
+- If it's ever too slow anyway, she halves what she sends and goes straight to the shortest possible request, instead of waiting three minutes twice more.
+- The check-up said "Offline brain isn't running" while it was running. It looked for the program by name, which isn't reliable on your Termux. It now asks the brain directly, shows its answer, and prints how fast it reads and writes. Starting and stopping use saved process numbers, so a second copy can't be started on top of the first (that's where the misleading "no offline brain model could run" line came from).
+- Status tab shows the brain's speed.
+
 ## 2026-10-02 · v0.18 · She knows people, and has one mind for attention
 All of this runs on the phone with no internet. Face recognition was tested here on real photos; the rest with simulated cameras and sounds.
 - Knowing people: introduce someone ("this is Sam", or "remember my face as Johnny") and she recognizes them from then on. She greets by name, knows when she last saw them, and tells a familiar face from a stranger. You can add notes about a person. Face prints are stored only on this phone, only for people you introduce; strangers are only counted while she's running. On a set of real photos she got 12 of 12 right with no stranger mistaken for someone she knew. Turn it off in Settings.

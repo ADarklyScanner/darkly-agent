@@ -53,8 +53,11 @@ minutes, and re-reading them costs about a tenth of the normal price. The Status
 ## Working with no internet
 
 Everything she needs runs on the phone:
-- **Brain:** llama.cpp with a .gguf model in `~/models`. Her server starts it when needed, trims the conversation to fit
-  the model's window, and falls back to a smaller model if a big one keeps getting killed for memory.
+- **Brain:** llama.cpp with a .gguf model in `~/models`. Her server starts it when needed and falls back to a smaller
+  model if a big one keeps getting killed for memory. It measures how fast the phone's brain reads and sizes what it
+  sends to match (`data/.brain-speed.json`), has the brain read her standing notes ahead of time so answers only need
+  the new message read, and drops any setting a given llama.cpp version refuses. `robot-doctor` asks it a real
+  question and prints its speed.
 - **Hearing:** whisper.cpp, installed by `robot-hearing-setup` (run once, with internet). In Settings › Hearing, "Auto"
   uses Google's recognizer when online and the phone's own when offline.
 - **Voice:** Chrome's voice when it works offline, otherwise the phone's own text-to-speech (through Termux:API).
