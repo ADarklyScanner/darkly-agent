@@ -145,6 +145,8 @@ function startListening() {
   if (!SR) { transcriptLine("act", "Speech recognition isn't available in this browser. Use the Talk tab."); return; }
   if (listening) return;
   rec = new SR();
+  srEventAt = Date.now();
+  rec.onstart = rec.onaudiostart = rec.onsoundstart = rec.onspeechstart = () => { srEventAt = Date.now(); };
   rec.lang = "en-US";
   rec.interimResults = true;
   rec.continuous = settings.listen === "always";
@@ -154,13 +156,22 @@ function startListening() {
       const r = ev.results[i];
       if (r.isFinal) { final += r[0].transcript; if (r[0].confidence > 0) conf = Math.min(conf, r[0].confidence); } else interim += r[0].transcript;
     }
+    srEventAt = Date.now(); srFails = 0; hearState.lastHeardAt = Date.now();
     $("#heard").textContent = (final || interim).trim();
     if (interim.trim()) window.Mind?.onUserSpeaking(interim);       // nods and little reactions while he talks
     if (final.trim()) onHeard(final.trim(), conf);
   };
   let netFail = false;
   rec.onerror = ev => {
-    if (ev.error !== "no-speech" && ev.error !== "aborted") logEvent("error", { where: "hearing", detail: ev.error });
+    srEventAt = Date.now();
+    if (ev.error !== "no-speech" && ev.error !== "aborted") {
+      logEvent("error", { where: "hearing", detail: ev.error });
+      hearState.lastError = ev.error; hearState.lastErrorAt = Date.now(); srFails++;
+      // Don't fail silently: say what's wrong where he can see it.
+      $("#heard").textContent = "(can't listen: " + (SR_WHY[ev.error] || ev.error) + ")";
+      // Any real failure of Google's recognizer: carry on with the phone's own hearing if it's installed.
+      if (ev.error !== "network" && ev.error !== "service-not-allowed" && window.Hearing?.available()) { netFail = true; Hearing.preferOffline(10); }
+    }
     if (ev.error === "network" || ev.error === "service-not-allowed") {       // Chrome's recognizer needs the internet
       netFail = true; srNetFailAt = Date.now();
       if (window.Hearing?.available()) Hearing.preferOffline(5);
@@ -176,16 +187,37 @@ function startListening() {
     listening = false; setFaceState("listening", false); $("#micBtn").classList.remove("live");
     if (netFail && window.Hearing?.available()) { setTimeout(startListening, 300); return; }      // carry on listening, offline
     if (netFail) { if (settings.listen === "always") setTimeout(startListening, 20000); return; }  // don't hammer a dead connection
-    if (settings.listen === "always" && !pausedForSpeech && !talking) setTimeout(startListening, 300);
+    if (settings.listen === "always" && !pausedForSpeech && !talking && !listenPaused) setTimeout(startListening, 300);
   };
-  try { rec.start(); listening = true; setFaceState("listening", true); $("#micBtn").classList.add("live"); } catch {}
+  try { rec.start(); listening = true; setFaceState("listening", true); $("#micBtn").classList.add("live"); }
+  catch (e) { logEvent("error", { where: "hearing", detail: "couldn't start: " + e.message }); hearState.lastError = e.message; $("#heard").textContent = "(can't listen: " + e.message + ")"; }
 }
+// What went wrong with listening, in words (shown under her face and on the Status tab).
+const SR_WHY = {
+  "not-allowed": "Chrome isn't allowed to use the microphone. In Chrome: the icon left of the address > Permissions > Microphone > Allow",
+  "audio-capture": "the microphone is busy or didn't open",
+  "network": "Google's speech service needs the internet",
+  "service-not-allowed": "Google's speech service isn't available right now",
+  "language-not-supported": "Google's speech service doesn't have English installed",
+  "bad-grammar": "speech service error"
+};
+const hearState = { lastError: "", lastErrorAt: 0, lastHeardAt: 0 };
+let srEventAt = 0, srFails = 0, listenPaused = false;
 // Always-listening has to survive anything that knocks the recognizer over (another sound taking the audio focus,
 // the screen going off and on, a recognizer that just stops). Every couple of seconds: if she's meant to be
 // listening and isn't, start again.
 let listenIdleSince = 0, srNetFailAt = 0;
 setInterval(() => {
-  if (settings.listen !== "always" || document.hidden) { listenIdleSince = 0; return; }
+  // Chrome's recognizer sometimes just goes dead: it says it's listening and never reports anything again. If it has
+  // been silent for half a minute (it normally reports something every few seconds), drop it so it can be restarted.
+  if (listening && !window.Hearing?.active && !talking && Date.now() - srEventAt > 30000) {
+    logEvent("error", { where: "hearing", detail: "the recognizer went dead (no sign of life for 30 s); restarting it" });
+    try { rec.onend = null; rec.abort(); } catch {}
+    listening = false; setFaceState("listening", false); $("#micBtn").classList.remove("live");
+    if (++srFails >= 2 && window.Hearing?.available()) Hearing.preferOffline(10);
+    if (settings.listen !== "always") return;
+  }
+  if (settings.listen !== "always" || document.hidden || listenPaused) { listenIdleSince = 0; return; }
   if (listening || window.Hearing?.active || talking || busy || (typeof recording !== "undefined" && recording)) { listenIdleSince = 0; return; }
   if (!listenIdleSince) { listenIdleSince = Date.now(); return; }
   if (Date.now() - listenIdleSince < 3000 || Date.now() - srNetFailAt < 20000) return;
@@ -225,7 +257,16 @@ function onHeard(text, conf = 1, how = {}) {
 }
 $("#micBtn").onclick = () => {
   unlockExtras();
-  if (listening || window.Hearing?.active) { settings.listen === "always" ? (settings.listen = "push", saveSettings(), $("#setListen").value = "push") : null; stopListening(); }
+  // Always-listening: the mic is a pause button. (It used to switch the setting to tap-to-talk without saying so,
+  // which is how "she's supposed to listen all the time" quietly stopped being true.)
+  if (settings.listen === "always") {
+    listenPaused = !listenPaused && (listening || window.Hearing?.active);
+    if (listenPaused) { stopListening(); $("#heard").textContent = "(not listening: tap the mic to listen again)"; }
+    else { $("#heard").textContent = ""; listenIdleSince = 0; if (!listening && !window.Hearing?.active) startListening(); }
+    $("#micBtn").classList.toggle("paused", listenPaused);
+    return;
+  }
+  if (listening || window.Hearing?.active) stopListening();
   else startListening();
 };
 
@@ -1805,10 +1846,32 @@ let captionKey = "", captionAt = 0;
 setInterval(() => {
   const said = $("#said").textContent, key = said + "|" + $("#heard").textContent;
   if (key !== captionKey) { captionKey = key; captionAt = Date.now(); $("#caption").classList.remove("gone"); return; }
-  if (talking || busy || listening || window.Hearing?.state === "hearing") { captionAt = Date.now(); $("#caption").classList.remove("gone"); return; }
+  // Held only while she's talking or working on an answer. (It used to be held while she was listening too, and in
+  // always-listening mode that's all the time, which is why her words never went away.)
+  if (talking || busy || /wake up my speaker/.test($("#heard").textContent)) { captionAt = Date.now(); $("#caption").classList.remove("gone"); return; }
   const hold = settings.muted ? clamp(2500 + said.length * 60, 5000, 20000) : 3000;
   if (Date.now() - captionAt > hold) $("#caption").classList.add("gone");
 }, 400);
+
+// Typing to her right on her face: same as the Chat box (it shows up there too), but you keep looking at her.
+$("#faceForm").onsubmit = e => {
+  e.preventDefault(); const v = $("#faceBox").value.trim(); if (!v) return;
+  $("#faceBox").value = ""; unlockExtras(); ask(v);
+};
+$("#faceBox").addEventListener("focus", () => { document.body.classList.add("typing"); window.Face?.poke?.(); });
+$("#faceBox").addEventListener("blur", () => document.body.classList.remove("typing"));
+// The page asks Chrome to shrink it when the keyboard opens, so her whole face stays visible above the keys.
+// If a Chrome version lays the keyboard over the page instead, lift the face view above it ourselves.
+if (window.visualViewport) visualViewport.addEventListener("resize", () => {
+  const covered = window.innerHeight - visualViewport.height - visualViewport.offsetTop;
+  $("#faceView").style.bottom = covered > 60 ? Math.round(covered) + "px" : "";
+});
+// The page asks Chrome to shrink it when the keyboard opens, so her whole face stays visible above the keys.
+// If a Chrome version lays the keyboard over the page instead, lift the face view above it ourselves.
+if (window.visualViewport) visualViewport.addEventListener("resize", () => {
+  const covered = window.innerHeight - visualViewport.height - visualViewport.offsetTop;
+  $("#faceView").style.bottom = covered > 60 ? Math.round(covered) + "px" : "";
+});
 
 // A picture to send her (a screenshot, a photo): shrunk to a size the brain can take, shown as a small preview until sent.
 let attached = null;
@@ -1843,6 +1906,7 @@ setInterval(() => {
 }, 400);
 
 function refreshChips() {
+  document.body.classList.toggle("has-body", !!(link.connected || body.tracks?.installed || body.parts?.some(p => p.installed)));   // STOP only shows on her face when there are motors to stop
   const on = status.online, g = on && status.geminiKeyCount > 0, c = on && status.hasKey;
   const firstOnline = { auto: g ? "Gemini" : c && "Claude", "auto-claude": c ? "Claude" : g && "Gemini", gemini: g && "Gemini", claude: c && "Claude" }[settings.brain];
   const brain = settings.brain === "local" ? "offline" : (firstOnline || (status.local ? "offline" : "none"));
@@ -1890,7 +1954,9 @@ function renderStatus() {
     ["Cache savings", (() => { const t = cacheStats.read + cacheStats.written + cacheStats.fresh; return t ? Math.round(cacheStats.read / t * 100) + "% reused" : "—"; })()],
     ["Offline brain", status.local ? "running" + (status.localSpeed ? ` (reads ${Math.round(status.localSpeed.read)}, writes ${Math.round(status.localSpeed.write)} tokens/s)` : "") : status.localState === "loading" ? "loading…" : status.localError ? "error: " + status.localError.slice(0, 60) : "not running"],
     ["Offline hearing", { ready: "ready", slow: "works (slow start)", none: "not installed" }[status.hearing] || "?"],
-    ["Hearing now", window.Hearing?.active ? "phone's own (offline)" : listening ? "Google's (online)" : "off"],
+    ["Hearing now", (window.Hearing?.active ? "phone's own (offline)" : listening ? "Google's (online)" : listenPaused ? "paused (tap the mic)" : "off") + ` · mode: ${settings.listen}`
+      + (hearState.lastHeardAt ? ` · last heard ${Math.round((Date.now() - hearState.lastHeardAt) / 1000)}s ago` : " · nothing heard yet")
+      + (hearState.lastError ? ` · last problem: ${SR_WHY[hearState.lastError] || hearState.lastError}` : "") + (window.Hearing?.lastError ? ` · phone's own: ${Hearing.lastError}` : "")],
     ["Offline voice", voices.some(v => v.localService) ? "ready" : ttsBrokenUntil > Date.now() ? "phone's own" : voices.length ? "online voices only" : "?"],
     ["Screen", window.Dark ? Dark.status() : "?"],
     ["Brain's processor share", status.cores ? `cores ${status.cores.allowed} (${status.cores.fastAllowed} of this phone's ${status.cores.fast} fast cores) while her page is showing` : "?"],

@@ -2,6 +2,19 @@
 
 Newest first. She reads this herself after an update.
 
+## 2026-10-03 · v0.22 · Type to her on her face
+- A box under her face to type to her, next to a smaller mic button. What you type and what she answers still go to Chat; you just don't have to leave her face. When the keyboard opens, her face shrinks to fit above it.
+- The STOP button is gone from her face. It's for motors, and there aren't any yet. It comes back by itself when a body is connected, and it's still in the panel.
+- Her words staying on screen forever: my mistake. The caption was held for as long as she was "listening", and in always-listening mode that's all the time. It's now held only while she's talking or working on an answer, then fades after about three seconds.
+
+## 2026-10-03 · v0.22 · Type to her on her face, and ears that say what's wrong
+- A box under her face to type to her, next to a smaller mic button. What you type and what she answers still go to Chat; you just don't have to leave her face. When the keyboard opens, her face shrinks to fit above it.
+- The STOP button is gone from her face. It's for motors, and there aren't any yet. It comes back by itself when a body is connected, and it's still in the panel.
+- Her words staying on screen forever: my mistake. The caption was held for as long as she was "listening", and in always-listening mode that's all the time. It's now held only while she's talking or working on an answer, then fades after about three seconds.
+- Voice still failing: I don't know the cause yet, so this version makes her say it. When listening fails, the reason shows under her face in plain words ("the microphone is busy", "Chrome isn't allowed to use the microphone", and so on) and on the Status tab. The check-up has a new section with what her ears did most recently.
+- If Google's speech recognizer fails for any reason, she carries on with the phone's own hearing instead of going deaf. If the recognizer goes dead (claims to be listening, reports nothing for 30 seconds), she drops it and starts again.
+- The mic button was quietly switching "always listening" to "tap to talk" whenever you tapped it while she was listening. That's very likely how she stopped listening all the time. In always-listening mode the mic is now a pause button and never touches the setting. If yours got switched, set it back in Settings > Listening.
+
 ## 2026-10-02 · v0.21.1 · She listens again, and waking from dark
 Three things you reported, and I believe two of them were one bug of mine.
 - Always-listening had stopped working and the mic button did nothing. The lock screen card I added in v0.19 keeps a silent sound looping, and on Android whatever plays sound holds the "audio focus" that Google's speech recognizer needs. The two kept taking it from each other. The silent sound now only plays while her page is in the background (which is the only time the lock screen card matters) and stops the moment her page is back in front. I could reproduce the hand-over in a test browser but not Android's audio focus itself, so tell me if she hears you again.

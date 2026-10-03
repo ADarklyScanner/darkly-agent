@@ -129,6 +129,11 @@ done
 
 # --- recent errors ---
 LOG="$DIR/data/logs/robot-log.jsonl"
+# what her ears have been doing lately (for when she won't listen)
+if [ -f "$LOG" ]; then
+  HL=$(grep -h '"where":"hearing"\|"where":"offline hearing"\|"where":"ears"\|stopped listening\|"kind":"heard"' "$LOG" | tail -6 | cut -c1-230)
+  if [ -n "$HL" ]; then echo "-- Her ears, most recent last --"; echo "$HL" | sed 's/^/  /'; fi
+fi
 if [ -f "$LOG" ]; then
   ERRS=$(tail -300 "$LOG" | grep '"kind":"error"' | tail -3)
   [ -n "$ERRS" ] && { echo "-- Last errors she logged --"; echo "$ERRS" | sed 's/^/  /' | cut -c1-220; }

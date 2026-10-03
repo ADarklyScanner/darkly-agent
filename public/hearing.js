@@ -97,11 +97,11 @@
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || "hearing failed (" + r.status + ")");
       text = (j.text || "").trim(); H.lastMs = j.ms;
-    } catch (e) { H.lastError = e.message; try { logEvent("error", { where: "offline hearing", detail: e.message }); } catch {} }
+    } catch (e) { H.lastError = e.message; try { logEvent("error", { where: "offline hearing", detail: e.message }); $("#heard").textContent = "(couldn't work out what you said: " + e.message + ")"; } catch {} }
     busySending = false; H.state = H.active ? "listening" : "idle"; idleSince = now();
     try { listening = false; setFaceState("listening", false); $("#heard").textContent = text; } catch {}
     if (!text) { if (H.oneShot) H.stop(); return; }
-    H.heardCount++;
+    H.heardCount++; H.lastError = ""; try { hearState.lastHeardAt = Date.now(); } catch {}
     if (H.oneShot) H.stop();
     try { onHeard(text, 0.9, H.lastLevel || {}); } catch (e) { console.error(e); }
   }
@@ -110,7 +110,11 @@
   H.start = async ({ oneShot = false } = {}) => {
     H.oneShot = oneShot; H.active = true; H.state = "listening"; idleSince = now(); reset(); pre = [];
     const ok = await window.Tricks?.earsStart?.(true);              // opens the microphone (shared with her ears)
-    if (!ok) { H.active = false; H.state = "idle"; H.lastError = "couldn't open the microphone"; return false; }
+    if (!ok) {
+      H.active = false; H.state = "idle"; H.lastError = "couldn't open the microphone";
+      try { logEvent("error", { where: "offline hearing", detail: H.lastError }); $("#heard").textContent = "(can't listen: the microphone didn't open. In Chrome: the icon left of the address > Permissions > Microphone > Allow)"; } catch {}
+      return false;
+    }
     try { setFaceState("listening", oneShot); $("#micBtn").classList.add("live"); } catch {}
     return true;
   };

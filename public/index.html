@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no,interactive-widget=resizes-content">
 <meta name="theme-color" content="#0b0612">
 <title>Nessari</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -31,7 +31,10 @@
 
   <div id="caption"><div id="heard"></div><div id="said"></div></div>
 
-  <button id="micBtn" aria-label="Talk">🎤</button>
+  <div id="faceBar">
+    <button id="micBtn" aria-label="Talk">🎤</button>
+    <form id="faceForm"><input id="faceBox" placeholder="Type to her" autocomplete="off" enterkeyhint="send" aria-label="Type to her"><button aria-label="Send">➤</button></form>
+  </div>
 </main>
 
 <!-- ============ STOP (always on top) ============ -->
